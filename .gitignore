@@ -47,3 +47,6 @@ docs/
 # 设计/计划文档（但 README.md 必须进版本库）
 *.md
 !README.md
+
+# GitHub Actions 工作流：本机 Token 无 workflow scope，暂不入库（需要时手动加）
+.github/workflows/
