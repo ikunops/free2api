@@ -95,6 +95,29 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 - **会话粘性** — 同一对话固定走同一账号（多轮上下文不跳号、上游 prompt cache 不碎）。粘性键按此优先级取：**conversation 维度四键**（`metadata.conversation_id` / `metadata.conversationId` / `conversation_id` / `conversationId` 任一）→ **`prompt_cache_key`**（pi-ai 系客户端把会话 ID 放在这个 OpenAI 前缀缓存字段里）→ **首条 user 消息文本的 sha256 兜底**（OpenAI 兼容协议无会话 ID 字段，dsh / Codex 等客户端四键全缺，此前粘性恒不命中、逐请求换号；现由首条 user 消息派生会话级稳定键——会话内历史追加不影响该键，开新会话自然换键）。`user_id` **不是**粘性键——它会把一个用户的所有并行对话钉到同一个号上（粒度远粗于上游对话级缓存边界），发 `user_id` 的客户端回落加权轮换（**该回落同样适用于首条 user 消息兜底**：请求体带 `metadata.user_id` 或顶层 `user_id` 时不派生兜底键）。绑定 30 分钟滚动续期，空闲即过期释放
 - **负载分布** — 粘性与分层都未限定时，三因子加权随机（`credits ×10 + 快过期积分 ×8 + 闲置补偿`）把流量摊开：高余额号多扛、快过期积分的号先用、闲置号补位；防惊群跳过 100ms 内刚选中的号。权重是**概率倾斜**而非硬排序（Top-5 短名单 + 名单内抽签），不会让单一账号垄断流量
 
+### 可观测性与运行态
+
+控制台侧栏「运行」组里有两页专门看网关在干什么：
+
+- **请求统计**（`GET /v1/stats`，`POST /v1/stats/reset`）：本进程启动以来按模型累计的
+  请求数 / 成功率 / TTFB / 端到端延迟 / token / 缓存命中率，以及流式占比。数据源是唯一
+  埋点 `chatStat.done()`，重启清零。「重置统计」只清这份观测，不影响路由。
+- **运行态**：把 `/status` 里此前没露出的字段（粘性会话数、在飞请求、并发占满、会话存储、
+  熔断 / 连败计数合计、成本探索事件）+ 模型死信台账 + 定时任务开关汇到一页。
+
+定时任务接口：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/admin/schedule` | 六类定时任务（签到 / 猫猫旅行 / 活跃上报 / Token 保活 / 开学季 / 夜猫子）的当前开关、触发整点、说明；`config.json` 没有 `schedule` 段时回显内置默认 |
+| `POST` | `/admin/schedule` | 改某个任务的开关：`{"key":"checkin","enabled":false}`，只动 `schedule.<key>_enabled` 一个键，其余键原样回写 |
+
+改开关**写入 `config.json`、重启生效**——排程在启动时快照，进程内没有热重载通道，页面
+如实说明，不假装热更新。小时表（几点跑）请直接改 `config.json` 的 `schedule` 段。
+
+模型死信台账（`GET /admin/modeldead`、`DELETE /admin/modeldead`）也在这页：上游权威答复
+「无此模型」的负缓存，TTL 到期自动复测，误杀可一键清空。
+
 ### 定时积分任务
 
 - **签到**（09 / 21 点）— 每日签到 + 余额查询，余额恢复自动解冻冷却账号
@@ -146,6 +169,11 @@ Qoder / Cherry Studio）都能在 UI 里手填 Base URL，唯独 Codex 必须改
 | `GET` | `/admin/codex` | 读现状 + 建议值（路径 / 当前值 / 建议 Base URL / 可发布模型） |
 | `POST` | `/admin/codex/preview` | 计算并返回改前改后全文，**不落盘** |
 | `POST` | `/admin/codex/apply` | 落盘（改前先备份） |
+| `POST` | `/admin/codex/detach` | **反向操作**：还原官方默认（删顶层 `model_provider`，网关模型名一并删；我们的 provider 段保留）。`{"apply":true}` 落盘，缺省只回预览 |
+
+「还原官方默认」与 `cmd/attach detach` 同语义：顶层 `model_provider` 必删；顶层 `model`
+是网关名（带 realm 冒号前缀）时一并删、回落 Codex 默认模型，是官方名（不含冒号）时保留。
+控制台「输出 API → Codex 一键接入」卡片里有对应按钮。
 
 `POST` 请求体：`{"base_url":"http://127.0.0.1:7863/v1","model":"cn:auto"}`；两项都可省略，
 省略时 `base_url` 从当前监听地址派生、`model` 取发布清单第一个。

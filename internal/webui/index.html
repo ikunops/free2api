@@ -160,6 +160,9 @@ td.num{font-variant-numeric:tabular-nums}
 .clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .note{font-size:12px;color:var(--fg3);line-height:1.85}
 .note b{color:var(--fg2);font-weight:600}
+/* .link：正文里的可点跳转（帮助页四步走 → 对应页签）。 */
+.link{color:var(--acc);cursor:pointer;border-bottom:1px dashed currentColor}
+.link:hover{color:#0f7a5a}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .grow{flex:1}
 /* 工具栏里的行内复选框标签：整块占位、绝不换行。
@@ -276,7 +279,12 @@ const ICON = {
   help: "M12 21a9 9 0 100-18 9 9 0 000 18zM9.6 9.3a2.5 2.5 0 114.4 1.6c-.8.9-2 1.2-2 2.6M12 17h.01",
   refresh: "M21 12a9 9 0 11-2.6-6.4M21 3v6h-6",
   key: "M7 11V8a5 5 0 0110 0v3M5 11h14v9H5zM12 15v2",
-  copy: "M9 9h10v11H9zM5 15V4h10"
+  copy: "M9 9h10v11H9zM5 15V4h10",
+  chart: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+  pulse: "M2 12h4l2.5-6 3.5 12 3-8 2 2h5",
+  clock: "M12 21a9 9 0 100-18 9 9 0 000 18zM12 7v5l3.5 2",
+  trash: "M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6",
+  warn: "M12 3l9.5 17H2.5zM12 10v4M12 17h.01"
 };
 function svg(k, cls){
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
@@ -349,10 +357,14 @@ const S = {
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
   modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, realmScoped: true, showUnent: false,
   credits: null, creditsBusy: false, creditsPolls: 0,
-  codex: null, codexPlan: null, codexModel: ""
+  codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
+  stats: null, schedule: null, modeldead: null
 };
 const NAV = [
-  { group: "运行", items: [ { id: "overview", name: "概览", ico: "grid" } ] },
+  { group: "运行", items: [
+    { id: "overview", name: "概览", ico: "grid" },
+    { id: "stats", name: "请求统计", ico: "chart", badge: "stats" },
+    { id: "runtime", name: "运行态", ico: "pulse", badge: "runtime" } ] },
   { group: "接入", items: [
     { id: "sources", name: "获取源", ico: "inbox", badge: "src" },
     { id: "pool", name: "账号池", ico: "layers", badge: "pool" },
@@ -410,6 +422,10 @@ function badgeOf(key){
   if (key === "src"){ var n = ((S.src && S.src.kinds) || []).filter(function(k){ return k.available; }).length; return n ? String(n) : ""; }
   if (key === "pool"){ return S.status ? (S.status.healthy + "/" + S.status.total) : ""; }
   if (key === "models"){ return S.models ? String(S.models.length) : ""; }
+  // 统计：本进程累计请求数（没拉过就不显示，避免占位）。
+  if (key === "stats"){ return (S.stats && S.stats.total) ? String(S.stats.total.requests) : ""; }
+  // 运行态：死信模型条数；没有就留空。
+  if (key === "runtime"){ var d = (S.modeldead && S.modeldead.entries) ? Object.keys(S.modeldead.entries).length : 0; return d ? String(d) : ""; }
   return "";
 }
 function renderNav(){
@@ -425,6 +441,8 @@ function renderNav(){
 function go(tab, opt){
   S.tab = tab;
   if (tab === "pool" && !S.credits) loadCredits(false);
+  if (tab === "stats" && !S.stats) loadStats();
+  if (tab === "runtime" && !S.schedule) loadRuntime();
   if (opt && opt.srcTab) S.srcTab = opt.srcTab;
   if (tab !== "sources"){ S.cand = null; }
   if (tab !== "output"){ S.chanDraft = null; }
@@ -441,7 +459,7 @@ function render(){
   var keepListTop = 0, l0 = $("#mList");
   if (l0) keepListTop = l0.scrollTop;
   var keepPageTop = window.scrollY || window.pageYOffset || 0;
-  var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, help: viewHelp }[S.tab] || viewOverview;
+  var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, stats: viewStats, runtime: viewRuntime, help: viewHelp }[S.tab] || viewOverview;
   $("#view").innerHTML = fn();
   // 折叠区摘要与发布清单计数从刚画出来的 DOM 现算，保证跟勾选状态一致。
   if (S.tab === "output") $$("[data-chan-row]").forEach(function(x){ updChanRow(x.getAttribute("data-chan-row")); });
@@ -1475,6 +1493,29 @@ function codexCard(){
     (S.codexPlan && S.codexPlan.changed ? '<button class="pri" data-action="codex-apply">确认写入</button>' : "") +
     '<span class="hint" style="margin:0">只写 Codex 的 config.toml，改前自动备份。</span></div>';
 
+  // 反向操作：还原官方默认（与 cmd/attach detach 同语义）
+  body += '<div class="sep"></div><div class="row">' +
+    '<button class="tiny" data-action="codex-detach-preview" ' +
+    'title="删掉顶层 model_provider（网关模型名一并删），回到 Codex 官方 provider。我们的 provider 段保留，随时可再挂。">' +
+    '还原官方默认</button>' +
+    '<span class="hint" style="margin:0">卸载本网关的接入，不影响其它 provider。改前同样先备份。</span></div>';
+  if (S.codexDetachPlan){
+    var dp = S.codexDetachPlan;
+    body += '<div style="margin-top:6px">' +
+      (dp.changed
+        ? '<div class="hint">将删除：' + (dp.removed_provider ? '顶层 model_provider；' : '') +
+            (dp.removed_model ? ('顶层 model（' + esc(dp.current_model) + '）') : '（顶层 model 保持不动）') + '</div>' +
+          '<div class="grid2" style="margin-top:6px">' +
+          '<pre class="mono codebox">' + esc(dp.before || "") + "</pre>" +
+          '<pre class="mono codebox">' + esc(dp.after || "") + "</pre></div>"
+        : ('<div class="hint">' + (dp.kept_model ? ('顶层 model（' + esc(dp.kept_model) + '）是官方名，保留；') : "") +
+            "已经是官方默认形态，无需改动。</div>")) +
+      (dp.has_our_section ? '<div class="hint">[model_providers.free2api] 段保留，不影响官方使用。</div>' : "") +
+      (dp.changed ? '<div class="row" style="margin-top:8px"><button class="pri tiny" data-action="codex-detach-apply">确认还原</button>' +
+        (dp.backup_path ? '<span class="hint" style="margin:0">备份到 ' + esc(dp.backup_path) + '</span>' : "") + '</div>' : "") +
+      "</div>";
+  }
+
   return card("Codex 一键接入",
     "Codex 没有「自定义供应商」入口，只能改它的 config.toml。这里代你改，并且只动我们那一段。",
     body);
@@ -1624,15 +1665,166 @@ function viewOutput(){
     '</div>');
   return html;
 }
+/* ---------- 请求统计（/v1/stats） ---------- */
+function fmtInt(n){
+  n = Number(n) || 0;
+  return n.toLocaleString("en-US");
+}
+function fmtDur(ms){
+  ms = Number(ms) || 0;
+  if (ms <= 0) return "—";
+  if (ms < 1000) return Math.round(ms) + " ms";
+  return (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + " s";
+}
+function fmtPct(x){
+  if (x === null || x === undefined || isNaN(x)) return "—";
+  return (Number(x) * 100).toFixed(1) + "%";
+}
+/* statRow 统计页用的一行：把 snapshot 的字段映射成中文标签。 */
+function viewStats(){
+  var html = head("请求统计", "本进程启动以来按模型累计的请求观测（重启清零）。数据源 /v1/stats。");
+  var st = S.stats;
+  if (!st) return html + card("正在读取", "", '<div class="empty">读取中…</div>');
+  var t = st.total || {};
+  var up = Number(st.uptime_sec) || 0;
+  var upText = up >= 86400 ? (up/86400).toFixed(1) + " 天"
+    : up >= 3600 ? (up/3600).toFixed(1) + " 小时"
+    : up >= 60 ? Math.round(up/60) + " 分钟" : up + " 秒";
+  html += '<div class="grid4">' +
+    statBox("请求总数", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed)) +
+    statBox("成功率", (t.requests ? fmtPct(t.success / t.requests) : "—"), "失败 " + fmtInt(t.failed) + " 次") +
+    statBox("流式占比", (t.requests ? fmtPct(t.streaming / t.requests) : "—"), "流式 " + fmtInt(t.streaming) + " 次") +
+    statBox("运行时长", upText, "统计起始 " + esc(fmtTime(st.since))) +
+    '</div>';
+  html += '<div class="grid4">' +
+    statBox("首字延迟", fmtDur(t.avg_ttfb_ms), "平均 TTFB（流式首帧）") +
+    statBox("端到端延迟", fmtDur(t.avg_latency_ms), "平均总耗时") +
+    statBox("生成速度", (t.tokens_per_sec ? Number(t.tokens_per_sec).toFixed(1) + " tok/s" : "—"), "纯生成阶段吞吐") +
+    statBox("缓存命中率", fmtPct(t.cache_hit_rate), "命中 " + fmtInt(t.cache_hit_tokens) + " / 未命中 " + fmtInt(t.cache_miss_tokens)) +
+    '</div>';
+  var models = (st.models || []).slice();
+  if (!models.length){
+    html += card("按模型", "", '<div class="empty">还没有请求观测。跑一次对话后回来刷新。</div>');
+  } else {
+    models.sort(function(a, b){ return (b.requests || 0) - (a.requests || 0); });
+    var rows = models.map(function(m){
+      var rate = m.credits || "";
+      return '<tr>' +
+        '<td><span class="mono">' + esc(m.model) + '</span></td>' +
+        '<td class="num">' + fmtInt(m.requests) + '</td>' +
+        '<td class="num">' + fmtInt(m.success) + '</td>' +
+        '<td class="num">' + (m.failed ? '<span style="color:var(--danger)">' + fmtInt(m.failed) + '</span>' : "0") + '</td>' +
+        '<td class="num">' + fmtDur(m.avg_ttfb_ms) + '</td>' +
+        '<td class="num">' + fmtDur(m.avg_latency_ms) + '</td>' +
+        '<td class="num">' + fmtInt(m.total_tokens) + '</td>' +
+        '<td class="num">' + fmtPct(m.cache_hit_rate) + '</td>' +
+        '<td>' + (rate ? '<span class="tag mut">' + esc(rate) + '</span>' : "—") + '</td>' +
+        '<td class="hint" style="white-space:nowrap">' + esc(fmtTime(m.last_seen)) + '</td></tr>';
+    }).join("");
+    html += card("按模型（" + models.length + " 个）", "token 与缓存数来自上游 usage；缺观测的请求不计入均值分母。",
+      '<div class="tablewrap"><table><thead><tr>' +
+      '<th>模型</th><th class="num">请求</th><th class="num">成功</th><th class="num">失败</th>' +
+      '<th class="num">TTFB</th><th class="num">延迟</th><th class="num">Tokens</th><th class="num">缓存命中</th>' +
+      '<th>费率</th><th>最近</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
+  }
+  html += card("token 总量", "",
+    kv([
+      ["提示词 tokens", fmtInt(t.prompt_tokens)],
+      ["生成 tokens", fmtInt(t.completion_tokens)],
+      ["合计 tokens", fmtInt(t.total_tokens)],
+      ["缓存写入 tokens", fmtInt(t.cache_write_tokens)]
+    ]));
+  html += '<div class="row"><button class="tiny" data-action="stats-reset" ' +
+    'title="清空本进程的累计统计，便于观察增量。不影响账号池与请求处理。">重置统计</button>' +
+    '<span class="hint" style="margin:0">重置只清这份观测，网关照常跑。</span></div>';
+  return html;
+}
+
+/* ---------- 运行态（/status 里未在别处展示的字段 + /admin/schedule + modeldead） ---------- */
+function viewRuntime(){
+  var st = S.status;
+  var html = head("运行态", "网关内部状态：粘性会话、并发水位、成本探索、定时任务、死信模型。");
+  if (!st) return html + card("正在读取", "", '<div class="empty">读取中…</div>');
+  var sticky = st.sticky_sessions || 0;
+  var redisMode = st.redis_mode || "noop";
+  var ce = st.cost_explore || {};
+  var inFull = st.in_flight_full || 0;
+  var accounts = st.accounts || [];
+  var inFlight = 0, breaker = 0, consecutive = 0;
+  accounts.forEach(function(a){
+    inFlight += (a.in_flight || 0);
+    breaker += (a.breaker_fails || 0);
+    consecutive += (a.consecutive_fails || 0);
+  });
+  html += '<div class="grid4">' +
+    statBox("粘性会话", fmtInt(sticky), "同会话固定打同一个号") +
+    statBox("在飞请求", fmtInt(inFlight), "全池当前占用") +
+    statBox("并发占满", fmtInt(inFull), inFull ? "有账号已达在飞上限" : "未触顶") +
+    statBox("会话存储", redisMode === "noop" ? "进程内存" : redisMode, redisMode === "noop" ? "未配 Upstash，重启即失效" : "Upstash Redis") +
+    '</div>';
+  html += '<div class="grid4">' +
+    statBox("熔断计数合计", fmtInt(breaker), "各号熔断失败数之和") +
+    statBox("连败计数合计", fmtInt(consecutive), "各号连续失败之和") +
+    statBox("成本探索事件", fmtInt(ce.events_total), "选号用的探索采样次数") +
+    statBox("模型死信", fmtInt(((S.modeldead && S.modeldead.entries) ? Object.keys(S.modeldead.entries).length : 0)), "上游判「无此模型」的负缓存") +
+    '</div>';
+
+  // 定时任务
+  var sc = S.schedule;
+  if (!sc){
+    html += card("定时任务", "正在读取 config.json 的 schedule 段…", '<div class="empty">读取中…</div>');
+  } else {
+    var tasks = sc.tasks || [];
+    var rows = tasks.map(function(t){
+      var sw = '<button class="tiny" data-action="sched-toggle" data-key="' + esc(t.key) + '" data-next="' + (t.enabled ? "0" : "1") + '">' +
+        (t.enabled ? '<span class="tag ok">已启用</span>' : '<span class="tag mut">已停用</span>') + '</button>';
+      return '<tr class="' + (t.enabled ? "" : "dim") + '">' +
+        '<td><b>' + esc(t.name) + '</b></td>' +
+        '<td>' + sw + '</td>' +
+        '<td class="num">' + ((t.hours && t.hours.length) ? t.hours.map(function(h){ return (h < 10 ? "0" : "") + h + ":00"; }).join(" / ") : "—") + '</td>' +
+        '<td class="hint">' + esc(t.note || "") + (t.report_count ? ("（每号 " + t.report_count + " 条）") : "") + '</td></tr>';
+    }).join("");
+    var head2 = sc.readable
+      ? (sc.explicit ? "来自 config.json 的 schedule 段" : "config.json 没有 schedule 段，显示内置默认")
+      : "读不到 config.json：" + esc(sc.read_error || "");
+    html += card("定时任务（" + tasks.filter(function(t){ return t.enabled; }).length + "/" + tasks.length + " 启用）", head2,
+      '<div class="tablewrap"><table><thead><tr><th style="width:150px">任务</th><th style="width:110px">开关</th>' +
+      '<th class="num" style="width:150px">触发整点</th><th>说明</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="hint" style="margin-top:9px">' + esc(sc.restart_note || "") + '<br>' + esc(sc.source_hint || "") +
+      (sc.config_path ? ('<br>配置文件：<span class="mono">' + esc(sc.config_path) + '</span>') : "") + '</div>');
+  }
+
+  // 死信模型
+  var md = (S.modeldead && S.modeldead.entries) || {};
+  var mdKeys = Object.keys(md);
+  if (mdKeys.length){
+    var mdRows = mdKeys.map(function(k){
+      var e = md[k] || {};
+      return '<tr><td><span class="mono">' + esc(k) + '</span></td>' +
+        '<td class="hint">' + esc(e.reason || "") + '</td>' +
+        '<td class="hint" style="white-space:nowrap">' + esc(fmtTime(e.until)) + '</td></tr>';
+    }).join("");
+    html += card("模型死信台账（" + mdKeys.length + " 条）",
+      "上游权威答复「无此模型」的负缓存，TTL 到期自动复测；误杀可手动清空。",
+      '<div class="tablewrap"><table><thead><tr><th style="width:280px">键</th><th>原因</th><th style="width:150px">到期</th></tr></thead><tbody>' +
+      mdRows + '</tbody></table></div>' +
+      '<div class="row" style="margin-top:11px"><button class="tiny" data-action="modeldead-clear">清空死信台账</button>' +
+      '<span class="hint" style="margin:0">清掉后这些模型立刻重新参与路由。</span></div>');
+  } else {
+    html += card("模型死信台账", "没有死信：上游目录里的模型都还能正常路由。", "");
+  }
+  return html;
+}
+
 /* ---------- 帮助 ---------- */
 function viewHelp(){
-  var html = head("怎么用", "从获取账号到反代出去，一共四步。");
+  var html = head("怎么用", "从获取账号到反代出去，一共四步。每一步都能点进去。");
   html += card("四步走完", "",
     '<ol class="steps">' +
-    '<li><b>获取源</b>：三个页签分别对应「应用内登录态探查」「switch 账本」「导入文件」。账号进的是同一个号池，来源记在台账里。</li>' +
-    '<li><b>账号池</b>：核对每个账号的来源、积分、健康；坏的号复活，不想用的号停用。</li>' +
-    '<li><b>输出 API</b>：选输出格式、写监听端口、可选地设模型前缀和费率后缀，保存。</li>' +
-    '<li><b>接客户端</b>：把 Base URL 和密钥填进去，拉一次模型列表确认。</li>' +
+    '<li><b><span class="link" data-goto="sources">获取源</span></b>：三个页签分别对应「应用内登录态探查」「switch 账本」「导入文件」。账号进的是同一个号池，来源记在台账里。</li>' +
+    '<li><b><span class="link" data-goto="pool">账号池</span></b>：核对每个账号的来源、积分、健康；坏的号复活，不想用的号停用。</li>' +
+    '<li><b><span class="link" data-goto="output">输出 API</span></b>：选输出格式、写监听端口、可选地设模型前缀和费率后缀，保存。</li>' +
+    '<li><b>接客户端</b>：把 Base URL 和密钥填进去，拉一次模型列表确认。Codex 特殊——用输出页的「Codex 一键接入」代改配置。</li>' +
     '</ol>');
   html += card("三种来源分别怎么拿", "",
     '<div class="note">' +
@@ -1643,6 +1835,13 @@ function viewHelp(){
     '两者凭据不同构，网关按账号归属分别路由，互不代打。<br>' +
     '<b>导入文件</b>：别的机器导出的 JSON 快照直接粘进来，导入时选好归属来源。' +
     '三种形状（wb-switch 条目 / auth 扁平形 / 插件 OAuth 嵌套形）后端都认。' +
+    '</div>');
+  html += card("看清网关在干什么", "",
+    '<div class="note">' +
+    '<b><span class="link" data-goto="overview">概览</span></b>：一眼看总量、可用、来源分布、按客户端分组。<br>' +
+    '<b><span class="link" data-goto="stats">请求统计</span></b>：本进程累计的请求量、成功率、延迟、token、缓存命中，按模型拆开。重启清零。<br>' +
+    '<b><span class="link" data-goto="runtime">运行态</span></b>：粘性会话、在飞并发、熔断/连败计数、定时任务开关、模型死信台账。' +
+    '定时任务的开关在这里一键切换（写回 config.json，重启生效）。' +
     '</div>');
   html += card("整体迁移到另一台机器", "",
     '<div class="note">' +
@@ -1691,6 +1890,19 @@ async function loadModels(){
   try { var r = await api("/v1/models"); S.models = (r && r.data) || []; }
   catch (e) { S.models = []; }
 }
+async function loadStats(){
+  try { S.stats = await api("/v1/stats"); } catch (e) { S.stats = null; }
+}
+/* loadRuntime 拉运行态页需要的三份数据：定时任务、死信台账、以及最新的 /status
+   （粘性/在飞等字段在 status 里）。三份并行，任一失败不拖累其余。 */
+async function loadRuntime(){
+  var jobs = [
+    api("/admin/schedule").then(function(r){ S.schedule = r; }, function(){ S.schedule = null; }),
+    api("/admin/modeldead").then(function(r){ S.modeldead = r; }, function(){ S.modeldead = null; }),
+    loadStatus()
+  ];
+  await Promise.all(jobs);
+}
 /* refreshAll 是**唯一**的刷新入口（右上角那个按钮）：状态、来源台账、输出清单、
    模型表、上游余额一次拉齐；候选面板开着就顺手重拉一次（保留已勾选与探活/额度标记，
    不会把用户手上的选择冲掉）。余额后端是「先回旧值 + 后台重查」，所以不拖慢这一轮。 */
@@ -1701,6 +1913,8 @@ async function refreshAll(silent){
     loadStatus(), loadSources(), loadOrigins(), loadOutput(), loadModels(), loadHealth(),
     loadCredits(!first)
   ];
+  if (S.stats) jobs.push(loadStats());
+  if (S.schedule || S.modeldead) jobs.push(loadRuntime());
   // 候选面板开着就顺手重拉——但只在**没探过活/读过额度**时做：
   // 那两个动作每个号一次外网往返，全局刷新不该把它们偷偷重跑一遍。
   if (S.candKind && S.srcTab === "switch" && !S.candProbe && !S.candBalance){
@@ -1994,6 +2208,49 @@ async function chanSave(){
     await refreshAll(true);
   } catch (e) { toast("err", e.message, 9000); }
 }
+/* statsReset 清空本进程累计统计（观测，不影响路由）。 */
+async function statsReset(){
+  try {
+    await api("/v1/stats/reset", { method: "POST", body: {} });
+    await loadStats();
+    render();
+    toast("ok", "已重置请求统计", 2400);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* schedToggle 切换某个定时任务的启用开关（写回 config.json，重启生效）。 */
+async function schedToggle(key, next){
+  try {
+    var r = await api("/admin/schedule", { method: "POST", body: { key: key, enabled: !!next } });
+    S.schedule = r;
+    render();
+    toast("ok", "已" + (next ? "启用" : "停用") + "该任务，重启网关后生效", 4600);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* modeldeadClear 清空模型死信台账（误杀兜底）。 */
+async function modeldeadClear(){
+  try {
+    var r = await api("/admin/modeldead", { method: "DELETE" });
+    toast("ok", "已清空死信台账（" + ((r && r.cleared) || 0) + " 条）", 3200);
+    await loadRuntime();
+    render();
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* codexDetachPreview / codexDetachApply 还原 Codex 官方默认。 */
+async function codexDetachPreview(){
+  try {
+    S.codexDetachPlan = await api("/admin/codex/detach", { method: "POST", body: { apply: false } });
+    render();
+  } catch (e) { toast("err", e.message, 9000); }
+}
+async function codexDetachApply(){
+  try {
+    var r = await api("/admin/codex/detach", { method: "POST", body: { apply: true } });
+    S.codexDetachPlan = r.plan || null;
+    await loadOutput();
+    render();
+    toast("ok", (r && r.message) || "已还原官方默认", 5200);
+  } catch (e) { toast("err", e.message, 9000); }
+}
 /* resetCooldowns 清空池内冷却/熔断/连败计数（停用与手工禁用不动）。 */
 async function resetCooldowns(){
   try {
@@ -2050,6 +2307,11 @@ async function actOn(t){
     if (act === "model-reset") return resetModels();
     if (act === "credits-refresh") return loadCredits(true);
     if (act === "reset-cooldowns") return resetCooldowns();
+    if (act === "stats-reset") return statsReset();
+    if (act === "sched-toggle") return schedToggle(t.getAttribute("data-key"), t.getAttribute("data-next") === "1");
+    if (act === "modeldead-clear") return modeldeadClear();
+    if (act === "codex-detach-preview") return codexDetachPreview();
+    if (act === "codex-detach-apply") return codexDetachApply();
     if (act === "chan-add") return chanAdd();
     if (act === "chan-del") return chanDel(t.getAttribute("data-i"));
     if (act === "chan-model-all") return chanModelToggle(t.getAttribute("data-i"), function(){ return true; });

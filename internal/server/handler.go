@@ -195,6 +195,11 @@ func NewHandler(cfg Config) *Handler {
 		h.mux.HandleFunc("GET /admin/codex", h.withLocalOrAuth(h.adminCodexGet))
 		h.mux.HandleFunc("POST /admin/codex/preview", h.withLocalOrAuth(h.adminCodexPreview))
 		h.mux.HandleFunc("POST /admin/codex/apply", h.withLocalOrAuth(h.adminCodexApply))
+		// Codex 反向操作：还原官方默认（删顶层 model_provider，网关模型名一并删）。
+		h.mux.HandleFunc("POST /admin/codex/detach", h.withLocalOrAuth(h.adminCodexDetach))
+		// 定时任务可见性（读 config.json schedule 段）+ 开关（写回配置，重启生效）。
+		h.mux.HandleFunc("GET /admin/schedule", h.withLocalOrAuth(h.adminScheduleGet))
+		h.mux.HandleFunc("POST /admin/schedule", h.withLocalOrAuth(h.adminSchedulePut))
 	}
 	// 内嵌中文控制台：GET /{$} 是精确根路径（Go 1.22 mux 语法），
 	// 不用 "/" 以免变成 catch-all 把 404 语义吃掉。
