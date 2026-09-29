@@ -420,13 +420,19 @@ func servableProducer(producer string) bool {
 	return producer == "" || producer == "workbuddy" || producer == "zcode"
 }
 
-// producerMatch 报告账号是否属于请求指定的生产者。producer=="" 恒真（不过滤，
-// 现状语义）；非空时要求精确匹配台账/凭证上的 producer——请求写了 "zcode:xxx"
-// 就绝不允许落到 workbuddy 号上（凭据不同构，互发会被上游当异常流量）。
+// producerMatch 报告账号是否属于请求指定的生产者。非空时要求精确匹配台账/凭证上的
+// producer——请求写了 "zcode:xxx" 就绝不允许落到 workbuddy 号上（凭据不同构，互发会被
+// 上游当异常流量）。
+//
+// 空串归一为 workbuddy（与 producerAllowed / deadKey / producerFor 第三级回落同口径）：
+// 空串在网关里的语义就是「CN 默认那家」。这里**不能**直接放行——否则 zcode 号（realm 也是
+// cn，导入时写死）会进入 workbuddy 模型的候选：智谱凭据打 workbuddy 的模型名 → 上游 11102
+// "该后端无此模型"，逐号封 6h 后轮转末态变 ErrModelBlocked，该模型被错标「池级不可用」24h。
+//
 // 调用方必须已持 p.mu（producerFor 读 p.producerOf 与 p.byUID）。
 func (p *Pool) producerMatch(uid, producer string) bool {
 	if producer == "" {
-		return true
+		producer = "workbuddy"
 	}
 	return p.producerFor(uid) == producer
 }
