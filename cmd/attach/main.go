@@ -32,10 +32,13 @@ import (
 )
 
 const (
-	providerID   = "wbhub"        // [model_providers.<id>]，与控制台文档一致
-	providerName = "WBHub"        // 表里的 name 字段（仅展示用）
+	providerID   = "free2api"        // [model_providers.<id>]；必须与网页面板写入的同名，否则会留两段
+	providerName = "Free2API (local)" // 表里的 name 字段（仅展示用）
 	defaultGW    = "http://127.0.0.1:7864"
-	wireAPI      = "responses"    // Codex 0.151+ 只认 responses（chat 已被官方下线）
+	wireAPI      = "responses"        // Codex 0.151+ 只认 responses（chat 已被官方下线）
+	// envKey Codex 从这个环境变量读 API key。**必须写进 provider 表**：Codex 找不到
+	// env_key 就不知道去哪取密钥，会直接拒绝该 provider。网关不鉴权时变量也要有值（占位串即可）。
+	envKey = "WB_API_KEY"
 )
 
 func main() {
@@ -276,14 +279,18 @@ func (t *toml) upsertProvider(id, name, baseURL string) bool {
 			break
 		}
 	}
+	// 顺序固定：新建表时按这个顺序落笔，读起来跟网页面板写的一致。
+	keys := []string{"name", "base_url", "env_key", "wire_api"}
 	want := map[string]string{
-		"name":      fmt.Sprintf("%q", name),
-		"base_url":  fmt.Sprintf("%q", baseURL),
-		"wire_api":  fmt.Sprintf("%q", wireAPI),
+		"name":     fmt.Sprintf("%q", name),
+		"base_url": fmt.Sprintf("%q", baseURL),
+		// env_key 不能漏：Codex 靠它知道去哪读 API key。
+		"env_key":  fmt.Sprintf("%q", envKey),
+		"wire_api": fmt.Sprintf("%q", wireAPI),
 	}
 	if start < 0 {
 		block := []string{"", fmt.Sprintf("# 由 free2api attach 写入；手工改也行，重跑 attach 会补齐（%s）", time.Now().Format("2006-01-02")), head}
-		for _, k := range []string{"name", "base_url", "wire_api"} {
+		for _, k := range keys {
 			block = append(block, k+" = "+want[k])
 		}
 		t.lines = append(t.lines, block...)
@@ -298,7 +305,7 @@ func (t *toml) upsertProvider(id, name, baseURL string) bool {
 		}
 	}
 	changed := false
-	for _, k := range []string{"name", "base_url", "wire_api"} {
+	for _, k := range keys {
 		found := false
 		for i := start + 1; i < end; i++ {
 			if m := kvRe.FindStringSubmatch(strings.TrimSpace(t.lines[i])); m != nil && m[1] == k {
