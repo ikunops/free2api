@@ -1,0 +1,37 @@
+{
+  "name": "ai-governance",
+  "version": "1.0.0",
+  "description": "GitHub Action: AI 驱动的工作流 issue 治理 —— 垃圾检测、要点提炼、canonical 归并、规范化重开（源自 NoMore Spam，MIT）",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "jest",
+    "lint": "eslint src/**/*.js",
+    "lint:fix": "eslint src/**/*.js --fix"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sliverkiss/free2api.git"
+  },
+  "keywords": [
+    "github",
+    "action",
+    "ai",
+    "issue",
+    "governance",
+    "spam",
+    "canonical"
+  ],
+  "author": "free2api contributors (基于 JohnsonRan/nomore-spam)",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^2.0.3",
+    "@actions/github": "^9.1.1",
+    "openai": "^4.104.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.1",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0"
+  }
+}

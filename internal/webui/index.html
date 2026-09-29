@@ -1,0 +1,2086 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Free2API · WorkBuddy 网关控制台</title>
+<link rel="icon" href="data:,">
+<style>
+:root{
+  --bg:#fff; --side:#fbfbfa; --line:#ececea; --line2:#f2f2f0;
+  --fg:#1a1a18; --fg2:#5c5c58; --fg3:#8a8a86; --fg4:#a3a3a0;
+  --acc:#10b981; --acc-bg:#e9f7f1; --dark:#1a1a18; --danger:#e5484d;
+  --warn:#b7791f; --warn-bg:#fdf6e3; --err-bg:#fdecec;
+  --r:14px; --r2:10px; --r3:8px;
+  --sh:0 1px 2px rgba(16,16,16,.04);
+}
+*{box-sizing:border-box}
+svg{width:16px;height:16px;flex:0 0 auto}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+button,input,select,textarea{font-family:inherit}
+a{color:inherit}
+
+.app{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
+
+.side{background:var(--side);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{display:flex;gap:10px;align-items:center;padding:16px 16px 14px}
+.logo{width:34px;height:34px;border-radius:9px;flex:0 0 34px;
+  background:linear-gradient(140deg,#34d399,#0ea5e9);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;
+  box-shadow:0 1px 3px rgba(16,185,129,.28)}
+.brand b{display:block;font-size:14px;letter-spacing:.2px}
+.brand span{display:block;font-size:11px;color:var(--fg3);margin-top:1px}
+nav{padding:6px 8px;overflow:auto;flex:1}
+.ngroup{margin:10px 0 4px;padding:0 8px;font-size:11px;color:var(--fg4);letter-spacing:.4px}
+.nitem{display:flex;gap:9px;align-items:center;padding:7px 9px;border-radius:var(--r3);
+  color:var(--fg2);cursor:pointer;font-size:13px;user-select:none;margin:1px 0}
+.nitem:hover{background:#f1f1ef}
+.nitem.on{background:#ececea;color:var(--fg);font-weight:500}
+.nitem svg{width:16px;height:16px;flex:0 0 16px;opacity:.85}
+.nitem .cnt{margin-left:auto;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.side-foot{border-top:1px solid var(--line);padding:11px 16px;display:flex;gap:7px;
+  align-items:center;font-size:12px;color:var(--fg3)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--acc);flex:0 0 7px}
+.dot.off{background:#d4d4d0}
+
+/* min-width:0：grid 子项默认 min-width:auto，会被内容顶宽（表格一宽整页就横向滚动），
+   显式归零后宽度由网格列决定，宽表交给 .tablewrap 卡内滚动。 */
+.main{padding:26px 40px 64px;width:100%;min-width:0}
+@media(min-width:1600px){.main{padding-left:56px;padding-right:56px}}
+@media(min-width:2200px){.main{padding-left:80px;padding-right:80px}}
+.toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px}
+.ic{width:34px;height:34px;border-radius:var(--r3);border:1px solid var(--line);
+  background:#fff;color:var(--fg2);cursor:pointer;display:flex;align-items:center;
+  justify-content:center;box-shadow:var(--sh)}
+.ic:hover{border-color:#dcdcd8;color:var(--fg)}
+.ic svg{width:16px;height:16px}
+.ic.spin svg{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+h1{font-size:34px;line-height:1.2;font-weight:800;margin:6px 0 10px;letter-spacing:-.6px}
+h2{font-size:16px;font-weight:650;margin:0 0 3px}
+.meta{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--fg3);
+  margin:0 0 24px;flex-wrap:wrap}
+.meta .vbar{width:3px;height:15px;border-radius:2px;background:var(--acc);flex:0 0 3px}
+.sub{font-size:12.5px;color:var(--fg3);margin:2px 0 16px;line-height:1.7}
+
+.card{background:#fff;border:1px solid var(--line);border-radius:var(--r);
+  padding:18px 20px;box-shadow:var(--sh);margin-bottom:16px}
+.card.pad0{padding:14px 20px}
+.card-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:14px}
+.card-head .grow{flex:1}
+.sep{height:1px;background:var(--line2);margin:16px 0}
+
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+@media(max-width:1000px){.grid4,.grid3,.grid2{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.grid4,.grid3,.grid2{grid-template-columns:1fr}
+  .app{grid-template-columns:1fr}.side{position:static;height:auto}.main{padding:20px}}
+
+.stat{background:#fff;border:1px solid var(--line);border-radius:var(--r);
+  padding:15px 17px;box-shadow:var(--sh)}
+.stat .k{font-size:12px;color:var(--fg3);display:flex;align-items:center;gap:6px}
+.stat .v{font-size:29px;font-weight:750;line-height:1.25;margin:4px 0 2px;
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.stat .n{font-size:11.5px;color:var(--fg4)}
+
+.mini{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;cursor:pointer;
+  background:#fff;transition:border-color .12s}
+.mini:hover{border-color:#d8d8d4}
+.mini .t{font-size:13px;font-weight:600}
+.mini .c{font-size:24px;font-weight:700;margin:6px 0 3px;font-variant-numeric:tabular-nums}
+.mini .d{font-size:11.5px;color:var(--fg3);line-height:1.6}
+.bar-track{height:4px;border-radius:3px;background:#f1f1ef;overflow:hidden;margin-top:9px}
+.bar-fill{height:100%;background:var(--acc);border-radius:3px}
+
+button{background:#fff;border:1px solid var(--line);color:var(--fg);
+  border-radius:var(--r3);padding:7px 13px;font-size:13px;cursor:pointer;white-space:nowrap}
+button:hover:not(:disabled):not(.chip){border-color:#d8d8d4;background:#fcfcfb}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.pri{background:var(--dark);border-color:var(--dark);color:#fff;font-weight:500}
+button.pri:hover:not(:disabled){background:#2c2c29;border-color:#2c2c29}
+button.gh{background:#fff}
+button.tiny{padding:4px 9px;font-size:12px}
+
+input,select,textarea{border:1px solid var(--line);border-radius:var(--r3);
+  padding:7px 10px;font-size:13px;color:var(--fg);background:#fff;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#b9b9b4}
+textarea{min-height:104px;resize:vertical;font-family:Consolas,"Cascadia Mono",monospace;
+  font-size:12px;line-height:1.65}
+label.f{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:5px}
+.field{margin-bottom:13px}
+.hint{font-size:11.5px;color:var(--fg4);margin-top:5px;line-height:1.65}
+
+.seg{display:inline-flex;background:#f5f5f3;border:1px solid var(--line);
+  border-radius:10px;padding:3px;gap:2px;margin-bottom:16px}
+.seg button{border:none;background:transparent;padding:6px 14px;border-radius:7px;
+  font-size:13px;color:var(--fg2)}
+.seg button.on{background:#fff;color:var(--fg);font-weight:550;
+  box-shadow:0 1px 2px rgba(16,16,16,.07)}
+.seg button .b{font-size:11px;color:var(--fg4);margin-left:6px}
+
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 13px;
+  font-size:12.5px;color:var(--fg2);cursor:pointer}
+.chip:hover{border-color:#d8d8d4}
+/* .chip.on 要压过上面的全局 button:hover（那条特异性 0,2,1 比 .chip.on 的 0,2,0 高），
+   否则鼠标停在选中的 chip 上时深色底被换成近白底、而 color:#fff 还在 —— 白字白底看不见。 */
+.chip.on,.chip.on:hover{background:var(--dark);border-color:var(--dark);color:#fff}
+
+/* 列多的表放在会横向滚动的容器里：整页不出现横向滚动条，列宽也不被压扁 */
+.tablewrap{overflow-x:auto;margin:0 -2px}
+.tablewrap table{min-width:100%}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line2);
+  vertical-align:middle;font-size:13px}
+th{font-size:11.5px;color:var(--fg3);font-weight:500;padding-top:4px;padding-bottom:8px;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr.dim td{opacity:.55}
+td.num{font-variant-numeric:tabular-nums}
+.mono{font-family:Consolas,"Cascadia Mono",monospace;font-size:12px}
+
+.tag{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:999px;
+  border:1px solid var(--line);color:var(--fg2);white-space:nowrap}
+.tag.ok{color:#0f7a5a;border-color:#cdeade;background:var(--acc-bg)}
+.tag.warn{color:var(--warn);border-color:#f0e2bd;background:var(--warn-bg)}
+.tag.err{color:#c0392b;border-color:#f3d3d4;background:var(--err-bg)}
+.tag.mut{color:var(--fg4)}
+
+.kv{display:grid;grid-template-columns:96px 1fr;gap:9px 14px;font-size:13px}
+.kv>div:nth-child(odd){color:var(--fg3);font-size:12.5px}
+.empty{border:1px dashed #dcdcd8;border-radius:var(--r2);padding:26px 20px;
+  text-align:center;color:var(--fg3);font-size:13px;background:#fdfdfc}
+.clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.note{font-size:12px;color:var(--fg3);line-height:1.85}
+.note b{color:var(--fg2);font-weight:600}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+/* 工具栏里的行内复选框标签：整块占位、绝不换行。
+   flex 子项默认 flex-shrink:1，中文又能逐字断行 —— 不给 nowrap 就会被压成竖排三行。 */
+.inlinechk{display:inline-flex;align-items:center;gap:6px;margin:0;flex:0 0 auto;
+  white-space:nowrap;cursor:pointer;font-size:11.5px;color:var(--fg4);line-height:1.65}
+.inlinechk input{width:14px;height:14px;margin:0;accent-color:var(--acc);cursor:pointer}
+.hidden{display:none}
+.copy{cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.copy svg{width:13px;height:13px;opacity:.5}
+.copy:hover{color:var(--acc)}
+ol.steps{margin:0;padding-left:20px;font-size:13px;color:var(--fg2);line-height:2}
+ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12px}
+
+#toast{position:fixed;right:24px;bottom:22px;z-index:40;display:flex;flex-direction:column;
+  gap:9px;align-items:flex-end}
+.toast{background:#fff;border:1px solid var(--line);border-radius:var(--r2);
+  padding:10px 14px;font-size:13px;box-shadow:0 6px 22px rgba(16,16,16,.10);
+  max-width:440px;line-height:1.65}
+.toast.ok{border-left:3px solid var(--acc)}
+.toast.err{border-left:3px solid var(--danger)}
+.toast.info{border-left:3px solid #9aa0a6}
+.pop{position:absolute;right:40px;top:66px;z-index:30;background:#fff;
+  border:1px solid var(--line);border-radius:var(--r2);padding:14px;width:330px;
+  box-shadow:0 10px 30px rgba(16,16,16,.12)}
+/* 输出白名单：可勾选的模型清单（每行 勾选框 / 客户端看到的模型名 / 上游名 / 标位） */
+.mlist{border:1px solid var(--line2);border-radius:var(--r2);max-height:470px;overflow:auto}
+/* 第二列按实测最长 id（205px）定，留 11px 余量：原来 minmax(150px,300px) 在空间充足时
+   一律取上限 300px，正文只用到 205px，右边就空出一大块。
+   min-height + align-items:center 让带费率标签的行与不带的行等高（原来 41 / 36 参差）。 */
+.mrow{display:grid;grid-template-columns:18px minmax(150px,216px) minmax(0,1fr) auto;align-items:center;
+  min-height:41px;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12.5px;cursor:pointer}
+.mrow:last-child{border-bottom:0}
+.mrow:hover{background:#fafaf8}
+.mrow.off{opacity:.5}
+/* 未授权：上游目录里有、号池里没有任何号有额度跑它。看得见、能勾，但默认收起。 */
+.mrow.unent{opacity:.62}
+.mlist.hideunent .mrow.unent{display:none}
+.mrow input{width:15px;height:15px;margin:0;accent-color:var(--acc);cursor:pointer}
+.mrow .mid{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .mname{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .mbits{display:flex;gap:5px;justify-content:flex-end}
+/* 输出白名单的 producer 分组表头（workbuddy / zcode 各一段） */
+.mgroup{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:7px 13px;background:#fafaf8;border-bottom:1px solid var(--line2);
+  font-size:12px;color:var(--fg2);position:sticky;top:0;z-index:1}
+@media(max-width:860px){.mrow{grid-template-columns:18px minmax(0,1fr) auto}.mrow .mname{display:none}}
+/* 多出口：每个出口一块；「服务来源」用圆角标签勾选 */
+.chan{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;margin-bottom:12px}
+.chan-head{display:flex;gap:10px;align-items:center;margin-bottom:11px}
+.chan-head input{font-weight:600}
+.chan-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.chan-grid .field{margin-bottom:0}
+@media(max-width:1000px){.chan-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.chan-grid{grid-template-columns:1fr}}
+.ptog{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;
+  padding:3px 10px;font-size:11.5px;color:var(--fg2);cursor:pointer;background:#fff}
+.ptog input{width:13px;height:13px;margin:0;accent-color:var(--acc);cursor:pointer}
+.ptog.on{border-color:#cdeade;background:var(--acc-bg);color:#0f7a5a}
+.chan-url{font-size:12px;color:var(--fg3);margin-top:11px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+/* 出口的共享字段收进折叠区：默认只看「端口 + 服务来源」，要覆盖主口参数时才展开。 */
+.chan-adv{margin-top:11px;border-top:1px dashed var(--line2);padding-top:9px}
+.chan-adv>summary{cursor:pointer;font-size:12px;color:var(--fg2);list-style:none;display:flex;gap:8px;align-items:center}
+.chan-adv>summary::-webkit-details-marker{display:none}
+.chan-adv>summary::before{content:"\25B8";color:var(--fg3);font-size:10px}
+.chan-adv[open]>summary::before{content:"\25BE"}
+.chan-adv .chan-grid{margin-top:10px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">Wb</div>
+      <div><b>Free2API</b><span>WorkBuddy 网关控制台</span></div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <span class="dot" id="svcDot"></span>
+      <span id="svcText">连接中…</span>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="toolbar">
+      <button class="ic" id="btnKey" title="设置网关密钥"></button>
+      <button class="ic" id="btnRefresh" title="刷新"></button>
+    </div>
+    <div id="keyPop" class="pop hidden">
+      <h2 style="font-size:14px">网关密钥（api_key）</h2>
+      <div class="sub" style="margin:6px 0 10px">
+        只在网关配了 <span class="mono">api_key</span> 时才需要填。默认不配：本机直连免密钥。
+      </div>
+      <input id="keyInput" type="password" placeholder="留空 = 不使用密钥">
+      <div class="row" style="margin-top:10px">
+        <button class="pri tiny" id="btnKeySave">保存并刷新</button>
+        <button class="tiny" id="btnKeyClose">关闭</button>
+      </div>
+    </div>
+    <div id="view"></div>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ---------- 基础工具 ---------- */
+const $  = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const ICON = {
+  grid: "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z",
+  inbox: "M3 13l3-8h12l3 8v6H3zM3 13h5l1.5 2.5h5L16 13h5",
+  layers: "M12 3l9 5-9 5-9-5zM3 13.5l9 5 9-5",
+  plug: "M9 3v4M15 3v4M6 7h12v3a6 6 0 11-6 6 6 6 0 11-6-6zM12 19v1.5",
+  help: "M12 21a9 9 0 100-18 9 9 0 000 18zM9.6 9.3a2.5 2.5 0 114.4 1.6c-.8.9-2 1.2-2 2.6M12 17h.01",
+  refresh: "M21 12a9 9 0 11-2.6-6.4M21 3v6h-6",
+  key: "M7 11V8a5 5 0 0110 0v3M5 11h14v9H5zM12 15v2",
+  copy: "M9 9h10v11H9zM5 15V4h10"
+};
+function svg(k, cls){
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+    'stroke-linecap="round" stroke-linejoin="round"' + (cls ? ' class="' + cls + '"' : '') +
+    '><path d="' + ICON[k] + '"/></svg>';
+}
+function esc(s){
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; });
+}
+function fmtTime(t){
+  var n = Number(t) || 0; if (!n) return "—";
+  if (n > 1e12) n = Math.floor(n / 1000);
+  var d = new Date(n * 1000);
+  var p = function(x){ return (x < 10 ? "0" : "") + x; };
+  return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function futureTime(t){
+  if (!t) return false;
+  var d = new Date(t);
+  if (isNaN(d.getTime())) return false;
+  return d.getTime() > Date.now() + 1000;
+}
+function durNum(s){
+  s = Number(s) || 0;
+  if (s <= 0) return "—";
+  if (s < 60) return s + " 秒";
+  if (s < 3600) return Math.round(s / 60) + " 分钟";
+  return (s / 3600).toFixed(1) + " 小时";
+}
+function toast(kind, text, ms){
+  var box = $("#toast"), el = document.createElement("div");
+  el.className = "toast " + kind; el.textContent = text;
+  box.appendChild(el);
+  setTimeout(function(){
+    el.style.transition = "opacity .3s"; el.style.opacity = "0";
+    setTimeout(function(){ el.remove(); }, 320);
+  }, ms || 3600);
+}
+function ApiErr(m){ this.message = m; }
+ApiErr.prototype = Object.create(Error.prototype);
+async function api(path, opt){
+  var o = Object.assign({}, opt || {});
+  o.headers = Object.assign({ "Accept": "application/json" }, o.headers || {});
+  if (o.body && typeof o.body !== "string"){ o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(o.body); }
+  if (S.apiKey) o.headers["Authorization"] = "Bearer " + S.apiKey;
+  var r;
+  try { r = await fetch(path, o); }
+  catch (e) { throw new ApiErr("连不上网关（" + e.message + "）"); }
+  var raw = await r.text(), j = null;
+  try { j = raw ? JSON.parse(raw) : null; } catch (e) {}
+  if (!r.ok){
+    var m = (j && ((j.error && j.error.message) || j.message)) || ("HTTP " + r.status);
+    if (r.status === 401) throw new ApiErr("401 未授权：本网关配了 api_key。点右上角钥匙图标填入密钥后重试。");
+    if (r.status === 404) throw new ApiErr("404 未找到：" + m + "（管理端点要求 config.json 里 admin.enabled=true）");
+    throw new ApiErr(m);
+  }
+  return j;
+}
+
+/* ---------- 全局状态 ---------- */
+const METHOD_ORDER = ["app", "switch", "file"];
+const METHOD_FALLBACK = { app: "应用内登录态", switch: "switch 账本", file: "导入文件" };
+const S = {
+  tab: "overview",
+  apiKey: localStorage.getItem("wb_key") || "",
+  health: null, status: null, src: null, origins: null, out: null, models: null,
+  srcTab: "app", cand: null, candKind: "", candNote: "",
+  candProbe: false, candBalance: false,
+  poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
+  modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, realmScoped: true, showUnent: false,
+  credits: null, creditsBusy: false, creditsPolls: 0
+};
+const NAV = [
+  { group: "运行", items: [ { id: "overview", name: "概览", ico: "grid" } ] },
+  { group: "接入", items: [
+    { id: "sources", name: "获取源", ico: "inbox", badge: "src" },
+    { id: "pool", name: "账号池", ico: "layers", badge: "pool" },
+    { id: "output", name: "输出 API", ico: "plug", badge: "models" } ] },
+  { group: "帮助", items: [ { id: "help", name: "怎么用", ico: "help" } ] }
+];
+function methodLabel(m){
+  if (S.src && S.src.method_labels && S.src.method_labels[m]) return S.src.method_labels[m];
+  return METHOD_FALLBACK[m] || m || "未标注";
+}
+function originOf(uid){
+  return (S.origins && S.origins.origins && S.origins.origins[uid]) || null;
+}
+function methodTag(uid){
+  var o = originOf(uid);
+  if (!o || !o.method) return '<span class="tag mut">未标注</span>';
+  var cls = o.method === "app" ? "ok" : (o.method === "switch" ? "warn" : "");
+  var t = methodLabel(o.method);
+  var title = o.detail ? ' title="' + esc(o.detail) + '"' : "";
+  return '<span class="tag ' + cls + '"' + title + '>' + esc(t) + '</span>';
+}
+/* 生产者（AI 客户端）：workbuddy / zcode / qoder … 由账号来源台账标注。
+   显示名优先用 /status 的 producer_totals[].name（后端定死枚举），取不到再回落本地表。 */
+const PRODUCER_FALLBACK = { workbuddy: "WorkBuddy", zcode: "ZCode", qoder: "Qoder" };
+function producerName(p){
+  var list = (S.status && S.status.producer_totals) || [];
+  for (var i = 0; i < list.length; i++){ if ((list[i].producer || "") === (p || "")) return list[i].name || PRODUCER_FALLBACK[p] || p || "未标注"; }
+  return PRODUCER_FALLBACK[p] || p || "未标注";
+}
+function producerTag(a){
+  var p = a.producer || "";
+  var sv = ((S.status && S.status.producer_totals) || []).filter(function(x){ return (x.producer || "") === p; })[0];
+  var cls = sv ? (sv.servable ? "ok" : "warn") : (p === "" || p === "workbuddy" ? "ok" : "warn");
+  var title = sv && !sv.servable ? ' title="该客户端尚未接入上游反代，账号只入池不承接流量"' : "";
+  return '<span class="tag ' + cls + '"' + title + '>' + esc(producerName(p)) + '</span>';
+}
+/* producerRealms 某客户端内部的域分布：workbuddy 底下还分 CN 版（codebuddy.cn）
+   与国际版 wba（workbuddy.ai）。只从 /status 的账号清单现算，后端无需再加字段。 */
+var REALM_ORDER = ["cn", "global"];
+var REALM_LABEL = { cn: "CN 版", global: "国际版 wba" };
+function producerRealms(p){
+  var acc = (S.status && S.status.accounts) || [];
+  var cnt = {};
+  for (var i = 0; i < acc.length; i++){
+    if ((acc[i].producer || "none") !== (p || "none")) continue;
+    var r = acc[i].realm || "cn";
+    cnt[r] = (cnt[r] || 0) + 1;
+  }
+  return REALM_ORDER.filter(function(r){ return cnt[r]; }).map(function(r){ return { id: r, n: cnt[r] }; });
+}
+function copySpan(text, label){
+  return '<span class="mono copy" data-copy="' + esc(text) + '">' + esc(label || text) + ' ' + svg("copy") + '</span>';
+}
+function badgeOf(key){
+  if (key === "src"){ var n = ((S.src && S.src.kinds) || []).filter(function(k){ return k.available; }).length; return n ? String(n) : ""; }
+  if (key === "pool"){ return S.status ? (S.status.healthy + "/" + S.status.total) : ""; }
+  if (key === "models"){ return S.models ? String(S.models.length) : ""; }
+  return "";
+}
+function renderNav(){
+  $("#nav").innerHTML = NAV.map(function(g){
+    return '<div class="ngroup">' + esc(g.group) + '</div>' + g.items.map(function(it){
+      var b = badgeOf(it.badge);
+      return '<div class="nitem' + (S.tab === it.id ? " on" : "") + '" data-goto="' + it.id + '">' +
+        svg(it.ico) + '<span>' + esc(it.name) + '</span>' + (b ? '<span class="cnt">' + esc(b) + '</span>' : "") +
+        '</div>';
+    }).join("");
+  }).join("");
+}
+function go(tab, opt){
+  S.tab = tab;
+  if (tab === "pool" && !S.credits) loadCredits(false);
+  if (opt && opt.srcTab) S.srcTab = opt.srcTab;
+  if (tab !== "sources"){ S.cand = null; }
+  if (tab !== "output"){ S.chanDraft = null; }
+  S.checked = {};
+  render(); window.scrollTo(0, 0);
+}
+function render(){
+  // 输出页上可能有没保存的出口编辑（输入框 + 勾选）：先把 DOM 里的现值收进草稿再整页重画。
+  // 否则后台 15s 一次的健康轮询一 render，用户敲了一半的端口/勾选就被服务端旧值顶掉。
+  if (S.tab === "output") captureChanDraft();
+  // 后台轮询也会走到这里（30s 状态 / 3s 余额）：innerHTML 整页重画会把滚动位置清零，
+  // 用户正勾着发布清单就被拽回列表顶部（cn:auto 那一行）。先把两处滚动位置记下来，
+  // 画完原样放回去——重画不该动用户的视野。
+  var keepListTop = 0, l0 = $("#mList");
+  if (l0) keepListTop = l0.scrollTop;
+  var keepPageTop = window.scrollY || window.pageYOffset || 0;
+  var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, help: viewHelp }[S.tab] || viewOverview;
+  $("#view").innerHTML = fn();
+  // 折叠区摘要与发布清单计数从刚画出来的 DOM 现算，保证跟勾选状态一致。
+  if (S.tab === "output") $$("[data-chan-row]").forEach(function(x){ updChanRow(x.getAttribute("data-chan-row")); });
+  renderNav();
+  var l1 = $("#mList");
+  if (l1 && keepListTop > 0) l1.scrollTop = keepListTop;
+  if (keepPageTop > 0) window.scrollTo(0, keepPageTop);
+  updateSvcDot();
+}
+/* updateSvcDot 只刷页脚那个服务状态点。健康轮询用它就够了（见 loadHealth），
+   不必为了一行文字重画整页——重画会顺带把滚动位置、输入焦点都清掉。 */
+function updateSvcDot(){
+  var dot = $("#svcDot"), t = $("#svcText");
+  if (!dot || !t) return;
+  if (S.health){
+    dot.classList.toggle("off", !S.health.healthy);
+    t.textContent = S.health.healthy ? ("网关正常 · " + S.health.healthy + "/" + S.health.total + " 可用") : "网关在线 · 无可用账号";
+  } else { dot.classList.add("off"); t.textContent = "未连接"; }
+}
+function head(title, sub){
+  return '<h1>' + esc(title) + '</h1><div class="meta"><span class="vbar"></span><span>' + esc(sub) + '</span></div>';
+}
+function card(title, sub, body, extra){
+  return '<div class="card"><div class="card-head"><div class="grow"><h2>' + esc(title) + '</h2>' +
+    (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") + '</div>' + (extra || "") + '</div>' + body + '</div>';
+}
+function kv(pairs){
+  return '<div class="kv">' + pairs.map(function(p){
+    return '<div>' + esc(p[0]) + '</div><div>' + (p[2] ? p[1] : esc(p[1])) + '</div>';
+  }).join("") + '</div>';
+}
+/* ---------- 概览 ---------- */
+function viewOverview(){
+  var st = S.status, m = S.models || [];
+  var total = st ? st.total : 0, healthy = st ? st.healthy : 0;
+  var cooling = st ? st.cooling : 0, disabled = st ? st.disabled : 0;
+  var title = "正在连接网关…", sub = "正在读取账号池与来源信息。";
+  if (st){
+    if (total === 0){ title = "还没有账号"; sub = "从「获取源」把本机登录态、switch 账本或别的机器导出的文件加进来，网关才有号可用。"; }
+    else if (healthy === 0){ title = "账号全部不可用"; sub = "池里有 " + total + " 个账号，但当前没有一个能接请求：全部在冷却 / 熔断 / 已禁用。"; }
+    else { title = "网关运行中"; sub = "有 " + healthy + " 个账号可立即承接请求，共 " + total + " 个。"; }
+  }
+  var base = location.origin || "";
+  var oc = (S.src && S.src.origin_counts) || {};
+  var annotated = METHOD_ORDER.reduce(function(a, k){ return a + (oc[k] || 0); }, 0);
+  var stats = [
+    { k: "账号总数", v: total, n: "来源已标注 " + annotated + " 个" },
+    { k: "可用账号", v: healthy, n: healthy ? "可立即请求" : "先导入账号" },
+    { k: "冷却 / 禁用", v: cooling + disabled, n: "冷却 " + cooling + " · 禁用 " + disabled },
+    { k: "输出模型", v: m.length, n: m.length ? "GET /v1/models" : "需要健康账号" }
+  ];
+  var html = head(title, sub);
+  html += '<div class="grid4">' + stats.map(function(s){
+    return '<div class="stat"><div class="k">' + esc(s.k) + '</div><div class="v">' + esc(s.v) +
+      '</div><div class="n">' + esc(s.n) + '</div></div>';
+  }).join("") + '</div>';
+  var miniDesc = {
+    app: "探查本机 AI 工具自己存的那一份登录态",
+    switch: "读 wb-switch / zcode-switch 账本里聚合好的多个账号",
+    file: "导入别的机器导出的 JSON 快照，导入时选归属"
+  };
+  html += card("三种获取来源",
+    "每种来源进来的账号都会记在来源台账里；换机器时 auths 目录连同台账一起拷走，归类不会丢。",
+    '<div class="grid3">' + METHOD_ORDER.map(function(k){
+      var c = oc[k] || 0;
+      var pct = total ? Math.round(c * 100 / total) : 0;
+      return '<div class="mini" data-goto="sources" data-srctab="' + k + '">' +
+        '<div class="t">' + esc(methodLabel(k)) + '</div>' +
+        '<div class="c">' + c + '<span style="font-size:12px;font-weight:400;color:var(--fg3)"> 个账号</span></div>' +
+        '<div class="d">' + esc(miniDesc[k]) + '</div>' +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="hint" style="margin-top:6px">占池子 ' + pct + '%</div></div>';
+    }).join("") + '</div>');
+  var pt = (st && st.producer_totals) || [];
+  if (pt.length){
+    html += card("按客户端（AI 工具）",
+      "每个账号归属哪个客户端由来源台账记着（auths/.origins.json），整体迁移时跟着走。只有已接入上游反代的客户端会承接对话流量。",
+      '<div class="grid3">' + pt.map(function(x){
+        var nm = x.name || producerName(x.producer);
+        var usable = x.servable;
+        var realms = producerRealms(x.producer);
+        var realmRow = realms.length > 1 ? '<div class="chips" style="margin:9px 0 9px;gap:6px">' +
+          realms.map(function(r){
+            return '<span class="chip" style="padding:2px 10px;font-size:11px;cursor:pointer" data-goto="pool" data-pclient="' + esc(x.producer || "none") + '" data-prealm="' + esc(r.id) + '">' +
+              esc(REALM_LABEL[r.id] || r.id) + ' <span style="opacity:.6">' + r.n + '</span></span>';
+          }).join("") + '</div>' : "";
+        return '<div class="mini" data-goto="pool" data-pclient="' + esc(x.producer || "none") + '">' +
+          '<div class="t">' + esc(nm) + ' ' + (usable ? '<span class="tag ok">承接流量</span>' : '<span class="tag warn">只可查看</span>') + '</div>' +
+          '<div class="c">' + x.total + '<span style="font-size:12px;font-weight:400;color:var(--fg3)"> 个账号</span></div>' +
+          realmRow +
+          '<div class="d">' + (usable ? "已接入上游反代：模型与额度按账号自身携带的目录取" : "上游反代还未接入：账号能进池、能看余额，但不参与选号") + '</div>' +
+          '<div class="hint" style="margin-top:6px">可用 ' + x.healthy + ' / ' + x.total + '</div></div>';
+      }).join("") + '</div>');
+  }
+  var steps;
+  if (total === 0) steps = [
+    "打开「获取源」，先看「应用内登录态」能不能直接读（只有明文 json 才读得动）",
+    "读不出来就走「switch 账本」：选中 WorkBuddy 账本，点「全部导入」",
+    "拿到别的机器导出的文件，在「导入文件」里选好归属来源后粘进来",
+    "回「账号池」确认账号已就位，再去「输出 API」挑格式、写端口"
+  ];
+  else if (healthy === 0) steps = [
+    "打开「账号池」，看每个账号的冷却原因与到期时间",
+    "被系统判定坏的号点「复活」；你自己手动摘掉的号点「启用」",
+    "余额不足这类硬冷却是等签到恢复，急用就先去「获取源」补别的来源"
+  ];
+  else steps = [
+    "在「输出 API」挑输出格式、写监听端口，可选地设模型前缀和费率后缀",
+    "把 Base URL 和密钥填进要用的 AI 客户端（Codex / ZCode / Cherry Studio 都行）",
+    "在客户端里拉一次模型列表，确认模型名带着你设的前缀"
+  ];
+  html += card("下一步", "", '<ol class="steps">' + steps.map(function(s){ return '<li>' + s + '</li>'; }).join("") + '</ol>');
+  html += card("接入信息", "把这两项填进任意 OpenAI 兼容客户端即可。",
+    kv([
+      ["Base URL", copySpan(base + "/v1"), true],
+      ["网关密钥", S.apiKey ? (S.apiKey) : "未设置（默认本机直连免密钥）"],
+      ["模型列表", copySpan(base + "/v1/models"), true]
+    ]));
+  return html;
+}
+
+/* ---------- 获取源 ---------- */
+function viewSources(){
+  var d = S.src;
+  if (!d) return head("获取源", "正在读取本机可用的来源…");
+  var counts = d.origin_counts || {};
+  var seg = METHOD_ORDER.map(function(m){
+    return '<button data-srctab="' + m + '" class="' + (S.srcTab === m ? "on" : "") + '">' +
+      esc(methodLabel(m)) + '<span class="b">' + (counts[m] || 0) + '</span></button>';
+  }).join("");
+  var panel;
+  if (S.cand) panel = panelCandidates();
+  else if (S.srcTab === "app") panel = panelApp(d);
+  else if (S.srcTab === "switch") panel = panelSwitch(d);
+  else panel = panelFile(d);
+  return head("获取源", "三种来源都从本机真实路径读：应用内登录态只探查、switch 账本直接读、外部文件由你指定归属。") +
+    '<div class="seg">' + seg + '</div>' + panel;
+}
+function kindTag(k){
+  var map = {
+    "plain-json": ["ok", "明文可读"],
+    "enc-json": ["warn", "字段加密"],
+    "leveldb": ["mut", "leveldb"],
+    "sqlite": ["mut", "SQLite"],
+    "none": ["mut", "不存在"],
+    "unknown": ["mut", "未识别"]
+  };
+  var v = map[k] || ["mut", k || "未知"];
+  return '<span class="tag ' + v[0] + '">' + esc(v[1]) + '</span>';
+}
+function panelApp(d){
+  var probes = d.probes || [];
+  var rows = probes.map(function(p){
+    return '<tr class="' + (p.exists ? "" : "dim") + '">' +
+      '<td><b>' + esc(p.name) + '</b><div class="hint" style="margin:2px 0 0">' + esc(p.producer) + '</div></td>' +
+      '<td class="mono" style="word-break:break-all">' + esc(p.path) + '</td>' +
+      '<td>' + kindTag(p.kind) + '</td>' +
+      '<td class="num">' + (p.readable ? p.accounts : "—") + '</td>' +
+      '<td style="color:var(--fg3);font-size:12px">' + esc(p.note) + '</td></tr>';
+  }).join("");
+  var kind = (d.kinds || []).filter(function(k){ return k.id === "app"; })[0] || {};
+  return card("应用内登录态探查", esc(kind.note || ""),
+    '<table><thead><tr><th style="width:200px">工具</th><th>路径</th><th style="width:92px">形态</th>' +
+    '<th class="num" style="width:56px">账号</th><th style="width:36%">结论</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="5"><div class="empty">没有探查结果</div></td></tr>') + '</tbody></table>' +
+    '<div class="hint">这一路是「只读探查，不猜解析」：加密字段（enc:v1）、Electron leveldb、SQLite 三种形态明确标出读不了——' +
+    '拿错凭证去打上游会直接触发风控。<br>' +
+    '这些工具自己的号取不到时，正经办法是装一个 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>');
+}
+// kcountLabel 源卡片的计数文案：源里的「存档数」与「真正能进号池的可用数」不是一回事
+// （zswitch 会多出只有计划 JWT 的号）。两个数不等时一起给出，别让用户拿左侧存档数去对
+// 号池数量、以为丢了号。
+function kcountLabel(k){
+  var n = k.count || 0, u = k.usable || 0;
+  if (u > 0 && u < n) return n + " 存档 · " + u + " 可取用";
+  return n + " 个";
+}
+function panelSwitch(d){
+  var kinds = (d.kinds || []).filter(function(k){ return k.method === "switch" || k.id === "auths"; });
+  var boxes = kinds.map(function(k){
+    var btn = "";
+    if (k.id === "wb-switch"){
+      btn = '<button class="pri tiny" data-action="cands" data-kind="wb-switch"' + (k.available ? "" : " disabled") + '>看候选</button> ' +
+        '<button class="tiny" data-action="quick" data-kind="wb-switch"' + (k.available ? "" : " disabled") + '>全部导入</button>';
+    } else if (k.id === "zcode-switch"){
+      // zcode 与 workbuddy 一样可取用：先看候选（能看模型/探活/额度），再逐条或整批导入。
+      btn = '<button class="pri tiny" data-action="cands" data-kind="zcode-switch"' + (k.available ? "" : " disabled") + '>看候选</button> ' +
+        '<button class="tiny" data-action="quick" data-kind="zcode-switch"' + (k.available ? "" : " disabled") + '>全部导入</button>';
+    }
+    return '<div class="mini" style="cursor:default">' +
+      '<div class="row"><div class="grow"><div class="t">' + esc(k.name) + '</div>' +
+      '<div class="hint mono" style="margin-top:3px;word-break:break-all">' + esc(k.path || "（无路径）") + '</div></div>' +
+      '<span class="tag ' + (k.available ? "ok" : "mut") + '">' + (k.available ? kcountLabel(k) : "不可用") + '</span>' +
+      btn + '</div><div class="d" style="margin-top:8px">' + esc(k.note || "") + '</div></div>';
+  }).join("");
+  return card("switch 账本", "账本工具已经帮你聚合好多个账号，读它比逐个去啃工具本体稳。",
+    '<div class="grid2">' + (boxes || '<div class="empty">没有发现账本</div>') + '</div>' +
+    '<div class="sep"></div><h2 style="font-size:14px;margin-bottom:8px">目录</h2>' +
+    kv([
+      ["号池目录", copySpan(d.auth_dir), true],
+      ["来源台账", copySpan(d.origin_path || "（未生成）"), true]
+    ]) +
+    '<div class="hint">号池目录加一个来源台账文件就是全部状态：整体拷到另一台机器，来源归类一起走。</div>');
+}
+function panelFile(d){
+  var opts = METHOD_ORDER.map(function(m){
+    return '<option value="' + m + '"' + (m === "file" ? " selected" : "") + '>' + esc(methodLabel(m)) + '</option>';
+  }).join("");
+  var body =
+    '<div class="grid2">' +
+      '<div class="field"><label class="f">这批账号的归属来源</label><select id="impMethod">' + opts + '</select>' +
+        '<div class="hint">默认「导入文件」。如果这份 JSON 本来就是 switch 账本的备份，就选 switch 账本，台账里才分得清。</div></div>' +
+      '<div class="field"><label class="f">备注（可选，便于事后对账）</label>' +
+        '<input id="impDetail" placeholder="例如：笔记本导出的 wb 账本 2026-09-26">' +
+        '<div class="hint">会记进来源台账，鼠标悬停「账号池」里的来源标签就能看到。</div></div>' +
+    '</div>' +
+    '<div class="field"><label class="f">账号 JSON（数组或对象都行）</label>' +
+      '<textarea id="pasteBox" placeholder="粘贴 wb-switch 条目 / auth 扁平形 / 插件 OAuth 嵌套形，三种形状都认"></textarea>' +
+      '<div class="hint">解析逻辑与后端同一套。导入前不写任何文件，导入成功才落盘并热加载号池。</div></div>' +
+    '<div class="row"><button class="pri" data-action="import-paste">导入到号池</button>' +
+      '<button data-action="pick-file">选本地文件</button>' +
+      '<input type="file" id="filePick" accept=".json,.txt" class="hidden">' +
+      '<span class="hint" style="margin:0">一条都没命中会原样报错，不会静默成功。</span></div>';
+  return card("导入文件", "别的机器导出的快照、手工整理的清单，都从这里进来。", body);
+}
+function panelCandidates(){
+  var c = S.cand || [];
+  if (S.candKind === "zcode-switch") return panelZCandidates(c);
+  var rows = c.map(function(x){
+    var dim = x.imported ? "dim" : "";
+    var first;
+    if (x.imported) first = '<span class="tag mut">已导入</span>';
+    else first = '<input type="checkbox" data-cand="' + esc(x.id) + '"' + (S.checked[x.id] ? " checked" : "") + ' style="width:auto">';
+    var state = (x.expired ? '<span class="tag err">已过期</span>' : '<span class="tag ok">有效</span>') +
+      (x.has_refresh ? ' <span class="tag">可刷新</span>' : "");
+    return '<tr class="' + dim + '"><td style="width:56px">' + first + '</td>' +
+      '<td><b>' + esc(x.label || x.id) + '</b>' + (x.realm ? ' <span class="tag">' + esc(x.realm) + '</span>' : "") +
+        (x.detail ? '<div class="hint" style="margin:2px 0 0">' + esc(x.detail) + '</div>' : "") + '</td>' +
+      '<td class="num">' + esc(fmtTime(x.expires_at)) + '</td>' +
+      '<td>' + state + '</td></tr>';
+  }).join("");
+  var n = checkedIDs().length;
+  var bar = '<div class="row" style="margin-bottom:10px">' +
+    '<button class="tiny" data-action="cand-all">全选未导入</button>' +
+    '<button class="tiny" data-action="cand-none">全不选</button>' +
+    '<button class="pri tiny" data-action="cand-import"' + (n ? "" : " disabled") + '>导入选中的 ' + n + ' 个</button>' +
+    '<span class="grow"></span>' +
+    '<button class="tiny" data-action="cand-close">收起候选</button></div>';
+  return card("候选账号 · " + S.candKind, esc(S.candNote || ""),
+    bar + '<table><thead><tr><th></th><th>账号</th><th style="width:110px">到期</th><th style="width:150px">状态</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="4"><div class="empty">没有候选</div></td></tr>') + '</tbody></table>');
+}
+
+/* ---------- zcode 候选（这个账号当前能用什么、还剩多少，都在这里看） ---------- */
+/* 与 workbuddy 候选的区别：zcode 的凭据不同构、上游不同，所以这张表多三列
+   「可用模型 / 探活 / 额度」。探活与读额度都是**按需**触发（每号一次外网往返），
+   不在打开页面时静默发生，也不做任何自动轮询。
+   注意「可用模型」的判据是套餐/额度的 capabilities，不是 /models 能列出什么：
+   周末活动的号 /models 能列 11 个，但只有 glm-5.3-flash 走额度覆盖。 */
+var ZCODE_PROBE_VIEW = {
+  ok:          { cls: "ok",   txt: "可用" },
+  no_balance:  { cls: "warn", txt: "无额度" },
+  bad_key:     { cls: "err",  txt: "凭据失效" },
+  unreachable: { cls: "mut",  txt: "连不上" },
+  error:       { cls: "err",  txt: "探活出错" }
+};
+function zcodeProbeTag(pr){
+  if (!pr) return '<span class="tag mut">未探</span>';
+  var v = ZCODE_PROBE_VIEW[pr.status] || { cls: "mut", txt: (pr.status || "未知") };
+  var t = pr.msg || "";
+  var bits = '<span class="tag ' + v.cls + '">' + esc(v.txt) + '</span>' +
+    (pr.http ? ' <span class="tag mut">' + esc(String(pr.http)) + '</span>' : "");
+  if (!t) return bits;
+  var short = t.length > 42 ? t.slice(0, 42) + "…" : t;
+  return '<span title="' + esc(t) + '">' + bits + '</span>' +
+    '<div class="hint" style="margin:2px 0 0">' + esc(short) + '</div>';
+}
+function zcodeModelsCell(x){
+  var ent  = (x.entitled_models && x.entitled_models.length) ? x.entitled_models : null;
+  var live = (x.live_models && x.live_models.length) ? x.live_models : null;
+  var snap = (x.model_ids && x.model_ids.length) ? x.model_ids : null;
+
+  // 读过户/额度的号：以套餐覆盖为准（这才是上游真正放行的模型）。
+  if (ent){
+    var chips = ent.map(function(id){
+      return '<span class="chip" style="cursor:default;padding:4px 11px;font-size:12px">' + esc(id) + '</span>';
+    }).join("");
+    var listable = (live || snap || []).length;
+    var extra = listable > ent.length
+      ? '<div class="hint" style="margin:6px 0 0">凭据另可列出 ' + listable + ' 个，但不在套餐覆盖内（调用会被上游拒）</div>'
+      : "";
+    return '<span class="tag ok">套餐覆盖</span> <b>' + ent.length + '</b> 个' +
+      (x.plan_summary ? '<div class="hint" style="margin:3px 0 0">' + esc(x.plan_summary) + '</div>' : "") +
+      '<div class="chips" style="margin:6px 0 0">' + chips + '</div>' + extra;
+  }
+
+  // 额度读了但没有任何权益（capabilities 为空）：说明上游没给这个号可用范围，
+  // 别再说「未读额度」，那是两回事。
+  if (x.quota){
+    var ids0 = live || snap || [];
+    return '<span class="tag warn">上游未给可用范围</span>' +
+      (ids0.length ? '<div class="hint" style="margin:4px 0 0">凭据能列出 ' + ids0.length + ' 个，但套餐没说明覆盖哪些，调用能否通过要试</div>' : "") +
+      '<div class="hint" style="margin:4px 0 0">额度已读：上游未返回任何权益条目</div>';
+  }
+
+  // 还没读额度：只能退到「凭据能列出什么」，明确标注这是弱证据。
+  var ids = live || snap || [];
+  if (!ids.length){
+    return x.usable
+      ? '<span class="hint" style="margin:0">未读额度，点「读全部额度」才准</span>'
+      : '<span class="hint" style="margin:0">—</span>';
+  }
+  var show = ids.slice(0, 3).join(" · ") + (ids.length > 3 ? " …" : "");
+  return '<b>' + ids.length + '</b> 个' +
+    (live ? ' <span class="tag">实时列出</span>' : ' <span class="tag mut">账号快照</span>') +
+    '<div class="hint mono" style="margin:2px 0 0;word-break:break-all">' + esc(show) + '</div>' +
+    '<div class="hint" style="margin:3px 0 0">未读额度：这只是凭据能列出的，不保证套餐覆盖</div>';
+}
+function zcodeQuotaCell(x){
+  if (x.quota_error) {
+    return '<span class="tag err">读失败</span><div class="hint" style="margin:2px 0 0">' +
+      esc(String(x.quota_error).slice(0, 42)) + '</div>';
+  }
+  var q = x.quota;
+  if (!q) return '<span class="tag mut">未读</span>';
+  var bs = q.balances || [];
+  if (!bs.length) return '<span class="tag mut">上游未返回额度</span>';
+  return bs.slice(0, 3).map(function(b){
+    var nm = b.show_name || (b.entitlement && b.entitlement.name) || "额度";
+    var tot = b.total_units || 0, used = b.used_units || 0;
+    var left = (b.remaining_units === undefined || b.remaining_units === null)
+      ? Math.max(tot - used, 0) : b.remaining_units;
+    return '<div style="margin-bottom:3px"><b>' + esc(nm) + '</b> <span class="mono">剩 ' + esc(String(left)) + '</span>' +
+      '<div class="hint" style="margin:1px 0 0">发放 ' + esc(String(tot)) + ' · 已用 ' + esc(String(used)) +
+      (b.expires_at ? ' · 到期 ' + esc(fmtTime(b.expires_at)) : "") + '</div></div>';
+  }).join("");
+}
+function panelZCandidates(c){
+  var rows = c.map(function(x){
+    var dim = x.imported ? "dim" : "";
+    var first = x.imported ? '<span class="tag mut">已导入</span>'
+      : '<input type="checkbox" data-cand="' + esc(x.id) + '"' + (S.checked[x.id] ? " checked" : "") + ' style="width:auto">';
+    var bits = [];
+    if (x.api_key_hint) bits.push("key " + x.api_key_hint);
+    if (x.upstream) bits.push(x.upstream);
+    return '<tr class="' + dim + '"><td style="width:56px">' + first + '</td>' +
+      '<td><b>' + esc(x.label || x.id) + '</b>' +
+        (x.provider ? ' <span class="tag mut">' + esc(x.provider) + '</span>' : "") +
+        (bits.length ? '<div class="hint mono" style="margin:2px 0 0;word-break:break-all">' + esc(bits.join(" · ")) + '</div>' : "") +
+        (x.detail ? '<div class="hint" style="margin:2px 0 0">' + esc(x.detail) + '</div>' : "") + '</td>' +
+      '<td style="min-width:150px">' + zcodeModelsCell(x) + '</td>' +
+      '<td style="width:120px">' + (x.usable ? zcodeProbeTag(x.probe) : '<span class="tag mut">无可用凭据</span>') + '</td>' +
+      '<td style="width:220px">' + zcodeQuotaCell(x) + '</td></tr>';
+  }).join("");
+  var n = checkedIDs().length;
+  var usable = c.filter(function(x){ return x.usable; }).length;
+  var bar = '<div class="row" style="margin-bottom:10px">' +
+    '<button class="tiny" data-action="cand-all">全选未导入</button>' +
+    '<button class="tiny" data-action="cand-none">全不选</button>' +
+    '<button class="pri tiny" data-action="cand-import"' + (n ? "" : " disabled") + '>导入选中的 ' + n + ' 个</button>' +
+    '<span style="width:6px"></span>' +
+    '<button class="tiny" data-action="zcode-probe" title="逐个号打一次上游 /models，每个号一次外网往返">探活全部</button>' +
+    '<button class="tiny" data-action="zcode-balance" title="逐个号读一次上游 billing/balance：才知道套餐真正覆盖了哪些模型">读全部额度</button>' +
+    (S.candProbe ? '<span class="tag ok">已探活</span>' : '') +
+    (S.candBalance ? '<span class="tag ok">已读额度</span>' : '') +
+    '<span class="grow"></span>' +
+    '<span class="hint" style="margin:0">可取用 ' + usable + ' / ' + c.length + ' 个存档</span>' +
+    '<button class="tiny" data-action="cand-close">收起候选</button></div>';
+  return card("候选账号 · zcode-switch", esc(S.candNote || ""),
+    bar + '<table><thead><tr><th style="width:52px"></th><th style="width:24%">账号</th><th>可用模型</th>' +
+    '<th style="width:132px">探活</th><th style="width:238px">额度</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="5"><div class="empty">没有候选</div></td></tr>') + '</tbody></table>' +
+    '<div class="hint" style="margin-top:10px">' +
+    '<b>可用模型</b>＝该账号<b>套餐/额度实际覆盖</b>的模型（读额度后由上游 capabilities 得出；周末活动只有 glm-5.3-flash 就是只有这一个）。' +
+    '没读额度时退化成「凭据能列出什么」，只是参考，不保证能调。<br>' +
+    '这些都是账号自己带的智谱能力，与任何 agent（Codex / ZCode / Cherry Studio）里手填的自定义模型无关——那类配置不进号池，也不参与路由。' +
+    '探活与额度都按需触发，不静默打外网。</div>');
+}
+
+/* ---------- 账号池 ---------- */
+/* loadCredits 拉余额快照。后端是「先返回旧值 + 后台重查」的形态，所以
+   refreshing 为真时再隔 3 秒看一次（最多 6 次，不做无限轮询）。
+   和池里那个 credits 字段的区别：池内值是每日签到时写的，这里是按需直查上游。 */
+async function loadCredits(force){
+  if (S.creditsBusy) return;
+  S.creditsBusy = true;
+  try {
+    S.credits = force
+      ? await api("/admin/credits/refresh", { method: "POST", body: {} })
+      : await api("/admin/credits");
+  } catch (e) { S.credits = null; }
+  finally { S.creditsBusy = false; }
+  render();
+  if (S.credits && S.credits.refreshing && S.creditsPolls < 6){
+    S.creditsPolls += 1;
+    setTimeout(function(){ loadCredits(false); }, 3000);
+  } else if (S.credits && !S.credits.refreshing){
+    S.creditsPolls = 0;
+  }
+}
+function creditRowOf(uid){
+  var list = (S.credits && S.credits.accounts) || [];
+  for (var i = 0; i < list.length; i++){ if (list[i].uid === uid) return list[i]; }
+  return null;
+}
+/* creditCell 余额单元格：优先用直查结果（权威），查不到才回落到池内值并标明。 */
+function fmtNum(n, unit){
+  n = Number(n) || 0;
+  if (unit !== "token") return String(n);
+  // token 数动辄上亿，按原样报会看错数量级；换中文单位。
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + " 亿";
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + " 万";
+  return String(n);
+}
+function creditCell(a){
+  var c = creditRowOf(a.uid);
+  if (c && c.ok){
+    var sub = [];
+    if (c.total) sub.push("总量 " + fmtNum(c.total, c.unit));
+    if (c.used) sub.push("已用 " + fmtNum(c.used, c.unit));
+    if (c.expiring) sub.push("快过期 " + fmtNum(c.expiring, c.unit));
+    // 读到额度用的是哪一层凭据（号池文件 / zcode 账本 / ZCode 应用登录态）。
+    // 后两层是兜底，运维要知道这个数字是不是随号池文件走的那一份。
+    if (c.cred_source) sub.push("凭据 " + c.cred_source);
+    if (c.note) sub.push(c.note);
+    return '<div style="font-weight:600">' + fmtNum(c.remain, c.unit) +
+      (c.unit === "token" ? ' <span class="hint" style="font-weight:400">token</span>' : '') + '</div>' +
+      (sub.length ? '<div class="hint" style="margin:2px 0 0">' + esc(sub.join(" · ")) + '</div>' : '');
+  }
+  if (c && c.note){
+    return '<span class="hint">上游未给可用范围</span>' +
+      (a.credits ? '<div class="hint" style="margin:2px 0 0">池内 ' + esc(a.credits) + '</div>' : '');
+  }
+  if (c && c.error){
+    return '<span class="hint" title="' + esc(c.error) + '">查不到</span>' +
+      (a.credits ? '<div class="hint" style="margin:2px 0 0">池内 ' + esc(a.credits) + '</div>' : '');
+  }
+  if (a.credits) return a.credits + '<div class="hint" style="margin:2px 0 0">池内值</div>';
+  return '<span class="hint">—</span>';
+}
+/* modelCell 账号池的「可用模型」列：先把该号**当前真正能用**的模型亮出来。
+读得到权益就列（zcode 由套餐 capabilities 决定），读不到就说清楚为什么。
+workbuddy 侧没有逐号模型权益——它的目录是所有同构号共享的，去「输出 API」看。 */
+function modelCell(a){
+  var c = creditRowOf(a.uid);
+  var ms = (c && c.entitled_models) || [];
+  if (ms.length){
+    return '<span class="tag ok">' + ms.length + ' 个</span>' +
+      (c.plan_summary ? ' <span class="hint">' + esc(c.plan_summary) + '</span>' : '') +
+      '<div class="hint" style="margin:2px 0 0;word-break:break-all">' +
+      esc(ms.slice(0, 3).join(" · ")) + (ms.length > 3 ? " …" : "") + '</div>';
+  }
+  if (c && c.note) return '<span class="hint">上游未给范围</span>';
+  if (c && c.error) return '<span class="hint" title="' + esc(c.error) + '">依赖额度</span>';
+  if ((a.producer || "") === "zcode") return '<span class="hint" title="点右上角「刷新」读该号的套餐权益">待读权益</span>';
+  return '<span class="hint" title="workbuddy 侧模型目录按客户端共享，去「输出 API」看清单">按客户端目录</span>';
+}
+/* expCell 账号 access token 的到期呈现：绝对时间 + 剩余天数。0 = 号池里没记，
+   不编造（不是"永不过期"，只是这份 auth 文件没写 expiresAt）。 */
+function expCell(a){
+  var c = creditRowOf(a.uid);
+  // zcode 号没有 refresh token（凭据是长期密钥），能回答"用到什么时候"的只有套餐到期，
+  // 所以这里回落到额度那一路拿到的 expires_at，并标明这是套餐口径。
+  var planTs = (!a.expires_at && c && c.expires_at) ? c.expires_at : 0;
+  var ts = a.expires_at || planTs;
+  if (!ts) return '<span class="hint">—</span>';
+  var days = Math.floor((ts * 1000 - Date.now()) / 86400000);
+  var tone = days < 0 ? "err" : (days <= 7 ? "warn" : "");
+  var label = days < 0 ? "已过期 " + (-days) + " 天" : ("剩 " + days + " 天");
+  return '<span class="mono">' + esc(fmtTime(ts)) + '</span>' +
+    '<div class="hint" style="margin:2px 0 0"' + (tone ? ' data-tone="' + tone + '"' : '') + '>' +
+    label + (planTs ? " · 套餐" : "") + '</div>';
+}
+function acctState(a){
+  if (a.disabled) return '<span class="tag err">已禁用</span>';
+  if (a.manual_disabled) return '<span class="tag warn">手动停用</span>';
+  if (a.cooling) return '<span class="tag warn">冷却中</span>';
+  if (futureTime(a.breaker_until)) return '<span class="tag warn">熔断中</span>';
+  return '<span class="tag ok">可用</span>';
+}
+/* realmTags 域标签：正常情况下显示生效路由域；当凭证域（stored）与生效域不一致时
+   显式写成 stored→routing 并给出原因，避免把「打不通」误读成「账号本身有问题」。 */
+function realmTags(a){
+  var c = creditRowOf(a.uid);
+  var stored = c && c.realm_stored;
+  if (stored && stored !== a.realm){
+    return ' <span class="tag warn" title="该号凭证属于 ' + esc(stored) + '（' + esc(stored) +
+      ' 域），但网关配置 global.enabled=false，已强制按 ' + esc(a.realm) + ' 域路由——上游必然拒绝">' +
+      esc(stored) + '→' + esc(a.realm) + '</span>';
+  }
+  return a.realm ? ' <span class="tag">' + esc(a.realm) + '</span>' : "";
+}
+function acctReason(a){
+  var r = a.reason || a.manual_reason || a.disabled_reason || "";
+  // 余额查不到时把上游给的原因落到这一列：账号可用但余额读不出来，
+  // 是配置/网络问题（如国际版号被按 CN 路由），不能只显示一个「查不到」。
+  if (!r){
+    var rc = creditRowOf(a.uid);
+    if (rc && !rc.ok && rc.error) r = "余额查不到：" + rc.error;
+  }
+  if (a.cool_kind === "hard_credit" && !r) r = "余额不足，等签到恢复";
+  if (a.cool_remaining_sec) r = "剩余 " + durNum(a.cool_remaining_sec) + (r ? " · " + r : "");
+  if (futureTime(a.degrade_until) && !a.cooling && !a.disabled) r = "连败降权 · " + (r || "临时出池");
+  return r || "—";
+}
+function acctActions(a){
+  var out = "";
+  if (a.disabled) out += '<button class="tiny" data-action="acct" data-op="revive" data-uid="' + esc(a.uid) + '">复活</button> ';
+  if (a.manual_disabled) out += '<button class="tiny" data-action="acct" data-op="enable" data-uid="' + esc(a.uid) + '">启用</button>';
+  else if (!a.disabled) out += '<button class="tiny" data-action="acct" data-op="disable" data-uid="' + esc(a.uid) + '">停用</button>';
+  if (!out) out = '<span class="hint">—</span>';
+  return out;
+}
+function viewPool(){
+  var st = S.status;
+  if (!st) return head("账号池", "正在读取账号池…");
+  // 域筛选只对「内部还分域」的客户端成立；客户端没选/不分区时强制归位，
+  // 免得留下一个看不见却仍在生效的筛选（列表少了行却没有对应的亮起的 chip）。
+  if (S.poolClient === "all" || producerRealms(S.poolClient).length < 2){ if (S.poolRealm !== "all") S.poolRealm = "all"; }
+  var allAccts = st.accounts || [];
+  // 客户端与来源方式两排 chips 互相收窄：选了客户端，来源方式的计数只数这家；选了来源
+  // 方式，客户端的计数也照样只数这种进来的号。两排各拿全池数并列，会出现「客户端 ZCode 7」
+  // 旁边写「来源方式 全部 15」这种看着自相矛盾的画面——那才是口径没捋明白。
+  var byClient = function(list){
+    if (S.poolClient === "all") return list;
+    return list.filter(function(a){ return (a.producer || "none") === S.poolClient; });
+  };
+  var byOrigin = function(list){
+    if (S.poolFilter === "all") return list;
+    return list.filter(function(a){
+      var o = originOf(a.uid);
+      if (S.poolFilter === "none") return !o || !o.method;
+      return !!(o && o.method === S.poolFilter);
+    });
+  };
+  var clientScoped = byClient(allAccts);
+  var originScoped = byOrigin(allAccts);
+  var oc = {}, annotated = 0;
+  clientScoped.forEach(function(a){
+    var o = originOf(a.uid);
+    if (o && o.method){ oc[o.method] = (oc[o.method] || 0) + 1; annotated++; }
+  });
+  var realm = st.realm_totals || {};
+  var cn = realm.cn || {}, gl = realm.global || {};
+  var chips = [{ id: "all", n: clientScoped.length }].concat(METHOD_ORDER.map(function(m){
+    return { id: m, n: oc[m] || 0 };
+  })).concat([{ id: "none", n: Math.max(0, clientScoped.length - annotated) }]);
+  var chipHtml = chips.map(function(c){
+    var label = c.id === "all" ? "全部" : (c.id === "none" ? "未标注" : methodLabel(c.id));
+    return '<button class="chip' + (S.poolFilter === c.id ? " on" : "") + '" data-filter="' + c.id + '">' +
+      esc(label) + ' <span style="opacity:.6">' + c.n + '</span></button>';
+  }).join("");
+  // 客户端（producer）维度：与「来源方式」正交——方式说「怎么进来的」，
+  // 客户端说「这是谁的号」。跨客户端不能互相顶替（凭据不同构）。
+  var pt = st.producer_totals || [];
+  var pc = {};
+  originScoped.forEach(function(a){ var k = a.producer || "none"; pc[k] = (pc[k] || 0) + 1; });
+  var clientChips = [{ id: "all", n: originScoped.length, name: "全部" }].concat(pt.map(function(x){
+    var k = x.producer || "none";
+    return { id: k, n: pc[k] || 0, name: (x.name || producerName(x.producer)) + (x.servable ? "" : "（只读）") };
+  }));
+  var clientHtml = clientChips.map(function(c){
+    return '<button class="chip' + (S.poolClient === c.id ? " on" : "") + '" data-pclient="' + esc(c.id) + '">' +
+      esc(c.name) + ' <span style="opacity:.6">' + c.n + '</span></button>';
+  }).join("");
+  // 域（realm）是「客户端内部的二级维度」：只有同一家内部还分域时才成立——今天的
+  // workbuddy 底下分 CN 版（codebuddy.cn）与国际版 wba（workbuddy.ai）。zcode 只有一路
+  // （cn）。所以这排只在「已选中某个客户端」时出现，计数也只数该客户端的号；选「全部」
+  // 时整排不显示——否则会把 zcode 的号也算进「CN 版」，看着像 WorkBuddy 有 11 个 CN 号。
+  var realmChips = null, realmHtml = "";
+  if (S.poolClient !== "all"){
+    // 域也吃「来源方式」这一刀的收窄：否则选了「switch 账本」再把客户端切到 WorkBuddy，
+    // 域那排会把没选中的来源也算进去。域种类为 0（来源方式筛空了这家）时整排不显示。
+    var bothScoped = byOrigin(clientScoped);
+    var rc = {};
+    bothScoped.forEach(function(a){ var r = a.realm || "cn"; rc[r] = (rc[r] || 0) + 1; });
+    var rs = REALM_ORDER.filter(function(r){ return rc[r]; }).map(function(r){ return { id: r, n: rc[r] }; });
+    if (rs.length > 1){
+      realmChips = [{ id: "all", n: bothScoped.length, name: "全部" }].concat(rs.map(function(r){
+        return { id: r.id, n: r.n, name: REALM_LABEL[r.id] || r.id };
+      }));
+      realmHtml = realmChips.map(function(c){
+        return '<button class="chip' + (S.poolRealm === c.id ? " on" : "") + '" data-prealm="' + esc(c.id) + '">' +
+          esc(c.name) + ' <span style="opacity:.6">' + c.n + '</span></button>';
+      }).join("");
+    }
+  }
+  var list = (st.accounts || []).filter(function(a){
+    if (S.poolClient !== "all" && (a.producer || "none") !== S.poolClient) return false;
+    if (S.poolRealm !== "all" && (a.realm || "cn") !== S.poolRealm) return false;
+    if (S.poolFilter === "all") return true;
+    var o = originOf(a.uid);
+    if (S.poolFilter === "none") return !o || !o.method;
+    return !!(o && o.method === S.poolFilter);
+  });
+  var rows = list.map(function(a){
+    return '<tr class="' + (a.disabled || a.manual_disabled || a.cooling ? "dim" : "") + '">' +
+      '<td><b>' + esc(a.nickname || a.uid) + '</b>' +
+        '<div class="hint mono" style="margin:2px 0 0;word-break:break-all">' + esc(a.uid) + '</div></td>' +
+      '<td>' + producerTag(a) + '</td>' +
+      '<td>' + methodTag(a.uid) + realmTags(a) + '</td>' +
+      '<td>' + modelCell(a) + '</td>' +
+      '<td class="num">' + creditCell(a) + '</td>' +
+      '<td class="num">' + expCell(a) + '</td>' +
+      '<td>' + acctState(a) + '</td>' +
+      '<td style="color:var(--fg3);font-size:12px"><div class="clamp" title="' + esc(acctReason(a)) + '">' + esc(acctReason(a)) + '</div></td>' +
+      '<td class="num">' + (a.success_count || 0) + ' / ' + (a.err_total || 0) + '</td>' +
+      '<td>' + acctActions(a) + '</td></tr>';
+  }).join("");
+  var html = head("账号池", "池里所有账号：来源归属、积分余额（含快过期部分）、token 到期、健康状态。" +
+    "停用只摘对话流量，签到与保活照常。");
+  html += '<div class="grid4">' +
+    statBox("账号总数", st.total, "路由域 cn " + (cn.total || 0) + " · global " + (gl.total || 0)) +
+    statBox("可用", st.healthy, "可立即承接请求") +
+    statBox("冷却中", st.cooling, "到期自动回池") +
+    statBox("已禁用", st.disabled, "需要手动复活") +
+    '</div>';
+  var credWhen = (S.credits && S.credits.fetched_at) ? fmtTime(S.credits.fetched_at) : "查询中…";
+  var credBar = '<div class="row" style="margin:12px 0 2px">' +
+    '<span class="hint" style="margin:0">余额直查上游 billing（10 分钟缓存）· 上次 ' + esc(credWhen) +
+    (S.credits && S.credits.refreshing ? " · 正在后台重查…" : "") + '</span>' +
+    '<span class="grow"></span>' +
+    '<span class="hint" style="margin:0">点右上角「刷新」强制重查</span></div>' +
+    '<div class="hint" style="margin:0 0 6px">「可用模型」= 该账号<b>当前真正能用</b>的模型（读得到套餐/权益就按权益算）；' +
+    'workbuddy 侧的目录是所有同构号共享的，看「输出 API」的发布清单。</div>';
+  var cooldownBtn = '<button class="tiny" data-action="reset-cooldowns" ' +
+    'title="把池里所有账号的冷却、熔断、连败计数清零。停用/手工禁用不动；即时生效，不用停服。">清空冷却</button>';
+  html += card("账号清单", "",
+    credBar +
+    '<div class="chips"><span class="hint" style="margin:0 8px 0 0;align-self:center">客户端</span>' + clientHtml + '</div>' +
+    (realmHtml ? '<div class="chips"><span class="hint" style="margin:0 8px 0 0;align-self:center">域</span>' + realmHtml + '</div>' : '') +
+    '<div class="chips"><span class="hint" style="margin:0 8px 0 0;align-self:center">来源方式</span>' + chipHtml + '</div>' +
+    '<div class="tablewrap"><table><thead><tr><th style="width:242px">账号</th><th style="width:96px">客户端</th><th style="width:120px">来源</th>' +
+    '<th style="width:168px">可用模型</th><th class="num" style="width:126px">积分余额</th>' +
+    '<th style="width:112px">到期</th><th style="width:80px">状态</th><th>原因</th>' +
+    '<th class="num" style="width:92px">成功/失败</th>' +
+    '<th style="width:84px">操作</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="10"><div class="empty">这个筛选下没有账号</div></td></tr>') + '</tbody></table></div>', cooldownBtn);
+  html += card("迁移与来源", "账号池是单一目录，来源只是台账里的标注——这样迁移不会漏文件。",
+    '<div class="note">' +
+    '<b>来源三种</b>：应用内登录态（探查得到）、switch 账本（读账本得到）、导入文件（手工给）。' +
+    '导入时选哪一种，就记在 <span class="mono">' + esc((S.src && S.src.origin_path) || ".origins.json") + '</span> 里。<br>' +
+    '<b>整体迁移</b>：把 config.json + <span class="mono">auths/</span> 目录 + <span class="mono">data/</span> 目录拷到新机器，改一下监听端口即可；' +
+    '来源台账在 auths 目录里，跟着一起走，账号归类不会丢。<br>' +
+    '<b>为什么不做物理多池</b>：多池会让选号、粘性会话、成本台账各写一套；用台账做逻辑分组，效果一样而风险为零。' +
+    '</div>');
+  return html;
+}
+function statBox(k, v, n){
+  return '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div><div class="n">' + esc(n) + '</div></div>';
+}
+/* ---------- 输出 API ---------- */
+/* 多出口（每个客户端一条独立 API）：出口 = 独立端口 + 自己的一套输出参数 +
+   自己服务哪些客户端。全部放主口、还是给不同来源各开一个口，由用户在这里选。 */
+function fmtOptions(sel, inheritLabel){
+  var head = "";
+  if (inheritLabel){
+    head = '<option value=""' + (sel ? "" : " selected") + '>' + esc(inheritLabel) + '</option>';
+  }
+  return head + (S.out.formats || []).map(function(f){
+    return '<option value="' + esc(f.id) + '"' + (sel === f.id ? " selected" : "") +
+      (f.available ? "" : " disabled") + '>' + esc(f.name) + (f.available ? "" : "（待接入）") + '</option>';
+  }).join("");
+}
+/* fmtName 输出格式 id → 展示名：以前端只读后端注册表（S.out.formats），
+   不在前端另写一份枚举——加协议时后端改一处，页面自动跟着变。 */
+function fmtName(id){
+  var f = ((S.out && S.out.formats) || []).filter(function(x){ return x.id === id; })[0];
+  return f ? f.name : (id || "openai");
+}
+/* fmtHintAll 输出格式下拉里「现在能选」和「还没接」各有哪几个——写在说明里，
+   不打开下拉也能一眼看到（以前只显示当前这一种，容易被误读成「只有一种」）。 */
+function fmtHintAll(){
+  var list = (S.out && S.out.formats) || [];
+  var yes = list.filter(function(f){ return f.available; }).map(function(f){ return f.name; });
+  var no = list.filter(function(f){ return !f.available; }).map(function(f){ return f.name; });
+  var t = "可选协议：" + (yes.join("、") || "（无）");
+  if (no.length) t += "；未接入：" + no.join("、");
+  return "<br>" + esc(t);
+}
+function rateOptions(sel, inheritLabel){
+  var head = "";
+  if (inheritLabel){
+    head = '<option value=""' + (sel ? "" : " selected") + '>' + esc(inheritLabel) + '</option>';
+  }
+  return head + (S.out.rate_hints || []).map(function(h){
+    return '<option value="' + esc(h.id) + '"' + (sel === h.id ? " selected" : "") + '>' + esc(h.name) + '</option>';
+  }).join("");
+}
+/* rateName 费率后缀 id → 展示名：同样只读后端注册表，前端不另写枚举。 */
+function rateName(id){
+  var h = ((S.out && S.out.rate_hints) || []).filter(function(x){ return x.id === id; })[0];
+  return h ? h.name : (id || "credit");
+}
+/* producerChoices 可选「服务来源」：池里出现过的客户端 + 已知的两家（保证空池也能配）。 */
+function producerChoices(){
+  var list = (S.status && S.status.producer_totals) || [];
+  var seen = {}, out = [];
+  list.forEach(function(x){
+    var p = x.producer || "";
+    if (p && !seen[p]){ seen[p] = 1; out.push({ id: p, name: x.name || producerName(p) }); }
+  });
+  ["workbuddy", "zcode"].forEach(function(p){
+    if (!seen[p]){ seen[p] = 1; out.push({ id: p, name: PRODUCER_FALLBACK[p] || p }); }
+  });
+  return out;
+}
+/* chanServerList 服务端当前保存的出口配置（草稿为空时用它渲染）。
+   历史配置里可能存着一份「和主口取值完全相同」的显式字段——那其实等于没覆盖，
+   这里统一折成空串（= 继承），免得面板把它们显示成「单独覆盖」。 */
+function chanServerList(){
+  var base = (S.out && S.out.output) || {};
+  return ((S.out && S.out.channels) || []).map(function(c){
+    return { id: c.id || "", name: c.name || "", listen: c.listen || "",
+      format: (c.format && c.format !== (base.format || "openai")) ? c.format : "",
+      model_prefix: (c.model_prefix && c.model_prefix !== (base.model_prefix || "")) ? c.model_prefix : "",
+      rate_hint: (c.rate_hint && c.rate_hint !== (base.rate_hint || "credit")) ? c.rate_hint : "",
+      producers: (c.producers || []).slice(), models: (c.models || []).slice() };
+  });
+}
+function chanDraftList(){ return S.chanDraft ? S.chanDraft : chanServerList(); }
+/* captureChanDraft 把输出页上正在编辑的出口收进草稿。与服务器现状完全一致就不记：
+   把「没改过」也标成草稿会挡住之后的服务端变化（比如另开一个页签改了配置）。 */
+function captureChanDraft(){
+  var d = chanReadDom(chanDraftList());
+  if (!d) return;
+  if (sameChanList(d, chanServerList())) return;
+  S.chanDraft = d;
+}
+/* sameChanList 两份出口列表是否等价（集合语义比较：producers/models 排序后比）。 */
+function sameChanList(a, b){
+  if (!a || !b || a.length !== b.length) return false;
+  var norm = function(x){
+    return [x.id || "", x.name || "", x.listen || "", x.format || "", x.model_prefix || "",
+      x.rate_hint || "", (x.producers || []).slice().sort().join(","),
+      (x.models || []).slice().sort().join(",")].join("\u0000");
+  };
+  for (var i = 0; i < a.length; i++){ if (norm(a[i]) !== norm(b[i])) return false; }
+  return true;
+}
+/* chanReadDom 把页面上正在编辑的出口读回来（DOM 是真值来源，避免每敲一个字就重渲染）。
+   prev 是上一版列表：模型表还没拉到、勾选列表压根没渲染时，沿用它原来的名单——
+   「渲染不出来」不等于「用户清空了」。 */
+function chanReadDom(prev){
+  var rows = $$("[data-chan-row]");
+  if (!rows.length) return null;
+  prev = prev || [];
+  return rows.map(function(row){
+    var idx = row.getAttribute("data-chan-row");
+    var cur = prev[Number(idx)] || {};
+    var g = function(k){ var el = row.querySelector('[data-ck="' + k + '"]'); return el ? el.value : ""; };
+    var producers = $$('[data-ckp="' + idx + '"]', row).filter(function(cb){ return cb.checked; })
+      .map(function(cb){ return cb.getAttribute("data-ckv"); });
+    // 发布清单：勾选结果与「继承主口」完全一致 = 用户并没有单独筛，折成空名单（= 继承）。
+    // 这条与后端 normalizeOutput 的折值规则同口径，两边都折一次才不会留下冗余配置。
+    var cbs = $$('[data-cmk="' + idx + '"]', row);
+    var models = (cur.models || []).slice();
+    if (cbs.length){
+      var over = false;
+      cbs.forEach(function(cb){ if (cb.hasAttribute("data-cmi") !== cb.checked) over = true; });
+      models = over ? cbs.filter(function(cb){ return cb.checked; })
+        .map(function(cb){ return cb.getAttribute("data-ckv"); }) : [];
+    }
+    return { id: g("id").trim().toLowerCase(), name: g("name").trim(),
+      listen: g("listen").trim(), format: g("format"),
+      model_prefix: g("model_prefix").trim(), rate_hint: g("rate_hint"),
+      producers: producers, models: models };
+  });
+}
+/* chanAdvOpen 打印时「这个出口的折叠区该不该展开」。overridden 的默认展开；用户手动点开的
+   也记住——否则 15 秒一次的健康轮询一 render() 就把人正在填的折叠区收起来，等于边填边被打断。 */
+function chanAdvOpen(id){
+  return !!(S.chanOpen && id && S.chanOpen[id]);
+}
+function chanStatusOf(){
+  var m = {};
+  ((S.out && S.out.channel_status) || []).forEach(function(x){ m[x.id] = x; });
+  var def = (S.out && S.out.channel_default) || null;
+  if (def) m[def.id || "default"] = def;
+  return m;
+}
+/* chanRowState 一个出口当前的「继承 / 覆盖」状态，全部从 DOM 现读（DOM 就是草稿的真值
+   来源，见 chanReadDom）。label = 折叠区摘要，count = 发布清单那一行右侧的计数。 */
+function chanRowState(i){
+  var row = $$('[data-chan-row="' + i + '"]')[0];
+  if (!row) return { label: "继承主口的输出参数", count: "" };
+  var g = function(k){ var el = row.querySelector('[data-ck="' + k + '"]'); return el ? el.value : ""; };
+  var own = [];
+  if (g("format")) own.push(fmtName(g("format")));
+  if ((g("model_prefix") || "").trim()) own.push("前缀 " + g("model_prefix").trim());
+  if (g("rate_hint")) own.push(rateName(g("rate_hint")));
+  // 勾选结果与「继承主口」一模一样时不算覆盖：保存时也会折回空名单（chanReadDom）。
+  var cbs = $$('[data-cmk="' + i + '"]');
+  var n = 0, over = false;
+  cbs.forEach(function(cb){
+    if (cb.checked) n++;
+    if (cb.hasAttribute("data-cmi") !== cb.checked) over = true;
+  });
+  if (over) own.push("发布清单 " + n + " 个");
+  return {
+    label: own.length ? ("已单独覆盖：" + own.join(" · ")) : "继承主口的输出参数",
+    count: !cbs.length ? "" : (over ? ("已单独勾选 " + n + " / " + cbs.length)
+                                   : ("继承主口（" + cbs.length + " 个）"))
+  };
+}
+/* updChanRow 就地把摘要与计数刷新成当前 DOM 的状态（不整页重渲染，勾一下不会丢别的输入）。 */
+function updChanRow(i){
+  var row = $$('[data-chan-row="' + i + '"]')[0];
+  if (!row) return;
+  var st = chanRowState(i);
+  var lb = row.querySelector("[data-cmlabel]"); if (lb) lb.textContent = st.label;
+  var ct = row.querySelector("[data-cmcount]"); if (ct) ct.textContent = st.count;
+}
+/* chanModelToggle 出口发布清单的三个批量动作：只动 DOM 再刷摘要。 */
+function chanModelToggle(i, fn){
+  $$('[data-cmk="' + i + '"]').forEach(function(cb){
+    cb.checked = !!fn(cb);
+    var r = cb.closest ? cb.closest(".mrow") : null;
+    if (r) r.classList.toggle("off", !cb.checked);
+  });
+  updChanRow(i);
+}
+/* ---------- 出口自己的发布清单 ---------- */
+/* chanScopeModels 一个出口「服务来源」范围内的候选模型。出口只发自己来源的模型
+   （拿别家的名字调它，后端按来源直接 404），勾选列表也按来源收窄，不摆陷阱。 */
+function chanScopeModels(c){
+  var avail = (S.out && S.out.available_models) || [];
+  var scope = c.producers || [];
+  return avail.filter(function(m){
+    return !scope.length || scope.indexOf(m.producer || "workbuddy") >= 0;
+  });
+}
+/* parentModelKeys 主口当前发布的键集合。空名单 = 没设白名单（全量放开），
+   折成「全部可用键」再比——出口留空时继承到的正是这一份。 */
+function parentModelKeys(){
+  var avail = (S.out && S.out.available_models) || [];
+  var list = ((S.out && S.out.output && S.out.output.models) || []);
+  if (list.length) return list;
+  return avail.map(function(m){ return m.key || m.id; });
+}
+/* chanModelBodyHtml 出口的发布清单编辑器，复用主口那套 .mlist/.mrow/.mgroup。
+   勾选态 = 自己的名单（有）否则继承主口；与继承结果完全一致的勾选在保存时折回空名单，
+   所以点开看一眼、随手全选再取消，不会把这个口从「跟随主口」变成「单独一份清单」。 */
+function chanModelBodyHtml(c, i){
+  var avail = (S.out && S.out.available_models) || [];
+  if (!avail.length){
+    return '<div class="sep"></div><div class="empty">暂时没有可勾的模型：池里要有健康账号，' +
+      '网关才能带上账号的 token 从上游拉到模型表。</div>';
+  }
+  var cells = chanScopeModels(c);
+  if (!cells.length){
+    return '<div class="sep"></div><div class="empty">勾上的服务来源里还没有可用模型。</div>';
+  }
+  var inScope = {};
+  cells.forEach(function(m){ inScope[m.key || m.id] = 1; });
+  var inhSet = {};
+  // 继承到的那一份 = 主口名单 ∩ 本口来源范围（主口全放时就是本口范围内的全部）。
+  parentModelKeys().filter(function(k){ return inScope[k]; }).forEach(function(k){ inhSet[k] = 1; });
+  var own = (c.models || []).filter(function(k){ return inScope[k]; });
+  var want = {};
+  (own.length ? own : Object.keys(inhSet)).forEach(function(k){ want[k] = 1; });
+  var order = [], groups = {};
+  cells.forEach(function(m){
+    // 同主口：分组键带 realm，workbuddy 的 CN 版 / 国际版 wba 分开列。
+    var p = (m.producer || "workbuddy") + (m.realm ? "/" + m.realm : "");
+    if (!groups[p]){ groups[p] = []; order.push(p); }
+    groups[p].push(m);
+  });
+  var rows = order.map(function(pk){
+    var g = groups[pk];
+    var p = pk.split("/")[0];
+    var realm = pk.split("/")[1] || "";
+    var gname = producerName(p) + (realm === "global" ? " · 国际版 wba" : "");
+    var gsel = g.filter(function(m){ return want[m.key || m.id]; }).length;
+    var head = '<div class="mgroup"><span><b>' + esc(gname) + '</b> · 本口可勾 ' + g.length +
+      ' 个</span><span class="hint" style="margin:0">已勾 ' + gsel + ' / ' + g.length + '</span></div>';
+    return head + g.map(function(m){
+      var key = m.key || m.id;
+      var on = !!want[key];
+      var bits = [];
+      if (m.suffix) bits.push('<span class="tag ' + (m.suffix === "-free" ? "ok" : "warn") + '">' +
+        esc(m.suffix.replace(/^-/, "")) + '</span>');
+      else if (m.credits) bits.push('<span class="tag warn">' + esc(m.credits) + '</span>');
+      if (m.is_default) bits.push('<span class="tag ok">默认</span>');
+      return '<label class="mrow' + (on ? "" : " off") + '">' +
+        '<input type="checkbox" data-cmk="' + i + '" data-ckv="' + esc(key) + '"' + (on ? " checked" : "") +
+        (inhSet[key] ? ' data-cmi="1"' : '') + '>' +
+        '<span class="mid mono">' + esc(m.full_id) + '</span>' +
+        '<span class="mname hint">' + esc(m.name || "") + '</span>' +
+        '<span class="mbits">' + bits.join("") + '</span></label>';
+    }).join("");
+  }).join("");
+  return '<div class="sep"></div>' +
+    '<div class="row">' +
+      '<span class="f" style="margin:0">发布清单</span>' +
+      '<button class="tiny" data-action="chan-model-all" data-i="' + i + '">全选</button>' +
+      '<button class="tiny" data-action="chan-model-none" data-i="' + i + '">全不选</button>' +
+      '<button class="tiny" data-action="chan-model-inherit" data-i="' + i + '">按主口</button>' +
+      '<span class="grow"></span>' +
+      '<span class="hint" style="margin:0" data-cmcount="' + i + '"></span>' +
+    '</div>' +
+    '<div class="mlist">' + rows + '</div>' +
+    '<div class="hint">只列<b>本口来源范围</b>内的模型。不动它 = 跟随主口（主口改清单，这个口跟着变）；' +
+    '单独勾了就固定成你勾的这几个（勾回与主口一致会自动折回「跟随」）。</div>';
+}
+function chanRowHtml(c, i, statusById){
+  var st = statusById[c.id] || null;
+  var base = (S.out && S.out.output) || {};
+  var on = {};
+  (c.producers || []).forEach(function(p){ on[p] = 1; });
+  var ptog = producerChoices().map(function(p){
+    var hit = !!on[p.id];
+    return '<label class="ptog' + (hit ? " on" : "") + '">' +
+      '<input type="checkbox" data-ckp="' + i + '" data-ckv="' + esc(p.id) + '"' + (hit ? " checked" : "") + '>' +
+      '<span>' + esc(p.name) + '</span></label>';
+  }).join("");
+  var fmtTag = '<span class="tag mut">' + esc(fmtName(st ? st.format : c.format)) + '</span>';
+  var statusHtml = st
+    ? (st.running
+        ? '<span class="tag ok">运行中</span>' + fmtTag + '<span class="mono copy" data-copy="' + esc(st.base_url || "") + '">' + esc(st.base_url || "") + ' ' + svg("copy") + '</span>'
+        : '<span class="tag err">未运行</span>' + fmtTag + '<span class="hint" style="margin:0">' + esc(st.error || "") + '</span>')
+    : '<span class="tag mut">未保存</span>' + fmtTag + '<span class="hint" style="margin:0">保存后立即绑定端口，不用重启</span>';
+  // 只有真的覆盖过才默认展开折叠区；纯继承时收起来，让「端口 + 来源」成为主视觉。
+  var overridden = !!(c.format || c.model_prefix || c.rate_hint || (c.models && c.models.length));
+  return '<div class="chan" data-chan-row="' + i + '">' +
+    '<div class="chan-head">' +
+      '<input data-ck="name" value="' + esc(c.name || "") + '" placeholder="出口名称，例如 ZCode 专用">' +
+      '<span class="grow"></span>' +
+      '<button class="tiny" data-action="chan-del" data-i="' + i + '">删除</button>' +
+    '</div>' +
+    '<div class="chan-grid">' +
+      '<div class="field"><label class="f">id（小写，唯一）</label><input data-ck="id" value="' + esc(c.id || "") + '" placeholder="zcode"></div>' +
+      '<div class="field"><label class="f">监听端口</label><input data-ck="listen" value="' + esc(c.listen || "") + '" placeholder="127.0.0.1:7870"></div>' +
+      '<div class="field"><label class="f">服务来源（都不勾 = 全部来源）</label><div class="row" style="gap:6px">' + ptog + '</div></div>' +
+    '</div>' +
+    '<details class="chan-adv" data-cadv="' + esc(c.id || "") + '"' + ((overridden || chanAdvOpen(c.id)) ? " open" : "") + '>' +
+      '<summary>单独覆盖输出参数 <span class="hint" style="margin:0" data-cmlabel="' + i + '"></span></summary>' +
+      '<div class="chan-grid">' +
+        '<div class="field"><label class="f">输出格式</label><select data-ck="format">' +
+          fmtOptions(c.format || "", "继承（" + fmtName(base.format) + "）") + '</select></div>' +
+        '<div class="field"><label class="f">模型前缀（可选）</label><input data-ck="model_prefix" value="' + esc(c.model_prefix || "") + '" placeholder="留空 = 跟随主口"></div>' +
+        '<div class="field"><label class="f">费率后缀</label><select data-ck="rate_hint">' +
+          rateOptions(c.rate_hint || "", "继承（" + rateName(base.rate_hint) + "）") + '</select></div>' +
+      '</div>' +
+      chanModelBodyHtml(c, i) +
+    '</details>' +
+    '<div class="chan-url">' + statusHtml + '</div></div>';
+}
+function chanCard(){
+  var list = chanDraftList();
+  var statusById = chanStatusOf();
+  var listHtml = list.length
+    ? list.map(function(c, i){ return chanRowHtml(c, i, statusById); }).join("")
+    : '<div class="empty">还没有单独出口：所有来源都走主口。点「新增出口」给某个客户端单独开一个端口。</div>';
+  return card("出口（每个客户端一条独立 API）",
+    "出口之间只在「服务哪些来源」上分叉：输出格式、模型前缀、费率后缀、发布清单都沿用「输出 API」上面那份。" +
+    "所以每个出口只要一个端口 + 勾几个来源；真要单独换格式，才展开「单独覆盖输出参数」。",
+    '<div class="row" style="margin-bottom:12px">' +
+      '<button class="tiny" data-action="chan-add">新增出口</button>' +
+      '<button class="pri tiny" data-action="chan-save">保存出口</button>' +
+      '<span class="grow"></span>' +
+      '<span class="hint" style="margin:0">出口是进程内即时绑定/解绑的，保存即生效，不用重启（改主口端口才要重启）。</span>' +
+    '</div>' + listHtml +
+    '<div class="note" style="margin-top:11px">' +
+    '<b>两种用法都支持</b>：不加出口 = 所有来源走主口、由网关按模型名内部路由；加出口 = 每个来源各连各的地址。' +
+    '<b>共享参数</b>：格式/前缀/费率/发布清单默认跟随主口，改主口一次所有出口跟着变；'
+    + '某个口要特殊对待，就在它下面展开「单独覆盖输出参数」，那时它才脱离主口。<br>' +
+    '<b>服务来源都不勾</b> = 这个口服务全部来源（相当于换个端口的主口）。<br>' +
+    '<b>跨来源会被挡</b>：出口只发布自己范围内的模型，拿别的来源的模型名调它会被 404（避免配了却形同虚设）。' +
+    '</div>');
+}
+function viewOutput(){
+  var o = S.out;
+  if (!o) return head("输出 API", "正在读取输出配置…");
+  var cfg = o.output || {};
+  var base = location.origin || "";
+  var models = S.models || [];
+  var fmtOpts = fmtOptions(cfg.format);
+  var rateOpts = rateOptions(cfg.rate_hint);
+  var cur = (o.formats || []).filter(function(f){ return f.id === cfg.format; })[0] || {};
+  var html = head("输出 API", "网关对外长什么样由这里决定：格式、端口、模型前缀、费率后缀。");
+  html += card("接入信息", "这两项填进客户端即可；改端口需要重启网关生效。",
+    kv([
+      ["Base URL", copySpan(base + "/v1"), true],
+      ["对话接口", copySpan(base + (cur.chat_path || "/v1/chat/completions")), true],
+      ["模型列表", copySpan(base + "/v1/models"), true],
+      ["网关密钥", S.apiKey ? S.apiKey : "未设置（默认本机直连免密钥）"]
+    ]));
+  html += card("加工设置", "选了格式、端口、后缀之后保存，前缀与费率后缀立即生效（热更新，不用重启）。",
+    '<div class="grid2">' +
+      '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select>' +
+        '<div class="hint">' + esc(cur.note || "") + fmtHintAll() + '</div>' +
+        '<div class="hint" style="margin-top:5px">客户端怎么选：<b>Codex</b>（v0.151 起只认 Responses，' +
+          'wire_api="chat" 已被官方下线）→ <b>OpenAI Responses</b>；' +
+          '<b>Qoder / Cursor / Cline</b> 等 → <b>OpenAI 兼容</b>；<b>Claude Code</b> → Anthropic（未接入）。</div></div>' +
+      '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7863">' +
+        '<div class="hint">写入 config.json 的 listen 键，需要重启网关生效；当前进程仍听在原端口。</div></div>' +
+      '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-">' +
+        '<div class="hint">给模型名加个前缀，方便在客户端里区分来自哪个网关；冒号会被自动剔除。</div></div>' +
+      '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select>' +
+        '<div class="hint">后缀直接加在对外模型名尾巴上：免费模型 -free、收费模型 -x0.11；' +
+          '在客户端的模型选择器里看名字就能分辨，不影响计费。</div></div>' +
+    '</div>' +
+    '<div class="sep"></div>' +
+    '<div class="row"><button class="pri" data-action="save-out">保存设置</button>' +
+      '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>');
+  html += chanCard();
+  var avail = o.available_models || [];
+  var entAvail = entitledOf(avail);
+  var sel = S.modelSel || {};
+  var unentAvail = avail.filter(function(m){ return m.entitled === false; });
+  var modelBody;
+  if (!avail.length){
+    modelBody = '<div class="empty">暂时没有可勾的模型：池里需要有健康账号，网关才能从上游拉到模型表。</div>';
+  } else {
+    // 按 producer 分组：两家的模型名可能重名（workbuddy 有 cn:glm-4.6，zcode 也有
+    // glm-4.6），混在一张平表里看就分不清哪一行是谁家的能力。键用 m.key
+    // （后端给：workbuddy = 裸 id，其余 = "<producer>:<裸 id>"），所以重名互不串台。
+    var order = [], groups = {};
+    avail.forEach(function(m){
+      // 分组键带上 realm：workbuddy 底下 CN 版与 wba（国际版）的型号**不是同一批**
+      // （wba 独有 gpt-6-astra / gemini-3.5-flash / grok-4.7 等），得分开列。
+      var p = (m.producer || "workbuddy") + (m.realm ? "/" + m.realm : "");
+      if (!groups[p]){ groups[p] = []; order.push(p); }
+      groups[p].push(m);
+    });
+    var rows = order.map(function(pk){
+      var g = groups[pk];
+      var p = pk.split("/")[0];
+      var realm = pk.split("/")[1] || "";
+      var groupName = producerName(p) + (realm === "global" ? " · 国际版 wba" : "");
+      // entitled === false：上游目录里有、但号池里没有任何号**有额度**跑它（zcode 周末
+      // 活动只送 glm-5.3-flash，可上游 /models 照样列 11 个 GLM）。默认收进折叠区：
+      // 「可用模型 N 个」数的是真有额度的那些，未授权的另标一个数，想看能展开。
+      var ent = entitledOf(g);
+      var unent = g.filter(function(m){ return m.entitled === false; });
+      var head = '<div class="mgroup"><span><b>' + esc(groupName) + '</b> · 可用模型 ' +
+        ent.length + ' 个' + (unent.length ? '<span class="tag mut" style="margin-left:6px">另有 ' +
+        unent.length + ' 个未授权</span>' : "") +
+        '</span><span class="hint" style="margin:0" data-gcount="' + esc(pk) + '">' +
+        gcountText(ent, unent, sel) + '</span></div>';
+      var rowOf = function(m){
+        var bits = [];
+        // 费率：优先后端给的后缀标签（与模型名尾巴上的一致），退化到 credits 原文。
+        if (m.suffix) bits.push('<span class="tag ' + (m.suffix === "-free" ? "ok" : "warn") + '">' +
+          esc(m.suffix.replace(/^-/, "")) + '</span>');
+        else if (m.credits) bits.push('<span class="tag warn">' + esc(m.credits) + '</span>');
+        if (m.is_default) bits.push('<span class="tag ok">默认</span>');
+        var un = m.entitled === false;
+        if (un) bits.push('<span class="tag mut">未授权</span>');
+        var key = m.key || m.id;
+        var on = !!sel[key];
+        return '<label class="mrow' + (on ? "" : " off") + (un ? " unent" : "") + '">' +
+          '<input type="checkbox" data-model="' + esc(key) + '"' + (on ? " checked" : "") + '>' +
+          '<span class="mid mono">' + esc(m.full_id) + '</span>' +
+          '<span class="mname hint">' + esc(m.name || "") + '</span>' +
+          '<span class="mbits">' + bits.join("") + '</span></label>';
+      };
+      return head + ent.map(rowOf).join("") + unent.map(rowOf).join("");
+    }).join("");
+    modelBody =
+      '<div class="row" style="margin-bottom:9px">' +
+        '<button class="tiny" data-action="model-all">全选</button>' +
+        '<button class="tiny" data-action="model-none">全不选</button>' +
+        '<button class="tiny" data-action="model-default">只留默认</button>' +
+        '<button class="tiny" data-action="model-reset">恢复为全部放开</button>' +
+        '<label class="inlinechk" title="上游目录里有、号池任何号都没额度的模型（默认收起）">' +
+          '<input type="checkbox" id="showUnent"' + (S.showUnent ? ' checked' : '') + '>显示未授权</label>' +
+        '<label class="inlinechk" title="勾上：国内版与国际版（wba）各用一把开关，同名型号互不影响；取消：裸名字一把开关同时管两域（旧清单语义）">' +
+          '<input type="checkbox" id="realmScoped"' + (S.realmScoped ? ' checked' : '') + '>国际版单独控制</label>' +
+        '<span class="grow"></span>' +
+        '<span class="hint" style="margin:0" id="mSelCount">' + gcountText(entAvail, unentAvail, sel) + '</span>' +
+        '<button class="pri tiny" data-action="save-models">保存发布清单</button>' +
+      '</div>' +
+      '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + '" id="mList">' + rows + '</div>' +
+      '<div class="hint" style="margin-top:9px">勾上的才会出现在客户端的 <span class="mono">GET /v1/models</span> 里；' +
+      '没勾的拿旧名字调也会被 <span class="mono">404 model_not_found</span> 挡回去（清单为空 = 全放）。' +
+      '一个都不勾 = 全部放开（等于不过滤）。改完要点「保存发布清单」。<br>' +
+      '没勾时 <span class="mono">/v1/models</span> 只列<b>号池真有额度</b>的模型（zcode 的上游目录是整家厂商的，' +
+      '很多型号这个号的套餐并没有）；「未授权」那些勾上了才会发出去（明知会失败才勾）。<br>' +
+      '<b>上游有什么</b>由账号自己决定（网关带账号 token 去上游拉，不读本机任何 agent 的配置）；' +
+      '<b>对外发哪些</b>由你在这里勾。</div>';
+  }
+  var pt2 = (S.status && S.status.producer_totals) || [];
+  var servable = pt2.filter(function(x){ return x.servable; });
+  var readonly = pt2.filter(function(x){ return !x.servable; });
+  var clientNote = servable.length
+    ? "承接流量的客户端：" + servable.map(function(x){ return (x.name || producerName(x.producer)) + "（" + x.total + " 号）"; }).join("、")
+    : "当前没有已接入上游反代的客户端，上游模型表拉不到。";
+  if (readonly.length){
+    clientNote += "；另有 " + readonly.map(function(x){ return (x.name || producerName(x.producer)) + "（" + x.total + " 号）"; }).join("、") + " 只可查看，不承接流量。";
+  }
+  html += card("模型发布清单（上游可勾 " + avail.length + " 个 · 当前对外 " + models.length + " 个）",
+    "账号自己携带的模型能力由网关从上游拉取；默认全量放开，想收窄就在下面勾。" + clientNote,
+    modelBody +
+    '<div class="note" style="margin-top:10px">' +
+    '<b>清单从哪来</b>：网关带账号自己的 token 去上游读模型目录（/v3/config 全量口径，按 id 去重），' +
+    '不读本机任何 agent 的自定义模型——所以这里看到的都是<b>账号本身携带</b>的能力。<br>' +
+    '<b>为什么是 44~45 个</b>：上游目录里的 cli 面（16 个）是它的子集，另外那些是 web/console 面的条目；' +
+    '默认全量发布，不需要的在这里取消勾选即可（一个都不勾 = 全部放开）。<br>' +
+    '<b>名字尾巴上的 -free / -x0.11</b>：就是费率档位落在模型名上的样子（免费 -free，收费按自身倍率 -x0.11）。' +
+    '客户端拉到的模型名带这个尾巴，请求带回来网关会自动剥掉再路由，所以带不带都能调。<br>' +
+    '<b>国际版（wba）为什么单列一组</b>：它的型号和国内版<b>不是同一批</b>（gpt-6-astra / ' +
+    'gemini-3.5-flash / grok-4.7 等只有国际版有）。清单里国际版的键是 ' +
+    '<span class="mono">global:&lt;裸 id&gt;</span>，与国内版同名的（fast-model、glm-5.3 等）各占一把开关；' +
+    '工具栏「国际版单独控制」：勾上 = 两域各一把开关；取消勾选 = 裸名字同时管两域（旧清单兼容）。' +
+    '它<b>切换即时生效</b>（直接写进配置，不用点保存、不用重启）——关掉它再勾一个 CN 型号，' +
+    '国际版的同名型号会立刻跟着开。<br>' +
+    '<b>zcode 段按套餐额度收敛</b>：zcode 的 /models 是<b>整家厂商的目录</b>（列了 11 个 GLM 型号），真正能调用的只有' +
+    '该号<b>套餐覆盖</b>的那些（周末活动的号只有 glm-5.3-flash）——在「获取源 → switch 账本 → zcode 卡片 → 看候选 → 读全部额度」' +
+    '里能看到每个号实际覆盖哪些。有额度的算「可用」，目录里其余标「未授权」并默认收起；对外 /v1/models 也不发未授权的' +
+    '（列出去就等于承诺能调），要强行发就勾上那几条。' +
+    '</div>');
+  return html;
+}
+/* ---------- 帮助 ---------- */
+function viewHelp(){
+  var html = head("怎么用", "从获取账号到反代出去，一共四步。");
+  html += card("四步走完", "",
+    '<ol class="steps">' +
+    '<li><b>获取源</b>：三个页签分别对应「应用内登录态探查」「switch 账本」「导入文件」。账号进的是同一个号池，来源记在台账里。</li>' +
+    '<li><b>账号池</b>：核对每个账号的来源、积分、健康；坏的号复活，不想用的号停用。</li>' +
+    '<li><b>输出 API</b>：选输出格式、写监听端口、可选地设模型前缀和费率后缀，保存。</li>' +
+    '<li><b>接客户端</b>：把 Base URL 和密钥填进去，拉一次模型列表确认。</li>' +
+    '</ol>');
+  html += card("三种来源分别怎么拿", "",
+    '<div class="note">' +
+    '<b>应用内登录态</b>：读的是各 AI 工具自己存的那一份当前登录。本机探查会逐个报出路径与形态；' +
+    '只有明文 json 能直接读，加密（enc:v1）/ Electron leveldb / SQLite 三种形态明确标注读不了——不猜、不硬解。<br>' +
+    '<b>switch 账本</b>：wb-switch / zcode-switch 这类工具已经帮你把多个账号聚合好了。' +
+    '两种账本都能看候选并导入：WorkBuddy 走 workbuddy 上游，zcode 走智谱（BigModel / Z.ai）上游——' +
+    '两者凭据不同构，网关按账号归属分别路由，互不代打。<br>' +
+    '<b>导入文件</b>：别的机器导出的 JSON 快照直接粘进来，导入时选好归属来源。' +
+    '三种形状（wb-switch 条目 / auth 扁平形 / 插件 OAuth 嵌套形）后端都认。' +
+    '</div>');
+  html += card("整体迁移到另一台机器", "",
+    '<div class="note">' +
+    '拷三样东西就走：<span class="mono">config.json</span>、<span class="mono">auths/</span> 目录、<span class="mono">data/</span> 目录。<br>' +
+    '到新机器改 <span class="mono">config.json</span> 里的 <span class="mono">listen</span>（或直接在「输出 API」页改），启动同一个 exe 即可。<br>' +
+    '账号来源台账落在 <span class="mono">auths/.origins.json</span>，跟着目录一起走，所以新机器上归类照样是对的。' +
+    '</div>');
+  return html;
+}
+
+/* ---------- 数据加载 ---------- */
+async function loadHealth(){
+  try { S.health = await api("/healthz"); } catch (e) { S.health = null; }
+  // 只更新状态点：15s 一次的重画会把用户滚到一半的页面/列表弹回顶部。
+  updateSvcDot();
+}
+/* loadStatus 拉一次 /status，并回答「跟上一次比有没有变化」——后台 30s 轮询据此决定
+   要不要重画：没变就一个 DOM 都不动（不打断滚动、输入与勾选）。 */
+async function loadStatus(){
+  var prev = S.status ? JSON.stringify(S.status) : "";
+  try { S.status = await api("/status"); } catch (e) { S.status = null; }
+  return (S.status ? JSON.stringify(S.status) : "") !== prev;
+}
+async function loadSources(){ try { S.src = await api("/admin/sources"); } catch (e) { S.src = null; } }
+async function loadOrigins(){ try { S.origins = await api("/admin/sources/origins"); } catch (e) { S.origins = null; } }
+async function loadOutput(){
+  try { S.out = await api("/admin/output"); } catch (e) { S.out = null; }
+  // 域作用域：新清单（国际版用 global:<裸 id> 自己的键）默认「分开控制」。旧存档没标过
+  // 这个键也按勾上显示——面板里国际版该开的行会显示成已勾（后端按旧语义算的 selected），
+  // 保存后集合不变，只是从此两域各一把开关。用户取消勾选即回到「裸名字同时管两域」。
+  var ocfg = (S.out && S.out.output) || {};
+  S.realmScoped = (ocfg.models_realm_scoped !== false);
+  initModelSel();
+}
+/* initModelSel 用服务端回显的 available_models 铺一次勾选草稿。
+   只在草稿为空时铺（S.modelSel=null）；用户改动过就不覆盖，避免刷新把手上勾选冲掉。 */
+function initModelSel(){
+  if (S.modelSel) return;
+  var avail = (S.out && S.out.available_models) || [];
+  var sel = {};
+  avail.forEach(function(m){ sel[m.key || m.id] = !!m.selected; });
+  S.modelSel = sel;
+}
+async function loadModels(){
+  try { var r = await api("/v1/models"); S.models = (r && r.data) || []; }
+  catch (e) { S.models = []; }
+}
+/* refreshAll 是**唯一**的刷新入口（右上角那个按钮）：状态、来源台账、输出清单、
+   模型表、上游余额一次拉齐；候选面板开着就顺手重拉一次（保留已勾选与探活/额度标记，
+   不会把用户手上的选择冲掉）。余额后端是「先回旧值 + 后台重查」，所以不拖慢这一轮。 */
+async function refreshAll(silent){
+  var first = !S.status;
+  var err = null;
+  var jobs = [
+    loadStatus(), loadSources(), loadOrigins(), loadOutput(), loadModels(), loadHealth(),
+    loadCredits(!first)
+  ];
+  // 候选面板开着就顺手重拉——但只在**没探过活/读过额度**时做：
+  // 那两个动作每个号一次外网往返，全局刷新不该把它们偷偷重跑一遍。
+  if (S.candKind && S.srcTab === "switch" && !S.candProbe && !S.candBalance){
+    jobs.push(reloadCands(false, false, true));
+  }
+  await Promise.all(jobs);
+  if (!S.src && first) err = "管理端点没起来：确认 config.json 里 admin.enabled=true，且网关已重启。";
+  render();
+  if (err) toast("err", err, 9000);
+  else if (!silent){
+    var st = S.status || {};
+    var acc = (st.total ? (st.healthy + " / " + st.total) : "?");
+    var mc = (S.models && S.models.length) ? (" · 对外模型 " + S.models.length) : "";
+    toast("ok", "已刷新 · 可用账号 " + acc + mc, 2000);
+  }
+}
+/* ---------- 动作 ---------- */
+function checkedIDs(){
+  return Object.keys(S.checked).filter(function(k){ return S.checked[k]; });
+}
+async function doImport(kind, ids, text, method, detail){
+  if (S.busy){ toast("info", "上一个导入还在进行", 2000); return; }
+  S.busy = true;
+  try {
+    var body = { kind: kind };
+    if (ids && ids.length) body.ids = ids;
+    if (text) body.text = text;
+    if (method) body.method = method;
+    if (detail) body.detail = detail;
+    var r = await api("/admin/sources/import", { method: "POST", body: body });
+    var res = (r && r.result) || {};
+    var n = (res.imported || []).length, sk = (res.skipped || []).length;
+    var errs = res.errors || [];
+    if (errs.length) toast("err", "导入有错误：" + errs.slice(0, 2).join("；"), 9000);
+    toast(n ? "ok" : "info", "导入 " + n + " 个 · 跳过 " + sk + " 个 · 池里现有 " + ((r && r.pool && r.pool.total) || 0) + " 个账号", 4200);
+    S.cand = null; S.checked = {};
+    await refreshAll(true);
+  } catch (e) {
+    toast("err", e.message, 9000);
+  } finally {
+    S.busy = false;
+  }
+}
+async function openCands(kind, opt){
+  S.tab = "sources"; S.srcTab = "switch"; S.checked = {};
+  var o = opt || {};
+  S.candProbe = !!o.probe; S.candBalance = !!o.balance;
+  try {
+    var r = await api("/admin/sources/" + kind + "/candidates" + candQuery(o.probe, o.balance));
+    S.cand = (r && r.candidates) || [];
+    S.candKind = kind;
+    S.candNote = (r && r.note) || "";
+    S.cand.forEach(function(x){ if (!x.imported) S.checked[x.id] = false; });
+    render();
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* candQuery 拼候选列表的查询串：探活/读额度都是可选动作，默认一个都不带。 */
+function candQuery(probe, balance){
+  var q = [];
+  if (probe) q.push("probe=1");
+  if (balance) q.push("balance=1");
+  return q.length ? "?" + q.join("&") : "";
+}
+/* reloadCands 就地重拉候选（探活/读额度用）：保留已勾选状态，只换数据。
+   探活是每号一次外网往返，所以按钮点下去会等一会儿；这里先提示再请求。 */
+async function reloadCands(probe, balance, silent){
+  if (S.busy){ if (!silent) toast("info", "上一个操作还在进行", 2200); return; }
+  S.busy = true;
+  var keep = S.checked || {};
+  // 探活 / 读额度是「累加」的：已经探过的号不该因为随后读额度又被清空。
+  var wantProbe = !!probe || !!S.candProbe;
+  var wantBalance = !!balance || !!S.candBalance;
+  if (!silent){
+    if (probe) toast("info", "正在逐号探活（每号一次外网往返，稍等）…", 2400);
+    else if (balance) toast("info", "正在读额度…", 2400);
+  }
+  try {
+    var r = await api("/admin/sources/" + S.candKind + "/candidates" + candQuery(wantProbe, wantBalance));
+    S.cand = (r && r.candidates) || [];
+    S.candNote = (r && r.note) || "";
+    S.candProbe = wantProbe;
+    S.candBalance = wantBalance;
+    S.checked = {};
+    S.cand.forEach(function(x){ if (!x.imported) S.checked[x.id] = !!keep[x.id]; });
+    render();
+    if (!silent) toast("ok", probe ? "探活完成" : "额度已读取", 2600);
+  } catch (e) { toast("err", e.message, 12000); }
+  finally { S.busy = false; }
+}
+function doPaste(){
+  var box = $("#pasteBox");
+  var text = box ? box.value.trim() : "";
+  if (!text){ toast("info", "先贴上账号 JSON"); return; }
+  var m = $("#impMethod"), d = $("#impDetail");
+  doImport("paste", null, text, (m && m.value) || "file", (d && d.value.trim()) || "");
+}
+async function saveOutput(){
+  var f = $("#outFormat"), l = $("#outListen"), p = $("#outPrefix"), r = $("#outRate");
+  if (!f || !l) return;
+  try {
+    var res = await api("/admin/output", { method: "PUT", body: {
+      format: f.value,
+      listen: l.value.trim(),
+      model_prefix: p ? p.value.trim() : "",
+      rate_hint: r ? r.value : "credit"
+    } });
+    S.out = res;
+    if (res && res.restart_required) toast("info", res.restart_note || "端口已写入 config.json，重启网关后生效", 8000);
+    else toast("ok", "已保存（前缀与费率即时生效）", 3600);
+    await refreshAll(true);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* setModelSel 用谓词重铺勾选草稿（全选/全不选/只留默认共用一套）。 */
+function setModelSel(fn){
+  var avail = (S.out && S.out.available_models) || [];
+  var sel = {};
+  // 未授权的行不参与「全选/只留默认」：它们是目录残留，不是这个号池的能力。
+  avail.forEach(function(m){ sel[m.key || m.id] = (m.entitled === false) ? false : !!fn(m); });
+  S.modelSel = sel;
+  S.modelDirty = true; // 用户动过草稿：热切换「国际版单独控制」时别用服务端回显把它冲掉
+  render();
+}
+/* entitledOf 只留「号池真的有额度」的模型（后端 entitled 字段；缺省视为有额度）。
+   计数与「全选」都按它走：未授权的行看得见、能勾，但不该混进默认口径。 */
+function entitledOf(list){
+  return (list || []).filter(function(m){ return m.entitled !== false; });
+}
+/* gcountText 一组模型的「已勾」文案。分母只数真有额度的（可用模型 N 个那个口径）；
+   未授权那些勾上了单独报一个数——它们不在分母里，不单独说就看不见自己勾了什么。 */
+function gcountText(ent, unent, sel){
+  var gsel = (ent || []).filter(function(m){ return sel[m.key || m.id]; }).length;
+  var usel = (unent || []).filter(function(m){ return sel[m.key || m.id]; }).length;
+  return "已勾 " + gsel + " / " + (ent || []).length + (usel ? " · 另勾 " + usel + " 未授权" : "");
+}
+/* updModelCount 勾选数就地更新（不整页重渲染，避免滚动位置被冲掉）：
+   顶部总计数 + 每个分组表头那行「已勾 x / y」一起刷。 */
+function updModelCount(){
+  var avail = (S.out && S.out.available_models) || [];
+  var sel = S.modelSel || {};
+  var unentOf = function(list){ return list.filter(function(m){ return m.entitled === false; }); };
+  var el = $("#mSelCount");
+  if (el) el.textContent = gcountText(entitledOf(avail), unentOf(avail), sel);
+  // 分组表头用 render() 同一套键（producer + realm）重算，别让表头停在旧数字上。
+  var groups = {};
+  avail.forEach(function(m){
+    var k = (m.producer || "workbuddy") + (m.realm ? "/" + m.realm : "");
+    (groups[k] = groups[k] || []).push(m);
+  });
+  $$("[data-gcount]").forEach(function(node){
+    var g = groups[node.getAttribute("data-gcount")] || [];
+    node.textContent = gcountText(entitledOf(g), unentOf(g), sel);
+  });
+}
+/* saveModels 保存发布清单：只发勾上的裸 id；一个都没勾 = 全部放开（后端按空名单处理）。 */
+async function saveModels(){
+  var avail = (S.out && S.out.available_models) || [];
+  if (!avail.length){
+    toast("info", "上游还没拉到模型表，先别保存（会把清单清空）", 5000);
+    return;
+  }
+  var sel = S.modelSel || {};
+  var ids = avail.filter(function(m){ return sel[m.key || m.id]; }).map(function(m){ return m.key || m.id; });
+  // 全勾 = 等价于不过滤，先确认一次（手滑点「全选」就会变成放开全部）。
+  var entCount = entitledOf(avail).length;
+  if (entCount > 0 && draftSelCount() === entCount && !confirmAllOpen()) return;
+  try {
+    var res = await api("/admin/output", { method: "PUT", body: { models: ids, models_realm_scoped: !!S.realmScoped } });
+    S.out = res; S.modelSel = null; S.modelDirty = false; initModelSel();
+    toast("ok", ids.length ? ("已发布 " + ids.length + " 个模型") : "已恢复全部放开（不再过滤）", 4200);
+    await refreshAll(true);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+function draftSelCount(){
+  var ent = entitledOf(S.out && S.out.available_models);
+  var sel = S.modelSel || {};
+  return ent.filter(function(m){ return sel[m.key || m.id]; }).length;
+}
+/* confirmAllOpen 全勾 = 等价于不过滤，提醒一句（用户可能只是手滑点了全选）。 */
+function confirmAllOpen(){
+  return window.confirm("全部勾上 = 不过滤，等价于「恢复为全部放开」。确定这样保存吗？");
+}
+/* applyRealmScoped 「国际版单独控制」热生效。它只改白名单的键语义——裸 id 是否连带管
+   国际版（wba）的同名型号（见 publishAllows）——后端读的是同一份配置，所以写进去立刻生效：
+   不用重启，也不用点「保存发布清单」。勾选草稿不动（用户动过就原样留着；没动过就按服务端
+   新口径重铺一次，让国际版那几行如实回显）。 */
+async function applyRealmScoped(){
+  try {
+    var res = await api("/admin/output", { method: "PUT", body: { models_realm_scoped: !!S.realmScoped } });
+    S.out = res;
+    if (!S.modelDirty){ S.modelSel = null; }
+    initModelSel();
+    render();
+    toast("ok", S.realmScoped
+      ? "国际版单独控制：已开启——CN 与国际版各用一把开关，同名型号互不影响"
+      : "国际版单独控制：已关闭——裸名字一把开关，同时管 CN 与国际版的同名型号", 5600);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* resetModels 一键清空白名单：恢复成「上游有什么就发什么」。 */
+async function resetModels(){
+  try {
+    var res = await api("/admin/output", { method: "PUT", body: { models: [], models_realm_scoped: !!S.realmScoped } });
+    S.out = res; S.modelSel = null; S.modelDirty = false; initModelSel();
+    toast("ok", "已恢复全部放开：上游拉到的模型全部对外发布", 4200);
+    await refreshAll(true);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* ---------- 出口动作 ---------- */
+function chanNextId(list){
+  var used = {};
+  list.forEach(function(c){ used[c.id] = 1; });
+  for (var i = 1; i < 999; i++){ var id = "ch" + i; if (!used[id]) return id; }
+  return "ch" + Date.now();
+}
+function chanNextPort(list){
+  var used = {};
+  list.forEach(function(c){ var m = /:(\d+)$/.exec(c.listen || ""); if (m) used[Number(m[1])] = 1; });
+  for (var p = 7870; p < 7970; p++){ if (!used[p]) return p; }
+  return 7870;
+}
+async function chanAdd(){
+  var list = (chanReadDom(chanDraftList()) || chanDraftList()).slice();
+  // 默认不写 format/rate_hint：留空 = 继承主口，避免新出口一出生就带一份冗余配置。
+  list.push({ id: chanNextId(list), name: "", listen: "127.0.0.1:" + chanNextPort(list),
+    format: "", model_prefix: "", rate_hint: "", producers: [], models: [] });
+  S.chanDraft = list; render();
+}
+function chanDel(i){
+  var list = (chanReadDom(chanDraftList()) || chanDraftList()).slice();
+  list.splice(Number(i), 1);
+  S.chanDraft = list; render();
+}
+async function chanSave(){
+  var list = chanReadDom(chanDraftList());
+  if (!list){ toast("info", "还没有出口可保存"); return; }
+  // 与主口取值相同的字段 = 用户并没有想单独覆盖它，归一化成空串交给后端按「继承主口」处理。
+  // 否则配置里会躺着一份和主口一模一样的显式值，看着像每个出口都在重复配置。
+  var base = (S.out && S.out.output) || {};
+  list = list.map(function(c){
+    var x = { id: c.id, name: c.name, listen: c.listen, producers: c.producers };
+    if (c.format && c.format !== (base.format || "openai")) x.format = c.format;
+    if (c.model_prefix && c.model_prefix !== (base.model_prefix || "")) x.model_prefix = c.model_prefix;
+    if (c.rate_hint && c.rate_hint !== (base.rate_hint || "credit")) x.rate_hint = c.rate_hint;
+    // 发布清单：空 = 继承主口；只在真的不一样时才写进去（后端也会再折一次）。
+    if (c.models && c.models.length) x.models = c.models;
+    return x;
+  });
+  var err = null, seenId = {}, seenListen = {};
+  list.forEach(function(c, i){
+    var no = i + 1;
+    if (!c.id) err = err || ("第 " + no + " 个出口的 id 不能为空");
+    else if (!/^[a-z0-9][a-z0-9_-]*$/.test(c.id)) err = err || ("出口 id「" + c.id + "」只能用小写字母/数字/-/_，且以字母数字开头");
+    else if (seenId[c.id]) err = err || ("出口 id 重复了：" + c.id);
+    else if (!c.listen) err = err || ("出口「" + c.id + "」的监听端口不能为空");
+    else if (seenListen[c.listen]) err = err || ("出口监听地址重复了：" + c.listen);
+    seenId[c.id] = 1; seenListen[c.listen] = 1;
+  });
+  if (err){ toast("err", err, 7000); return; }
+  try {
+    var res = await api("/admin/output", { method: "PUT", body: { channels: list } });
+    S.out = res; S.chanDraft = null;
+    var bad = ((res && res.channel_status) || []).filter(function(x){ return !x.running; });
+    if (bad.length){
+      toast("err", "有出口没起来：" + bad.map(function(x){ return x.id + "（" + (x.error || "端口不可用") + "）"; }).join("；"), 9000);
+    } else {
+      toast("ok", list.length ? ("已保存 " + list.length + " 个出口，立即生效") : "已清空出口：全部走主口", 4200);
+    }
+    await refreshAll(true);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+/* resetCooldowns 清空池内冷却/熔断/连败计数（停用与手工禁用不动）。 */
+async function resetCooldowns(){
+  try {
+    var r = await api("/admin/accounts/reset", { method: "POST", body: {} });
+    toast("ok", (r && r.message) || "已清空冷却与失败计数", 5200);
+    await refreshAll(true);
+  } catch (e) { toast("err", e.message, 9000); }
+}
+async function acctOp(uid, op){
+  try {
+    await api("/admin/accounts/" + encodeURIComponent(uid) + "/" + op, { method: "POST", body: {} });
+    toast("ok", (op === "disable" ? "已停用" : op === "enable" ? "已启用" : "已复活") + "：" + uid, 2600);
+    await loadStatus(); await loadHealth();
+  } catch (e) { toast("err", e.message, 9000); }
+}
+function copyText(t){
+  if (!t) return;
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(t).then(function(){ toast("ok", "已复制：" + t, 1600); },
+      function(){ toast("info", t, 6000); });
+  } else { toast("info", t, 6000); }
+}
+/* ---------- 事件 ---------- */
+async function actOn(t){
+  if (t.hasAttribute("data-copy") && !t.hasAttribute("data-action")){ copyText(t.getAttribute("data-copy")); return; }
+  var act = t.getAttribute("data-action");
+  if (act){
+    if (act === "cands") return openCands(t.getAttribute("data-kind"));
+    if (act === "quick"){
+      var qk = t.getAttribute("data-kind") || "wb-switch";
+      if (qk === "zcode-switch") return doImport("zcode-switch", null, null, "switch", "zcode-switch 账本");
+      return doImport("wb-switch", null, null, "switch", "wb-switch 账本");
+    }
+    if (act === "import-paste") return doPaste();
+    if (act === "pick-file"){ var fp = $("#filePick"); if (fp) fp.click(); return; }
+    if (act === "cand-all"){ (S.cand || []).forEach(function(x){ if (!x.imported) S.checked[x.id] = true; }); return render(); }
+    if (act === "cand-none"){ S.checked = {}; return render(); }
+    if (act === "cand-import"){
+      // 两种账本都是「来源 = switch」；粘贴导入（candKind 非账本）才是 file。
+      var meth = (S.candKind === "wb-switch" || S.candKind === "zcode-switch") ? "switch" : "file";
+      return doImport(S.candKind, checkedIDs(), null, meth, S.candKind);
+    }
+    if (act === "zcode-probe") return reloadCands(true, false);
+    if (act === "zcode-balance") return reloadCands(false, true);
+    if (act === "cand-close"){ S.cand = null; return render(); }
+    if (act === "acct") return acctOp(t.getAttribute("data-uid"), t.getAttribute("data-op"));
+    if (act === "save-out") return saveOutput();
+    if (act === "save-models") return saveModels();
+    if (act === "model-all") return setModelSel(function(){ return true; });
+    if (act === "model-none") return setModelSel(function(){ return false; });
+    if (act === "model-default") return setModelSel(function(m){ return !!m.is_default; });
+    if (act === "model-reset") return resetModels();
+    if (act === "credits-refresh") return loadCredits(true);
+    if (act === "reset-cooldowns") return resetCooldowns();
+    if (act === "chan-add") return chanAdd();
+    if (act === "chan-del") return chanDel(t.getAttribute("data-i"));
+    if (act === "chan-model-all") return chanModelToggle(t.getAttribute("data-i"), function(){ return true; });
+    if (act === "chan-model-none") return chanModelToggle(t.getAttribute("data-i"), function(){ return false; });
+    if (act === "chan-model-inherit") return chanModelToggle(t.getAttribute("data-i"),
+      function(cb){ return cb.hasAttribute("data-cmi"); });
+    if (act === "chan-save") return chanSave();
+    return;
+  }
+  if (t.hasAttribute("data-filter")){ S.poolFilter = t.getAttribute("data-filter"); return render(); }
+  if (t.hasAttribute("data-pclient")){
+    S.poolClient = t.getAttribute("data-pclient");
+    // 切客户端时把域筛选归位：新客户端不分区、或没显式传域，就回「全部」——
+    // 否则会留下一个看不见却仍在生效的域筛选。
+    if (t.hasAttribute("data-prealm")) S.poolRealm = t.getAttribute("data-prealm");
+    else if (S.poolClient === "all" || producerRealms(S.poolClient).length < 2) S.poolRealm = "all";
+    if (t.hasAttribute("data-goto")) return go("pool");
+    return render();
+  }
+  if (t.hasAttribute("data-prealm")){ S.poolRealm = t.getAttribute("data-prealm"); return render(); }
+  if (t.hasAttribute("data-srctab")){
+    var m = t.getAttribute("data-srctab");
+    if (t.hasAttribute("data-goto")) return go("sources", { srcTab: m });
+    S.srcTab = m; S.cand = null; return render();
+  }
+  if (t.hasAttribute("data-goto")) return go(t.getAttribute("data-goto"));
+}
+function bind(){
+  // <details> 的 toggle 不冒泡，只能捕获阶段接：记住出口折叠区的开合，render() 之后不丢。
+document.addEventListener("toggle", function(ev){
+  var t = ev.target;
+  if (t && t.classList && t.classList.contains("chan-adv")){
+    var id = t.getAttribute("data-cadv") || "";
+    if (id){ S.chanOpen[id] = !!t.open; }
+  }
+}, true);
+document.addEventListener("click", function(ev){
+    var e = ev.target;
+    var t = (e && e.closest) ? e.closest("[data-goto],[data-srctab],[data-filter],[data-pclient],[data-prealm],[data-action],[data-copy]") : null;
+    if (t) actOn(t);
+  });
+  $("#view").addEventListener("change", function(ev){
+    var t = ev.target;
+    if (!t) return;
+    if (t.hasAttribute && t.hasAttribute("data-cand")){
+      S.checked[t.getAttribute("data-cand")] = !!t.checked;
+      render();
+      return;
+    }
+    if (t.hasAttribute && t.hasAttribute("data-ckp")){
+      var lb = t.closest ? t.closest(".ptog") : null;
+      if (lb) lb.classList.toggle("on", !!t.checked);
+      // 改「服务来源」= 改了这个口的候选模型集合：立刻重画一次，让发布清单跟着换到
+      // 新范围（render 前会先把当前 DOM 收进草稿，其它没保存的输入不会丢）。
+      var crow = t.closest ? t.closest("[data-chan-row]") : null;
+      if (crow){ S.chanDraft = chanReadDom(chanDraftList()) || S.chanDraft; render(); }
+      return;
+    }
+    if (t.hasAttribute && t.hasAttribute("data-cmk")){
+      var mr = t.closest ? t.closest(".mrow") : null;
+      if (mr) mr.classList.toggle("off", !t.checked);
+      updChanRow(t.getAttribute("data-cmk"));
+      return;
+    }
+    var cw = (t.closest ? t.closest("[data-chan-row]") : null);
+    if (cw){ updChanRow(cw.getAttribute("data-chan-row")); }
+    if (t.id === "realmScoped"){ S.realmScoped = !!t.checked; applyRealmScoped(); return; }
+    if (t.id === "showUnent"){
+      var ml = $("#mList");
+      if (ml) ml.classList.toggle("hideunent", !t.checked);
+      S.showUnent = !!t.checked; // 记住：重画/保存后别自己收回去
+      return;
+    }
+    if (t.hasAttribute && t.hasAttribute("data-model")){
+      if (!S.modelSel) initModelSel();
+      S.modelSel[t.getAttribute("data-model")] = !!t.checked;
+      S.modelDirty = true;
+      var row = t.closest ? t.closest(".mrow") : null;
+      if (row) row.classList.toggle("off", !t.checked);
+      updModelCount();
+      return;
+    }
+    if (t.id === "filePick" && t.files && t.files[0]){
+      var f = t.files[0], rd = new FileReader();
+      rd.onload = function(){
+        var box = $("#pasteBox");
+        if (box) box.value = String(rd.result || "");
+        toast("ok", "已读入 " + f.name + "，确认来源后点「导入到号池」", 4200);
+      };
+      rd.readAsText(f);
+    }
+  });
+  $("#btnKey").addEventListener("click", function(){
+    var p = $("#keyPop");
+    p.classList.toggle("hidden");
+    if (!p.classList.contains("hidden")) $("#keyInput").value = S.apiKey || "";
+  });
+  $("#btnKeyClose").addEventListener("click", function(){ $("#keyPop").classList.add("hidden"); });
+  $("#btnKeySave").addEventListener("click", function(){
+    S.apiKey = ($("#keyInput").value || "").trim();
+    if (S.apiKey) localStorage.setItem("wb_key", S.apiKey); else localStorage.removeItem("wb_key");
+    $("#keyPop").classList.add("hidden");
+    toast("ok", S.apiKey ? "密钥已保存到本机浏览器" : "已清空密钥（本机直连免密钥）", 2600);
+    refreshAll(true);
+  });
+  $("#btnRefresh").addEventListener("click", async function(){
+    var b = $("#btnRefresh");
+    b.classList.add("spin");
+    await refreshAll(false);
+    b.classList.remove("spin");
+  });
+}
+/* ---------- 启动 ---------- */
+(async function boot(){
+  $("#btnKey").innerHTML = svg("key");
+  $("#btnRefresh").innerHTML = svg("refresh");
+  bind();
+  renderNav();
+  render();
+  await refreshAll(true);
+  // 网关刚重启时模型池要几秒才从上游拉回来，这一轮会拿到空表，
+  // 界面就停在「当前对外 0 个」不再自愈。补一次延迟重试（仅在上一次确实为空时）。
+  if (!S.models || !S.models.length){
+    setTimeout(function(){ loadModels().then(function(){ render(); }); }, 2500);
+  }
+  setInterval(function(){ loadHealth(); }, 15000);
+  setInterval(function(){ loadStatus().then(function(changed){ if (changed) render(); }); }, 30000);
+})();
+</script>
+</body>
+</html>

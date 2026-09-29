@@ -1,0 +1,49 @@
+# Auth & secrets
+auths/
+data/
+*.key
+*.pem
+*.env
+.env
+.env.*
+
+# Binaries (anchored to repo root only — bare "login"/"credit" would also ignore cmd/login/, cmd/credit/)
+/login
+/credit
+/free2api
+/signin_bin
+/login.exe
+/credit.exe
+/free2api.exe
+/signin_bin.exe
+
+# Config with secrets (use config.example.json)
+config.json
+
+# Build artifacts
+*.tmp
+__pycache__/
+
+# 运行时产物（API Key / 进程号 / 日志 / 工具草稿目录）
+# 为什么显式列 .apikey：它不是 config.json 的别名，而是 login.sh 等工具单独落盘的密钥文件，
+# 不写进这里会被 git add -A 直接提交（含明文 api_key）。
+.apikey
+.server.pid
+free2api.pid
+*.log
+draft_*_folder/
+
+# Backups (contains auth tokens)
+backups/
+
+# IDE
+.idea/
+.vscode/
+LOOP.md
+PLAN.md
+SPEC.md
+docs/
+
+# 设计/计划文档（但 README.md 必须进版本库）
+*.md
+!README.md

@@ -1,0 +1,167 @@
+name: 'AI Issue Governance'
+description: 'AI 驱动的 issue 治理：垃圾检测、要点提炼、canonical 归并、规范化重开（源自 NoMore Spam，MIT）'
+author: 'free2api contributors (基于 JohnsonRan/nomore-spam)'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  github-token:
+    description: 'GitHub token（issues:write 足够；PR 治理改写标题/正文需 pull-requests:write；走 GitHub Models 时还需 models:read）'
+    required: true
+    default: '${{ github.token }}'
+  governance-token:
+    description: '治理身份令牌：传入 claude-identity 换票步骤的输出（runner OIDC 向 Anthropic 换来的 Claude App installation token），治理写操作以 claude[bot] 署名；缺省回落 github-token（github-actions[bot]）'
+    required: false
+    default: ''
+  ai-model:
+    description: 'AI 模型名'
+    required: false
+    default: 'openai/gpt-4o'
+  ai-base-url:
+    description: '自定义 OpenAI 兼容 API base URL；缺省回落 GitHub Models'
+    required: false
+    default: ''
+  ai-api-key:
+    description: '自定义 API key；缺省使用 GitHub token'
+    required: false
+    default: ''
+  ai-api-type:
+    description: 'OpenAI 兼容 API 类型：chat-completions 或 responses'
+    required: false
+    default: 'chat-completions'
+  labels:
+    description: '逗号分隔的分类标签（对齐仓库 label 体系）'
+    required: false
+    default: 'bug,enhancement,question,documentation'
+  language:
+    description: '机器人评论语言：en 或 zh-CN'
+    required: false
+    default: 'zh-CN'
+  analyze-file-changes:
+    description: '是否分析 PR 文件变更（垃圾/质量检测与历史语境评审的核心证据；R12 统一默认开启）'
+    required: false
+    default: 'true'
+  max-analysis-depth:
+    description: '分析深度：light / normal / deep'
+    required: false
+    default: 'normal'
+  blacklist:
+    description: '逗号分隔的自动关闭黑名单用户名'
+    required: false
+    default: ''
+  # ---- 治理层参数 ----
+  canonical-label:
+    description: '归并目标标记标签（canonical issue 的发现机制）'
+    required: false
+    default: 'canonical'
+  duplicate-label:
+    description: '重复 issue 打上的标签'
+    required: false
+    default: 'duplicate'
+  skip-users:
+    description: '逗号分隔的额外跳过账号（默认已豁免 github-actions[bot]）'
+    required: false
+    default: ''
+  dry-run:
+    description: '演练模式：只评论不关闭/不创建/不打标签（上线前先用 true 验证）'
+    required: false
+    default: 'true'
+  maintainer-exempt:
+    description: '仓库协作者提交的 issue 跳过治理（只做垃圾检测与分类）'
+    required: false
+    default: 'true'
+  enable-pr-governance:
+    description: '是否启用 PR 治理（垃圾检测 + 要点提炼 + canonical 关联，永不关闭合法 PR）'
+    required: false
+    default: 'false'
+  max-canonical-index:
+    description: '归并匹配索取的 canonical issue 数量上限'
+    required: false
+    default: '50'
+  canonical-body-truncate:
+    description: '构造 canonical 索引时每条正文的截断长度'
+    required: false
+    default: '1500'
+  # ---- PR 历史语境评审（pr-review-close）----
+  pr-review-close:
+    description: 'PR 历史语境评审开关：开启后 AI 对照相关历史 issue 的关闭结论评审新 PR，证据确凿时评论并关闭（默认关闭，关闭后回落旧的 canonical 关联链路）'
+    required: false
+    default: 'false'
+  max-related-issues:
+    description: '历史语境评审纳入的相关历史 issue 数量上限'
+    required: false
+    default: '3'
+  related-comments-per-issue:
+    description: '每条相关 issue 读取的评论数量上限'
+    required: false
+    default: '10'
+  related-body-truncate:
+    description: '历史语境评审中每条 issue 正文的截断长度'
+    required: false
+    default: '1500'
+  # ---- 统一历史语境层 + 两段式 AI 流水线（F1/F2）----
+  max-history-index:
+    description: '历史语境索引拉取的 issue+PR 总量上限（紧凑索引，供筛选与归并匹配共用）'
+    required: false
+    default: '100'
+  enable-two-stage:
+    description: '两段式流水线开关：开启后先廉价筛选 AI 在紧凑索引上选候选，再深加工；关闭时行为与原先完全一致（默认关闭，先暗发观察）'
+    required: false
+    default: 'false'
+  max-screened-candidates:
+    description: '两段式流水线第二阶段纳入的候选数量上限'
+    required: false
+    default: '5'
+  screening-model:
+    description: '筛选阶段专用模型（可选，缺省用 ai-model；可配置更廉价的模型）'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd ${{ github.action_path }}
+        npm ci --production
+
+    - name: Run AI Issue Governance
+      shell: bash
+      run: |
+        cd ${{ github.action_path }}
+        node src/index.js
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_GOVERNANCE_TOKEN: ${{ inputs.governance-token }}
+        INPUT_AI_MODEL: ${{ inputs.ai-model }}
+        INPUT_LABELS: ${{ inputs.labels }}
+        INPUT_LANGUAGE: ${{ inputs.language }}
+        INPUT_ANALYZE_FILE_CHANGES: ${{ inputs.analyze-file-changes }}
+        INPUT_MAX_ANALYSIS_DEPTH: ${{ inputs.max-analysis-depth }}
+        INPUT_BLACKLIST: ${{ inputs.blacklist }}
+        INPUT_AI_BASE_URL: ${{ inputs.ai-base-url }}
+        INPUT_AI_API_KEY: ${{ inputs.ai-api-key }}
+        INPUT_AI_API_TYPE: ${{ inputs.ai-api-type }}
+        INPUT_CANONICAL_LABEL: ${{ inputs.canonical-label }}
+        INPUT_DUPLICATE_LABEL: ${{ inputs.duplicate-label }}
+        INPUT_SKIP_USERS: ${{ inputs.skip-users }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_MAINTAINER_EXEMPT: ${{ inputs.maintainer-exempt }}
+        INPUT_ENABLE_PR_GOVERNANCE: ${{ inputs.enable-pr-governance }}
+        INPUT_MAX_CANONICAL_INDEX: ${{ inputs.max-canonical-index }}
+        INPUT_CANONICAL_BODY_TRUNCATE: ${{ inputs.canonical-body-truncate }}
+        INPUT_PR_REVIEW_CLOSE: ${{ inputs.pr-review-close }}
+        INPUT_MAX_RELATED_ISSUES: ${{ inputs.max-related-issues }}
+        INPUT_RELATED_COMMENTS_PER_ISSUE: ${{ inputs.related-comments-per-issue }}
+        INPUT_RELATED_BODY_TRUNCATE: ${{ inputs.related-body-truncate }}
+        INPUT_MAX_HISTORY_INDEX: ${{ inputs.max-history-index }}
+        INPUT_ENABLE_TWO_STAGE: ${{ inputs.enable-two-stage }}
+        INPUT_MAX_SCREENED_CANDIDATES: ${{ inputs.max-screened-candidates }}
+        INPUT_SCREENING_MODEL: ${{ inputs.screening-model }}

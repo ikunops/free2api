@@ -1,0 +1,33 @@
+{
+  "answer_language": "English",
+  "readme_answer_length": "2-3 sentences",
+  "smart_answer_length": "1-2 sentences",
+  "responses": {
+    "issue_spam": "🤖 This issue was detected as spam and will be closed and locked. If you believe this is a mistake, please contact the repository maintainers.",
+    "issue_content_filtered": "🤖 The AI provider's content safety policy rejected this issue, so automated checks cannot continue. The issue will be closed but not locked. If you believe this is a mistake, edit the content and submit it again or contact the repository maintainers.",
+    "issue_readme_covered": "🤖 Based on the answer above, this question has been resolved and the issue will be closed. Continue the discussion here if you have another question.",
+    "issue_basic": "🤖 This issue concerns basic usage. Please check the documentation or use a search engine first.",
+    "issue_unclear": "🤖 This issue does not contain enough information. Please add:\n\n- A clear description of the problem\n- Expected and actual behavior\n- Environment and version information\n- Reproduction steps\n- Relevant logs or screenshots",
+    "readme_answer_prefix": "🤖 Based on the project README:\n\n",
+    "unclear_answer_prefix": "🤖 Based on the project documentation:\n\n",
+    "pr_closed": "🤖 This pull request was detected as spam or does not meet the commit-title requirements and will be closed. If you believe this is a mistake, please contact the repository maintainers.",
+    "pr_content_filtered": "🤖 The AI provider's content safety policy rejected this pull request, so automated checks cannot continue. The pull request will be closed. If you believe this is a mistake, edit the content and submit it again or contact the repository maintainers.",
+    "pr_malicious": "🤖 This pull request contains suspicious or malicious content and will be closed. If you believe this is a mistake, please contact the repository maintainers.",
+    "pr_trivial": "🤖 This pull request contains trivial or meaningless changes and will be closed. Please ensure the pull request provides a useful improvement.",
+    "governance_dry_run": "🤖 Dry-run mode is enabled: Claude Code analyzed this issue but will NOT close or create any issue. Below is what it would have done.",
+    "governance_merge_comment": "🤖 Claude Code summarized and triaged this issue (reopen or contact maintainers if you disagree).\n\n{summary}\n\nThis is highly related to canonical issue #{canonical} and will be merged there. This issue will be closed; track progress on the canonical issue.",
+    "governance_merge_canonical_record": "🤖 Merge record (added by Claude Code):\n\n- Source issue: #{source} (author @{author})\n- Extracted key points:\n{summary}\n- Merged at: {timestamp}",
+    "governance_new_issue_comment": "🤖 Claude Code summarized and normalized this issue (reopen or contact maintainers if you disagree).\n\n{summary}\n\nA normalized issue has been created: #{canonical}\n\nThis issue will be closed; track progress on the normalized issue.",
+    "governance_well_formed_comment": "🤖 This issue is already well-formed (template + complete), Claude Code only classifies it with repository labels and will not reopen or merge it.",
+    "governance_uncertain_comment": "🤖 Claude Code could not reliably decide whether this issue duplicates an existing canonical issue (insufficient evidence), so it passes without closing. A maintainer will follow up.",
+    "governance_ai_fallback_comment": "🤖 Claude Code is currently unavailable. Per the fail-open policy this issue is left untouched (no close, no merge). Maintainers, please review.",
+    "governance_pr_link_comment": "🤖 Claude Code summarized this PR and linked it to the canonical topic it addresses (contact maintainers if you disagree).\n\n{summary}\n{link_line}\n\nThis PR stays open and is NOT closed by Claude Code.",
+    "governance_pr_match_link_line": "This PR belongs to canonical issue #{canonical}.",
+    "governance_pr_new_link_line": "A new canonical issue #{canonical} has been drafted for this PR's topic.",
+    "governance_pr_canonical_record": "🤖 PR link record (added by Claude Code):\n\n- Source PR: #{source} (author @{author})\n- Extracted key points:\n{summary}\n- Linked at: {timestamp}",
+    "governance_pr_uncertain_comment": "🤖 Claude Code could not reliably decide which canonical issue this PR belongs to (insufficient evidence), so it passes without linking. A maintainer will follow up.",
+    "governance_log_prefix": "✅ Claude Code action log: {action}",
+    "issue_blacklist": "This issue was automatically closed because the author is on the blacklist.",
+    "governance_history_reference_note": "The historical entries cited above refer to their original threads by number."
+  }
+}

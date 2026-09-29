@@ -1,0 +1,24 @@
+services:
+  free2api:
+    build: .
+    container_name: free2api
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "7863:7863"
+    volumes:
+      # auths 凭证卷：login.sh 在宿主机落盘 workbuddy-<uid>.json（0600），容器网关以
+      # app(uid 10001) 读 + 回写（refresh / realm backfill 走 tmp+rename，需目录写权限）。
+      # 跨 uid 部署（非 root 宿主落盘 / rootful 下宿主 uid≠10001）读不到 → 账号数为 0
+      # （issue #108）。登录后把目录属主交给 10001（与 ./data 卷同口径）：
+      #   chown -R 10001:10001 ./auths
+      # 之后新增账号建议进容器登录（app 自身落盘，属主即 10001，免反复 chown；容器内无
+      # docker CLI，完成后回宿主机重启）：
+      #   docker compose exec -it free2api bash -c './login.sh' && docker compose restart free2api
+      - ./auths:/app/auths
+      # data 保持 bind mount（本地映射，与旧版本一致）。
+      # 若容器内 app(uid 10001) 写 state.json 报 permission denied，宿主机执行：
+      #   chown -R 10001:10001 ./data
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
