@@ -3,6 +3,7 @@
   "api_key": "test_key",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
+  "codex_config_path": "",
   "cooldown": {
     "soft_rate": "600s",
     "soft_rate_max": "2h"

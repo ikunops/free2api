@@ -66,6 +66,9 @@ type Config struct {
 	// ZCodeAppDir ZCode 应用登录态目录覆盖；空 = ~/.zcode/v2。
 	// 只在「号池文件 + 账本都没有凭据」时被读（读额度凭据的第三层兜底）。
 	ZCodeAppDir string
+	// CodexConfigPath Codex config.toml 路径覆盖；空 = $CODEX_HOME/config.toml
+	// 或 ~/.codex/config.toml。只被 /admin/codex* 用来「一键写入 Codex 配置」。
+	CodexConfigPath string
 
 	// ModelPrefix / RateHint 输出侧默认值：只在没挂 Output 存储时生效
 	// （嵌入形态、单元测试）。正常启动走 Output（可热改）。
@@ -187,6 +190,11 @@ func NewHandler(cfg Config) *Handler {
 		// /admin/credits 余额只读查询（按需直查上游 billing，补上「刚装好还没到签到点」的空窗）。
 		h.mux.HandleFunc("GET /admin/credits", h.withLocalOrAuth(h.adminCredits))
 		h.mux.HandleFunc("POST /admin/credits/refresh", h.withLocalOrAuth(h.adminCreditsRefresh))
+		// Codex 一键接入：Codex 没有「自定义供应商」入口，只能代它改 config.toml。
+		// 读现状 / 预览（不落盘）/ 落盘（先备份）。
+		h.mux.HandleFunc("GET /admin/codex", h.withLocalOrAuth(h.adminCodexGet))
+		h.mux.HandleFunc("POST /admin/codex/preview", h.withLocalOrAuth(h.adminCodexPreview))
+		h.mux.HandleFunc("POST /admin/codex/apply", h.withLocalOrAuth(h.adminCodexApply))
 	}
 	// 内嵌中文控制台：GET /{$} 是精确根路径（Go 1.22 mux 语法），
 	// 不用 "/" 以免变成 catch-all 把 404 语义吃掉。

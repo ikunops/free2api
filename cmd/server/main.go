@@ -261,6 +261,8 @@ func main() {
 		WBLedgerPath: cfg.Source.WBLedgerPath,
 		ZCodeDir:     cfg.Source.ZCodeDir,
 		ZCodeAppDir:  cfg.Source.ZCodeAppDir,
+		// Codex 一键接入：config.toml 路径覆盖（空 = $CODEX_HOME / ~/.codex）。
+		CodexConfigPath: cfg.CodexConfigPath,
 		// 输出侧：热可改（模型前缀即时作用于 /v1/models 与入站解析；
 		// 费率提示即时作用于模型描述前缀）。
 		Output: outputStore,

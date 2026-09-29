@@ -153,6 +153,8 @@ td.num{font-variant-numeric:tabular-nums}
 
 .kv{display:grid;grid-template-columns:96px 1fr;gap:9px 14px;font-size:13px}
 .kv>div:nth-child(odd){color:var(--fg3);font-size:12.5px}
+/* codebox：Codex 配置改前/改后对照。等宽、可滚、限高，避免长配置把页面撑爆。 */
+.codebox{background:var(--bg2,#f6f7f9);border:1px solid var(--line,#e3e5e8);border-radius:6px;padding:9px 11px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;max-height:300px;margin:0}
 .empty{border:1px dashed #dcdcd8;border-radius:var(--r2);padding:26px 20px;
   text-align:center;color:var(--fg3);font-size:13px;background:#fdfdfc}
 .clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -346,7 +348,8 @@ const S = {
   candProbe: false, candBalance: false,
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
   modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, realmScoped: true, showUnent: false,
-  credits: null, creditsBusy: false, creditsPolls: 0
+  credits: null, creditsBusy: false, creditsPolls: 0,
+  codex: null, codexPlan: null, codexModel: ""
 };
 const NAV = [
   { group: "运行", items: [ { id: "overview", name: "概览", ico: "grid" } ] },
@@ -1410,6 +1413,72 @@ function chanCard(){
     '<b>跨来源会被挡</b>：出口只发布自己范围内的模型，拿别的来源的模型名调它会被 404（避免配了却形同虚设）。' +
     '</div>');
 }
+/* codexCard —— Codex 一键接入。
+   Codex CLI / 桌面端没有「自定义供应商」入口，只能改 ~/.codex/config.toml。
+   这张卡片负责：读现状 → 预览改前改后 → 用户确认后落盘（先备份）。
+   其它客户端（ZCode / OpenCode / Qoder / Cherry Studio）有 UI 入口，只需抄上面
+   「接入信息」里的 Base URL，不走这张卡。 */
+function codexCard(){
+  var c = S.codex;
+  if (!c) return card("Codex 一键接入", "正在读取 Codex 配置…", '<div class="empty">读取中…</div>');
+  var body = "";
+  // 现状
+  var rows = [
+    ["配置文件", '<span class="mono">' + esc(c.path) + "</span>"],
+    ["状态", c.read_error ? '<span class="tag warn">读取失败</span>' : (c.exists ? '<span class="tag ok">已存在</span>' : '<span class="tag mut">尚未创建</span>')]
+  ];
+  if (c.read_error) rows.push(["错误", '<span class="tag warn">' + esc(c.read_error) + "</span>"]);
+  if (c.exists){
+    rows.push(["当前默认模型", c.current_model ? '<span class="mono">' + esc(c.current_model) + "</span>" : "（未设置）"]);
+    rows.push(["当前供应商", c.current_provider ? '<span class="mono">' + esc(c.current_provider) + "</span>" : "（未设置）"]);
+    if (c.current_base_url) rows.push(["当前指向", '<span class="mono">' + esc(c.current_base_url) + "</span>"]);
+    rows.push(["已写过本网关的段", c.has_our_section ? '<span class="tag ok">是</span>' : '<span class="tag mut">否</span>']);
+  }
+  rows.push(["密钥环境变量", '<span class="mono">' + esc(c.env_key) + "</span> " + (c.env_key_set ? '<span class="tag ok">已设置</span>' : '<span class="tag warn">未设置</span>')]);
+  body += kv(rows);
+
+  // 选模型
+  var ms = c.suggested_models || [];
+  var curModel = S.codexModel || (ms.length ? ms[0] : "");
+  body += '<div class="sep"></div><div class="grid2">' +
+    '<div class="field"><label class="f">写为默认模型</label>' +
+    (ms.length
+      ? '<select id="codexModel">' + ms.map(function(m){ return '<option value="' + esc(m) + '"' + (m === curModel ? " selected" : "") + ">" + esc(m) + "</option>"; }).join("") + "</select>"
+      : '<input id="codexModel" value="' + esc(curModel) + '" placeholder="例如 cn:auto">') +
+    '<div class="hint">' + (ms.length ? "来自「发布清单」里已勾选的模型。" : "发布清单为空——先去下面勾模型，或手填一个。") + "</div></div>" +
+    '<div class="field"><label class="f">Base URL</label><input id="codexBase" value="' + esc(c.suggested_base_url || "") + '">' +
+    '<div class="hint">主口地址（含 /v1）。想给 Codex 单独开出口，就把出口地址填这里。</div></div>' +
+    "</div>";
+
+  // 提示
+  var notes = [];
+  if (c.models_cache_path) notes.push("检测到模型缓存 " + c.models_cache_path + "：换网关后建议删掉，让 Codex 重新拉模型列表（否则选择器可能还显示旧模型）。");
+  if (!c.env_key_set) notes.push("环境变量 " + c.env_key + " 当前未设置。Codex 要求它存在（值可以是任意占位串，网关不鉴权时也一样）。");
+  if (notes.length) body += '<div class="sep"></div>' + notes.map(function(t){ return '<div class="hint">· ' + esc(t) + "</div>"; }).join("");
+
+  // 预览
+  if (S.codexPlan){
+    var pl = S.codexPlan;
+    body += '<div class="sep"></div><div class="f"><label class="f">改动预览</label>' +
+      (pl.changed
+        ? '<div class="hint">下面是要写进去的内容（左边是现状，右边是改后；只动我们的段 + 顶层 model/model_provider 两行，其它内容原样保留）。</div>' +
+          '<div class="grid2" style="margin-top:6px">' +
+          '<pre class="mono codebox">' + esc(pl.before || "（文件不存在，将新建）") + "</pre>" +
+          '<pre class="mono codebox">' + esc(pl.after) + "</pre></div>"
+        : '<div class="hint">配置已是目标状态，无需写入。</div>') +
+      (pl.backup_path ? '<div class="hint">落盘前会先备份到 ' + esc(pl.backup_path) + "</div>" : "") +
+      "</div>";
+  }
+
+  body += '<div class="sep"></div><div class="row">' +
+    '<button data-action="codex-preview">预览改动</button>' +
+    (S.codexPlan && S.codexPlan.changed ? '<button class="pri" data-action="codex-apply">确认写入</button>' : "") +
+    '<span class="hint" style="margin:0">只写 Codex 的 config.toml，改前自动备份。</span></div>';
+
+  return card("Codex 一键接入",
+    "Codex 没有「自定义供应商」入口，只能改它的 config.toml。这里代你改，并且只动我们那一段。",
+    body);
+}
 function viewOutput(){
   var o = S.out;
   if (!o) return head("输出 API", "正在读取输出配置…");
@@ -1446,6 +1515,7 @@ function viewOutput(){
     '<div class="row"><button class="pri" data-action="save-out">保存设置</button>' +
       '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>');
   html += chanCard();
+  html += codexCard();
   var avail = o.available_models || [];
   var entAvail = entitledOf(avail);
   var sel = S.modelSel || {};
@@ -1600,6 +1670,7 @@ async function loadSources(){ try { S.src = await api("/admin/sources"); } catch
 async function loadOrigins(){ try { S.origins = await api("/admin/sources/origins"); } catch (e) { S.origins = null; } }
 async function loadOutput(){
   try { S.out = await api("/admin/output"); } catch (e) { S.out = null; }
+  try { S.codex = await api("/admin/codex"); } catch (e) { S.codex = null; }
   // 域作用域：新清单（国际版用 global:<裸 id> 自己的键）默认「分开控制」。旧存档没标过
   // 这个键也按勾上显示——面板里国际版该开的行会显示成已勾（后端按旧语义算的 selected），
   // 保存后集合不变，只是从此两域各一把开关。用户取消勾选即回到「裸名字同时管两域」。
@@ -1725,6 +1796,30 @@ function doPaste(){
   if (!text){ toast("info", "先贴上账号 JSON"); return; }
   var m = $("#impMethod"), d = $("#impDetail");
   doImport("paste", null, text, (m && m.value) || "file", (d && d.value.trim()) || "");
+}
+/* codexPreview 拉「改前/改后」全文，不落盘；用户看过再点「确认写入」。 */
+async function codexPreview(){
+  var el = $("#codexModel"), baseEl = $("#codexBase");
+  S.codexModel = el ? el.value : "";
+  try {
+    S.codexPlan = await api("/admin/codex/preview", { method: "POST", body: {
+      model: S.codexModel, base_url: baseEl ? baseEl.value : ""
+    }});
+    render();
+  } catch (e) { toast("err", e.message || String(e)); }
+}
+/* codexApply 落盘（后端先备份）。成功后重新拉一次现状，把「当前值」刷新成新的。 */
+async function codexApply(){
+  if (!S.codexPlan) return;
+  try {
+    var r = await api("/admin/codex/apply", { method: "POST", body: {
+      model: S.codexPlan.model, base_url: S.codexPlan.base_url
+    }});
+    S.codexPlan = null;
+    await loadOutput();
+    render();
+    toast("ok", r && r.message ? r.message : "已写入");
+  } catch (e) { toast("err", e.message || String(e)); }
 }
 async function saveOutput(){
   var f = $("#outFormat"), l = $("#outListen"), p = $("#outPrefix"), r = $("#outRate");
@@ -1946,6 +2041,8 @@ async function actOn(t){
     if (act === "cand-close"){ S.cand = null; return render(); }
     if (act === "acct") return acctOp(t.getAttribute("data-uid"), t.getAttribute("data-op"));
     if (act === "save-out") return saveOutput();
+    if (act === "codex-preview") return codexPreview();
+    if (act === "codex-apply") return codexApply();
     if (act === "save-models") return saveModels();
     if (act === "model-all") return setModelSel(function(){ return true; });
     if (act === "model-none") return setModelSel(function(){ return false; });

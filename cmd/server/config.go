@@ -53,6 +53,10 @@ type Config struct {
 		ZCodeAppDir string `json:"zcode_app_dir"`
 	} `json:"source"`
 
+	// Codex 一键接入：config.toml 路径覆盖；空 = $CODEX_HOME/config.toml 或 ~/.codex/config.toml。
+	// 只有 /admin/codex* 用它（Codex 没有「自定义供应商」入口，只能代它改文件）。
+	CodexConfigPath string `json:"codex_config_path"`
+
 	Global struct {
 		// Enabled global realm 路由开关。缺省 true：Realm() 正常把 realm=global/
 		// domain=workbuddy.ai 的账号判为 global 并路由 global base/路径。

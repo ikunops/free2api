@@ -120,6 +120,40 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 - 领养联动 / 任务查询：`scripts/task_runner.py`（成长任务一体机，默认 dry-run）
 - 个性化提示词：`prompt.file` 指向自定义提示词文件即整体替换内置默认（`custom`/`append` 模式生效）
 
+### Codex 一键接入
+
+Codex CLI / Codex 桌面端**没有「自定义供应商」入口**——它只认 `~/.codex/config.toml` 里的
+`[model_providers.*]` 段和顶层 `model` / `model_provider`。其它客户端（ZCode / OpenCode /
+Qoder / Cherry Studio）都能在 UI 里手填 Base URL，唯独 Codex 必须改文件，所以网关代它改。
+
+控制台「输出 API」页底部有 **Codex 一键接入** 卡片，流程是：
+
+1. **读现状** — 显示配置文件路径、当前默认模型 / 供应商 / 指向、密钥环境变量是否已设置；
+2. **预览改动** — 并排给出「改前 / 改后」全文，确认无误再落盘；
+3. **确认写入** — 先备份到 `config.toml.bak-<时间戳>`，再原子替换。
+
+写入是**外科编辑**，不做全量 TOML 解析回写：
+
+- 只改顶层 `model` / `model_provider` 两行；
+- 只替换 / 追加 `[model_providers.free2api]` 一段；
+- 用户自己的注释、其它 provider、缩进、空行一律原样保留；
+- 内容已是目标状态时不重复写、不重复备份。
+
+接口（本机免 key，非本机校验 `api_key`）：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/admin/codex` | 读现状 + 建议值（路径 / 当前值 / 建议 Base URL / 可发布模型） |
+| `POST` | `/admin/codex/preview` | 计算并返回改前改后全文，**不落盘** |
+| `POST` | `/admin/codex/apply` | 落盘（改前先备份） |
+
+`POST` 请求体：`{"base_url":"http://127.0.0.1:7863/v1","model":"cn:auto"}`；两项都可省略，
+省略时 `base_url` 从当前监听地址派生、`model` 取发布清单第一个。
+
+配置文件路径解析顺序：`codex_config_path`（config.json）> `$CODEX_HOME/config.toml` >
+`~/.codex/config.toml`。换网关后 Codex 的选择器可能还显示旧模型（`models_cache.json`
+是它自己拉的目录缓存），按卡片提示删掉重拉即可。
+
 ## 架构总览
 
 ```mermaid
