@@ -933,6 +933,24 @@ function expCell(a){
     '<div class="hint" style="margin:2px 0 0"' + (tone ? ' data-tone="' + tone + '"' : '') + '>' +
     label + (planTs ? " · 套餐" : "") + '</div>';
 }
+/* failCell 池表「成功/连败」列的第二格：连败（consecutive_fails）是账号当前真实信号，
+   熔断失败数（breaker_fails）另计。原来这一格取的是不存在的 err_total，恒为 0，
+   看着像「从没失败过」，会误导排障。连败为 0 时退回显示熔断失败数（有则显示）。 */
+function failCell(a){
+  var cf = a.consecutive_fails || 0;
+  if (cf) return '<span style="color:var(--warn)">' + cf + '</span>';
+  var bf = a.breaker_fails || 0;
+  if (bf) return bf;
+  return "0";
+}
+function failTitle(a){
+  var parts = [];
+  parts.push("成功 " + (a.success_count || 0) + " 次");
+  parts.push("连续失败 " + (a.consecutive_fails || 0) + " 次");
+  if (a.breaker_fails) parts.push("熔断累计失败 " + a.breaker_fails + " 次");
+  if (a.in_flight) parts.push("在飞 " + a.in_flight);
+  return parts.join(" · ");
+}
 function acctState(a){
   if (a.disabled) return '<span class="tag err">已禁用</span>';
   if (a.manual_disabled) return '<span class="tag warn">手动停用</span>';
@@ -1066,7 +1084,7 @@ function viewPool(){
       '<td class="num">' + expCell(a) + '</td>' +
       '<td>' + acctState(a) + '</td>' +
       '<td style="color:var(--fg3);font-size:12px"><div class="clamp" title="' + esc(acctReason(a)) + '">' + esc(acctReason(a)) + '</div></td>' +
-      '<td class="num">' + (a.success_count || 0) + ' / ' + (a.err_total || 0) + '</td>' +
+      '<td class="num" title="' + esc(failTitle(a)) + '">' + (a.success_count || 0) + ' / ' + failCell(a) + '</td>' +
       '<td>' + acctActions(a) + '</td></tr>';
   }).join("");
   var html = head("账号池", "池里所有账号：来源归属、积分余额（含快过期部分）、token 到期、健康状态。" +
@@ -1095,7 +1113,7 @@ function viewPool(){
     '<div class="tablewrap"><table><thead><tr><th style="width:242px">账号</th><th style="width:96px">客户端</th><th style="width:120px">来源</th>' +
     '<th style="width:168px">可用模型</th><th class="num" style="width:126px">积分余额</th>' +
     '<th style="width:112px">到期</th><th style="width:80px">状态</th><th>原因</th>' +
-    '<th class="num" style="width:92px">成功/失败</th>' +
+    '<th class="num" style="width:92px">成功/连败</th>' +
     '<th style="width:84px">操作</th></tr></thead><tbody>' +
     (rows || '<tr><td colspan="10"><div class="empty">这个筛选下没有账号</div></td></tr>') + '</tbody></table></div>', cooldownBtn);
   html += card("迁移与来源", "账号池是单一目录，来源只是台账里的标注——这样迁移不会漏文件。",
