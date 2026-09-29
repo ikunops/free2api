@@ -388,7 +388,7 @@ function methodTag(uid){
 }
 /* 生产者（AI 客户端）：workbuddy / zcode / qoder … 由账号来源台账标注。
    显示名优先用 /status 的 producer_totals[].name（后端定死枚举），取不到再回落本地表。 */
-const PRODUCER_FALLBACK = { workbuddy: "WorkBuddy", zcode: "ZCode", qoder: "Qoder" };
+const PRODUCER_FALLBACK = { workbuddy: "WorkBuddy", zcode: "ZCode", qoder: "Qoder", opencode: "OpenCode" };
 function producerName(p){
   var list = (S.status && S.status.producer_totals) || [];
   for (var i = 0; i < list.length; i++){ if ((list[i].producer || "") === (p || "")) return list[i].name || PRODUCER_FALLBACK[p] || p || "未标注"; }
@@ -612,6 +612,9 @@ function kindTag(k){
 }
 function panelApp(d){
   var probes = d.probes || [];
+  // 应用内登录态这一路，除「只读探查」外还有**可取用**的源（OpenCode：auth.json 是明文，
+  // 抽出来即可进号池）。它们 method=app，所以卡片挂在这个 tab 下，与探查表并列。
+  var usableKinds = (d.kinds || []).filter(function(k){ return k.method === "app" && k.id !== "app"; });
   var rows = probes.map(function(p){
     return '<tr class="' + (p.exists ? "" : "dim") + '">' +
       '<td><b>' + esc(p.name) + '</b><div class="hint" style="margin:2px 0 0">' + esc(p.producer) + '</div></td>' +
@@ -621,13 +624,28 @@ function panelApp(d){
       '<td style="color:var(--fg3);font-size:12px">' + esc(p.note) + '</td></tr>';
   }).join("");
   var kind = (d.kinds || []).filter(function(k){ return k.id === "app"; })[0] || {};
+  var usable = usableKinds.map(function(k){
+    var btn = '<button class="pri tiny" data-action="cands" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>看候选</button> ' +
+      '<button class="tiny" data-action="quick" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>全部导入</button>';
+    return '<div class="mini" style="cursor:default">' +
+      '<div class="row"><div class="grow"><div class="t">' + esc(k.name) + '</div>' +
+      '<div class="hint mono" style="margin-top:3px;word-break:break-all">' + esc(k.path || "（无路径）") + '</div></div>' +
+      '<span class="tag ' + (k.available ? "ok" : "mut") + '">' + (k.available ? kcountLabel(k) : "不可用") + '</span>' + btn + '</div>' +
+      '<div class="d" style="margin-top:8px">' + esc(k.note || "") + '</div></div>';
+  }).join("");
+  var usableBlock = usableKinds.length
+    ? '<div class="sep"></div><h2 style="font-size:14px;margin-bottom:8px">可直接取用</h2>' +
+      '<div class="grid2">' + usable + '</div>'
+    : "";
   return card("应用内登录态探查", esc(kind.note || ""),
     '<table><thead><tr><th style="width:200px">工具</th><th>路径</th><th style="width:92px">形态</th>' +
     '<th class="num" style="width:56px">账号</th><th style="width:36%">结论</th></tr></thead><tbody>' +
     (rows || '<tr><td colspan="5"><div class="empty">没有探查结果</div></td></tr>') + '</tbody></table>' +
     '<div class="hint">这一路是「只读探查，不猜解析」：加密字段（enc:v1）、Electron leveldb、SQLite 三种形态明确标出读不了——' +
     '拿错凭证去打上游会直接触发风控。<br>' +
-    '这些工具自己的号取不到时，正经办法是装一个 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>');
+    '这些工具自己的号取不到时，正经办法是装一个 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>' +
+    usableBlock,
+    '<button class="tiny" data-action="src-refresh" title="重新扫一遍本机路径：新装的工具、刚登录的账号、刚导出的账本都会立刻反映">刷新</button>');
 }
 // kcountLabel 源卡片的计数文案：源里的「存档数」与「真正能进号池的可用数」不是一回事
 // （zswitch 会多出只有计划 JWT 的号）。两个数不等时一起给出，别让用户拿左侧存档数去对
@@ -662,7 +680,8 @@ function panelSwitch(d){
       ["号池目录", copySpan(d.auth_dir), true],
       ["来源台账", copySpan(d.origin_path || "（未生成）"), true]
     ]) +
-    '<div class="hint">号池目录加一个来源台账文件就是全部状态：整体拷到另一台机器，来源归类一起走。</div>');
+    '<div class="hint">号池目录加一个来源台账文件就是全部状态：整体拷到另一台机器，来源归类一起走。</div>',
+    '<button class="tiny" data-action="src-refresh" title="重新读一遍账本目录：在另一台机器新登录/新导出的账号会立刻出现">刷新</button>');
 }
 function panelFile(d){
   var opts = METHOD_ORDER.map(function(m){
@@ -683,7 +702,8 @@ function panelFile(d){
       '<button data-action="pick-file">选本地文件</button>' +
       '<input type="file" id="filePick" accept=".json,.txt" class="hidden">' +
       '<span class="hint" style="margin:0">一条都没命中会原样报错，不会静默成功。</span></div>';
-  return card("导入文件", "别的机器导出的快照、手工整理的清单，都从这里进来。", body);
+  return card("导入文件", "别的机器导出的快照、手工整理的清单，都从这里进来。", body,
+    '<button class="tiny" data-action="src-refresh" title="重新扫一遍本机来源与台账">刷新</button>');
 }
 function panelCandidates(){
   var c = S.cand || [];
@@ -1924,6 +1944,23 @@ async function loadRuntime(){
 /* refreshAll 是**唯一**的刷新入口（右上角那个按钮）：状态、来源台账、输出清单、
    模型表、上游余额一次拉齐；候选面板开着就顺手重拉一次（保留已勾选与探活/额度标记，
    不会把用户手上的选择冲掉）。余额后端是「先回旧值 + 后台重查」，所以不拖慢这一轮。 */
+/* srcRefresh 「获取源」页的刷新：重扫本机路径 + 重读来源台账，再整页重画。
+   与右上角全局刷新的区别是它**只做取源相关的两件事**并给一条明确反馈——
+   用户点「刷新」的预期是「刚登录的号 / 刚导出的账本要出现」，不该被余额、统计等
+   无关请求拖时间，也不该静默到让人以为没反应。候选面板开着时一并重拉（不带探活）。 */
+async function srcRefresh(){
+  if (S.busy){ toast("info", "上一个操作还在进行", 2200); return; }
+  S.busy = true;
+  try {
+    await Promise.all([loadSources(), loadOrigins()]);
+    if (S.candKind){ await reloadCands(false, false, true); }
+    render();
+    var d = S.src || {};
+    var n = (d.kinds || []).filter(function(k){ return k.available; }).length;
+    toast("ok", "已重新扫描本机来源（可用 " + n + " 个）", 2600);
+  } catch (e) { toast("err", e.message || String(e), 9000); }
+  finally { S.busy = false; }
+}
 async function refreshAll(silent){
   var first = !S.status;
   var err = null;
@@ -1977,7 +2014,10 @@ async function doImport(kind, ids, text, method, detail){
   }
 }
 async function openCands(kind, opt){
-  S.tab = "sources"; S.srcTab = "switch"; S.checked = {};
+  S.tab = "sources";
+  // 候选面板挂在它所属的「来源」tab 下：账本类在 switch，OpenCode 在应用内登录态。
+  S.srcTab = (kind === "opencode") ? "app" : "switch";
+  S.checked = {};
   var o = opt || {};
   S.candProbe = !!o.probe; S.candBalance = !!o.balance;
   try {
@@ -2300,15 +2340,18 @@ async function actOn(t){
     if (act === "quick"){
       var qk = t.getAttribute("data-kind") || "wb-switch";
       if (qk === "zcode-switch") return doImport("zcode-switch", null, null, "switch", "zcode-switch 账本");
+      if (qk === "opencode") return doImport("opencode", null, null, "app", "opencode auth.json");
       return doImport("wb-switch", null, null, "switch", "wb-switch 账本");
     }
+    if (act === "src-refresh") return srcRefresh();
     if (act === "import-paste") return doPaste();
     if (act === "pick-file"){ var fp = $("#filePick"); if (fp) fp.click(); return; }
     if (act === "cand-all"){ (S.cand || []).forEach(function(x){ if (!x.imported) S.checked[x.id] = true; }); return render(); }
     if (act === "cand-none"){ S.checked = {}; return render(); }
     if (act === "cand-import"){
       // 两种账本都是「来源 = switch」；粘贴导入（candKind 非账本）才是 file。
-      var meth = (S.candKind === "wb-switch" || S.candKind === "zcode-switch") ? "switch" : "file";
+      var meth = (S.candKind === "wb-switch" || S.candKind === "zcode-switch") ? "switch"
+        : (S.candKind === "opencode" ? "app" : "file");
       return doImport(S.candKind, checkedIDs(), null, meth, S.candKind);
     }
     if (act === "zcode-probe") return reloadCands(true, false);

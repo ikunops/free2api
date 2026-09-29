@@ -51,6 +51,8 @@ type Config struct {
 		// ZCodeAppDir ZCode 应用登录态目录；空 = ~/.zcode/v2。
 		// 只在「号池文件 + 账本都没有读额度凭据」时被读，是第三层兜底。
 		ZCodeAppDir string `json:"zcode_app_dir"`
+		// OpenCodeAuthPath OpenCode CLI/TUI 的 auth.json；空 = ~/.local/share/opencode/auth.json。
+		OpenCodeAuthPath string `json:"opencode_auth_path"`
 	} `json:"source"`
 
 	// Codex 一键接入：config.toml 路径覆盖；空 = $CODEX_HOME/config.toml 或 ~/.codex/config.toml。

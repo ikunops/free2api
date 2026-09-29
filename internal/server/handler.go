@@ -63,6 +63,8 @@ type Config struct {
 	WBLedgerPath string
 	// ZCodeDir zcode-switch 账号目录覆盖；空 = ~/.zcode-switch/accounts。
 	ZCodeDir string
+	// OpenCodeAuthPath OpenCode CLI/TUI auth.json 覆盖；空 = ~/.local/share/opencode/auth.json。
+	OpenCodeAuthPath string
 	// ZCodeAppDir ZCode 应用登录态目录覆盖；空 = ~/.zcode/v2。
 	// 只在「号池文件 + 账本都没有凭据」时被读（读额度凭据的第三层兜底）。
 	ZCodeAppDir string
@@ -565,6 +567,34 @@ func (h *Handler) modelList() []map[string]any {
 		entry = h.applyModelInfoFields(entry, mi)
 		out = append(out, entry)
 	}
+	// opencode（Zen）模型名单：与 zcode 段同构——从号池里任一健康 opencode 号实时拉
+	// 目录（1h 缓存），modelIDFor 带 "opencode" 段，客户端整串回传即路由固定到
+	// opencode 号池（与 resolveModelRoute 对称）。免费层模型已在 FetchOpenCodeModels
+	// 里剔除（直连必 403 FreeTierError，见 upstream/opencode.go 文件头）。
+	var opencodeModels []upstream.ModelInfo
+	if h.producerAllowed(upstream.ProducerOpenCode) {
+		opencodeModels = h.fetchOpenCodeCatalog()
+	}
+	for _, mi := range opencodeModels {
+		if !h.publishAllows(published, "cn", upstream.ProducerOpenCode, mi.ID) {
+			continue
+		}
+		if h.modelDead.active("cn", upstream.ProducerOpenCode, mi.ID) {
+			continue
+		}
+		entry := map[string]any{
+			"id":       h.modelIDFor("cn", upstream.ProducerOpenCode, mi.ID, mi.Credits),
+			"object":   "model",
+			"created":  1753600000,
+			"owned_by": upstream.ProducerOpenCode,
+		}
+		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
+		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+			entry["max_output_tokens"] = mo
+		}
+		entry = h.applyModelInfoFields(entry, mi)
+		out = append(out, entry)
+	}
 	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
 	// 名单 = 探测结果（fetchGlobalModels 纯动态，失败/无号 → 空）；无 global 账号时
 	// 空名单且零上游调用。
@@ -713,6 +743,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 	for _, g := range []group{
 		{"workbuddy", h.fetchDynamicModels()},
 		{upstream.ProducerZCode, h.fetchZCodeCatalog()},
+		{upstream.ProducerOpenCode, h.fetchOpenCodeCatalog()},
 	} {
 		for _, mi := range g.infos {
 			if mi.ID == "" {
@@ -951,6 +982,74 @@ func (h *Handler) fetchZCodeCatalog() []upstream.ModelInfo {
 	return nil
 }
 
+// opencodeCatalogCache OpenCode（Zen）上游模型目录缓存：1h TTL + 5min 负缓存，
+// 与 zcodeCatalogCache 同形（纯动态，无静态兜底）。注意这里缓存的是**已过滤掉免费层**
+// 的清单（见 upstream.FetchOpenCodeModels）：免费层直连必 403，列出去等于承诺能调。
+var opencodeCatalogCache struct {
+	sync.RWMutex
+	infos    []upstream.ModelInfo
+	fetched  time.Time
+	lastFail time.Time
+}
+
+const opencodeCatalogTTL = time.Hour
+
+// opencodeCatalogMaxAttempts 目录拉取最多试几个号（与 zcode 同口径：池里可能有失效
+// key，单号单试失败不该让整家目录消失）。
+const opencodeCatalogMaxAttempts = 4
+
+// fetchOpenCodeCatalog 从池中任一健康 opencode 账号拉 Zen 上游的实时模型清单，缓存 1h。
+// 与 fetchZCodeCatalog 同形：选号限定 opencode 生产者、拉取换成 FetchOpenCodeModels。
+// 失败只进负缓存，不 NoteError——列模型失败 ≠ chat 通道坏了。
+func (h *Handler) fetchOpenCodeCatalog() []upstream.ModelInfo {
+	opencodeCatalogCache.RLock()
+	if len(opencodeCatalogCache.infos) > 0 && time.Since(opencodeCatalogCache.fetched) < opencodeCatalogTTL {
+		out := opencodeCatalogCache.infos
+		opencodeCatalogCache.RUnlock()
+		return out
+	}
+	if !opencodeCatalogCache.lastFail.IsZero() && time.Since(opencodeCatalogCache.lastFail) < modelsFetchFailCooldown {
+		opencodeCatalogCache.RUnlock()
+		return nil
+	}
+	opencodeCatalogCache.RUnlock()
+
+	tried := map[string]bool{}
+	var lastErr error
+	attempts := 0
+	for attempts < opencodeCatalogMaxAttempts {
+		acct := h.cfg.Pool.PickExcludingForProducerRealm(tried, "", upstream.ProducerOpenCode, "")
+		if acct == nil {
+			break
+		}
+		attempts++
+		tried[acct.UID] = true
+		infos, err := h.cfg.Upstream.FetchOpenCodeModels(context.Background(), acct)
+		if err == nil && len(infos) > 0 {
+			opencodeCatalogCache.Lock()
+			opencodeCatalogCache.infos = infos
+			opencodeCatalogCache.fetched = time.Now()
+			opencodeCatalogCache.lastFail = time.Time{}
+			opencodeCatalogCache.Unlock()
+			return infos
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("上游返回空清单")
+		}
+	}
+	if attempts == 0 {
+		// 池里一个 opencode 号都没有 = 这家还没接进来，不写失败缓存（与 zcode 同口径）。
+		return nil
+	}
+	log.Printf("WARN: [server] opencode 模型目录拉取失败（已试 %d 个号）：%v", attempts, lastErr)
+	opencodeCatalogCache.Lock()
+	opencodeCatalogCache.lastFail = time.Now()
+	opencodeCatalogCache.Unlock()
+	return nil
+}
+
 // modelOwner 推断某裸模型名该走哪家上游。返回 "" = 不唯一/不确定，按 workbuddy。
 //
 // 判据只有一条：**zcode 目录里有、workbuddy 目录里没有** → zcode。两家都有 →
@@ -970,19 +1069,40 @@ func (h *Handler) modelOwnerEx(bare string) (producer string, ambiguous bool) {
 		return "", false
 	}
 	zc := h.fetchZCodeCatalog()
-	if len(zc) == 0 {
-		// 这家还没接进来：裸名一律按 workbuddy，谈不上歧义。
+	oc := h.fetchOpenCodeCatalog()
+	// 两家静态目录都没接进来时直接归 workbuddy，**不拉 CN 目录**——与接入这两家之前的行为一致（那时 fetchZCodeCatalog 为空即早返回）。
+	// fetchDynamicModels 会打上游探测，在「只有 workbuddy 一家」的常见形态下没必要为每次裸名解析付这笔探测。
+	if len(zc) == 0 && len(oc) == 0 {
 		return "", false
 	}
 	inWB := containsModelID(h.fetchDynamicModels(), bare)
-	inZC := containsModelID(zc, bare)
+	inZC := len(zc) > 0 && containsModelID(zc, bare)
+	inOC := len(oc) > 0 && containsModelID(oc, bare)
+	// 数「目录里有这个裸名的家数」：workbuddy 也是一家（与接入 opencode 之前的口径
+	// 一致——那时 inWB&&inZC 就判歧义）。0 家 → 按 workbuddy（默认，不算歧义）；
+	// 1 家且是 workbuddy → 同样按 workbuddy；1 家是别家 → 确定归它；≥2 家 → 真歧义。
+	n := 0
+	owner := ""
+	if inWB {
+		n++
+	}
+	if inZC {
+		n++
+		owner = upstream.ProducerZCode
+	}
+	if inOC {
+		n++
+		owner = upstream.ProducerOpenCode
+	}
 	switch {
-	case inWB && inZC:
-		return "", true
-	case inZC:
-		return upstream.ProducerZCode, false
-	default:
+	case n == 0:
 		return "", false
+	case n >= 2:
+		return "", true
+	case inWB:
+		return "", false
+	default:
+		return owner, false
 	}
 }
 

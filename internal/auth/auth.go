@@ -81,6 +81,11 @@ type Auth struct {
 // （TestProducerZCodeLiteralMatchesUpstream / source 各自一条）。
 const producerZCode = "zcode"
 
+// producerOpenCode OpenCode（Zen / Go）的标识。同属静态密钥型生产者：账号自带一枚
+// 长期 api key（sk-...），没有刷新端点、ExpiresAt 恒 0，NeedsRefresh 必须恒 false
+// （理由同 producerZCode）。
+const producerOpenCode = "opencode"
+
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
 func (a *Auth) Lock() { a.mu.Lock() }
 
@@ -334,7 +339,7 @@ func isGlobalDomain(d string) bool {
 func (a *Auth) NeedsRefresh(within time.Duration) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.producer == producerZCode {
+	if a.producer == producerZCode || a.producer == producerOpenCode {
 		return false
 	}
 	if a.ExpiresAt <= 0 {

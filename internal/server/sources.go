@@ -102,6 +102,14 @@ func (h *Handler) adminSourceCandidates(w http.ResponseWriter, r *http.Request) 
 		cands, err = source.ListWBSwitchMarked(h.wbLedgerPath(), h.cfg.AuthDir)
 	case "auths":
 		cands, err = source.ListAuths(h.cfg.AuthDir)
+	case "opencode":
+		// OpenCode（CLI/TUI）：账号来自本机 ~/.local/share/opencode/auth.json，
+		// 只取 OpenCode 自家 provider（opencode=Zen / opencode-go）。第三方 provider
+		// 是「agent 上的模型」，不属于账号自带能力（见 internal/source/opencode.go）。
+		cands, err = source.OpenCodeCandidates(h.openCodeAuthPath(), h.cfg.AuthDir)
+		if err == nil && len(cands) == 0 {
+			note = "auth.json 里没有 OpenCode 自家的凭据；第三方 provider（openrouter / deepseek 等）不算账号自带能力，不收"
+		}
 	case "zcode-switch":
 		// zcode 现在是**可取用**的源（上游适配器见 internal/upstream/zcode.go）：
 		// 账号自带的智谱 apiKey 抽出来即能反代，与 workbuddy 一样可导入号池。
@@ -319,6 +327,14 @@ func (h *Handler) adminSourceImport(w http.ResponseWriter, r *http.Request) {
 			opt.Producer = source.ProducerZCode
 		}
 		res, err = source.ImportZCodeAs(h.zcodeDir(), h.cfg.AuthDir, body.IDs, opt)
+	case "opencode":
+		if opt.Method == "" {
+			opt.Method = source.MethodApp
+		}
+		if opt.Producer == "" {
+			opt.Producer = source.ProducerOpenCode
+		}
+		res, err = source.ImportOpenCodeAs(h.openCodeAuthPath(), h.cfg.AuthDir, body.IDs, opt)
 	case "import", "paste":
 		if strings.TrimSpace(body.Text) == "" {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "text is required for kind=import")
@@ -356,6 +372,14 @@ func (h *Handler) wbLedgerPath() string {
 		return h.cfg.WBLedgerPath
 	}
 	return source.DefaultWBSwitchPath()
+}
+
+// openCodeAuthPath OpenCode auth.json 路径（config 覆盖 > 本机默认）。
+func (h *Handler) openCodeAuthPath() string {
+	if p := strings.TrimSpace(h.cfg.OpenCodeAuthPath); p != "" {
+		return p
+	}
+	return source.DefaultOpenCodeAuthPath()
 }
 
 // zcodeDir zcode-switch 账号目录（config 指定优先，否则本机默认路径）。

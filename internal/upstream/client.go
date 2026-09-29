@@ -732,6 +732,11 @@ type Client struct {
 	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
 	ChatBaseZCode string
 
+	// ChatBaseOpenCode OpenCode（Zen / Go）生产者的上游 base 覆盖。
+	// 空 = 内置缺省 https://opencode.ai/zen/v1（见 opencode.go）。
+	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
+	ChatBaseOpenCode string
+
 	// GlobalEnabled 是否启用 global realm 路由（config global.enabled，缺省 true）。
 	// false 即显式逃生门：即使用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
@@ -1087,6 +1092,12 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	// effort 降级）污染智谱请求——那些变换是 workbuddy 上游的特定需要。
 	if c.zcodeOn(a) {
 		return c.zcodeChatStreamContext(ctx, a, body, meta)
+	}
+	// opencode（Zen / Go）生产者同走独立通道：base/路径/头组/分类全换，请求体几乎
+	// 原样透传（唯一改写是 stream 强制 true，见 opencodeForceStream）。免费层直连
+	// 必 403，已在适配器层剔除（见 opencode.go 文件头）。
+	if c.opencodeOn(a) {
+		return c.opencodeChatStreamContext(ctx, a, body, meta)
 	}
 	prepared := c.prepareBody(body, a.Realm(), a.UID, meta.ConversationID)
 	if c.globalOn(a) {

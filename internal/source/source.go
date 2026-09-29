@@ -331,9 +331,47 @@ func Detect(wbSwitchPath, zcodeDir, authDir string) []Kind {
 			Note:    "把任意账号 JSON 贴进来：wb-switch 条目、扁平形 auth、插件 OAuth 嵌套形都能识别",
 		},
 		detectZCodeSwitch(zcodeDir),
+		detectOpenCode(),
 		detectAuths(authDir),
 	}
 	return out
+}
+
+// detectOpenCode OpenCode（CLI/TUI）自家账号的取源结论。它只有「本机 auth.json」这一条路
+// （OpenCode 没有 switch 类账本工具），所以 Method 记 app：账号来自工具本体自己的登录态。
+func detectOpenCode() Kind {
+	path := DefaultOpenCodeAuthPath()
+	k := Kind{
+		ID:      "opencode",
+		Name:    "OpenCode CLI/TUI（OpenCode Zen / Go）",
+		Path:    path,
+		Methods: []string{"app"},
+		Method:  MethodApp,
+	}
+	accounts, err := ListOpenCodeAccounts(path)
+	switch {
+	case err != nil:
+		k.Note = "没读到 " + path + "：OpenCode 没装 / 没登录过。装好后在 OpenCode 里登录一次即可"
+		return k
+	case len(accounts) == 0:
+		k.Note = "auth.json 存在，但没有 OpenCode 自家的凭据（只找到第三方 provider 的 key）；" +
+			"在 OpenCode 里登录 OpenCode Zen / OpenCode Go 后再来"
+		return k
+	}
+	k.Available = true
+	k.Count = len(accounts)
+	k.Usable = len(accounts)
+	var zen, goN int
+	for _, a := range accounts {
+		if a.Provider == OpenCodeGoProvider {
+			goN++
+		} else {
+			zen++
+		}
+	}
+	k.Note = "读到 " + itoa(len(accounts)) + " 条自家凭据（OpenCode Zen " + itoa(zen) + " · OpenCode Go " + itoa(goN) + "）；" +
+		"Zen 付费模型可直连反代；免费层有服务端闸（只能从 OpenCode 本体发起，直连 403 FreeTierError），本网关不反代免费层"
+	return k
 }
 
 // detectApp 汇总「应用内登录态」探查结论：本机装了哪些工具、登录态存在哪、

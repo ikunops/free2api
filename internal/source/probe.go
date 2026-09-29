@@ -42,6 +42,11 @@ type ProbeTarget struct {
 // probeSpec 探查目标的静态描述。
 type probeSpec struct {
 	id, name, producer, path, hint string
+	// special 非空时走专用解析器：该工具的凭证文件形态是通用 classifyJSON 认不出来的。
+	//   - ""：默认，按 token/credential 键名数明文/密文字段
+	//   - "opencode"：OpenCode 的 auth.json，形如 {providerID: {type:"api", key:"..."}}，
+	//     键名既不含 token 也不含 credential，必须按「对象里有 key 字段」判定
+	special string
 }
 
 // Probe 扫本机已知的应用登录态目录，逐个给出「在不在 / 什么形态 / 能不能用」。
@@ -49,20 +54,23 @@ type probeSpec struct {
 func Probe() []ProbeTarget {
 	home := HomeDir()
 	specs := []probeSpec{
-		{"workbuddy-app", "WorkBuddy 桌面端（国际版）", ProducerWorkbuddy,
-			filepath.Join(home, ".workbuddy-ai"), "Electron 数据目录"},
-		{"workbuddy-app-cn", "WorkBuddy 桌面端（国内版）", ProducerWorkbuddy,
-			filepath.Join(home, ".workbuddy"), "Electron 数据目录"},
-		{"zcode-app", "ZCode 应用当前登录", ProducerZCode,
-			filepath.Join(home, ".zcode", "v2", "credentials.json"), "私有 json"},
-		{"zcode-app-alt", "ZCode 应用（旧版 v2 目录）", ProducerZCode,
-			filepath.Join(home, ".zcode", "v2"), "私有目录"},
-		{"qoder-app", "Qoder 应用", ProducerQoder,
-			filepath.Join(home, ".qoder"), "私有目录"},
-		{"trae-app", "Trae 应用", "trae",
-			filepath.Join(home, ".trae"), "VS Code 派生（state.vscdb）"},
-		{"cursor-app", "Cursor 应用", "cursor",
-			filepath.Join(home, ".cursor"), "VS Code 派生（state.vscdb）"},
+		{id: "workbuddy-app", name: "WorkBuddy 桌面端（国际版）", producer: ProducerWorkbuddy,
+			path: filepath.Join(home, ".workbuddy-ai"), hint: "Electron 数据目录"},
+		{id: "workbuddy-app-cn", name: "WorkBuddy 桌面端（国内版）", producer: ProducerWorkbuddy,
+			path: filepath.Join(home, ".workbuddy"), hint: "Electron 数据目录"},
+		{id: "zcode-app", name: "ZCode 应用当前登录", producer: ProducerZCode,
+			path: filepath.Join(home, ".zcode", "v2", "credentials.json"), hint: "私有 json"},
+		{id: "zcode-app-alt", name: "ZCode 应用（旧版 v2 目录）", producer: ProducerZCode,
+			path: filepath.Join(home, ".zcode", "v2"), hint: "私有目录"},
+		{id: "qoder-app", name: "Qoder 应用", producer: ProducerQoder,
+			path: filepath.Join(home, ".qoder"), hint: "私有目录"},
+		{id: "opencode-auth", name: "OpenCode CLI/TUI（OpenCode Zen）", producer: ProducerOpenCode,
+			path: filepath.Join(home, ".local", "share", "opencode", "auth.json"),
+			hint: "明文 json（providerID 到 {type,key} 的映射）", special: "opencode"},
+		{id: "trae-app", name: "Trae 应用", producer: "trae",
+			path: filepath.Join(home, ".trae"), hint: "VS Code 派生（state.vscdb）"},
+		{id: "cursor-app", name: "Cursor 应用", producer: "cursor",
+			path: filepath.Join(home, ".cursor"), hint: "VS Code 派生（state.vscdb）"},
 	}
 	out := make([]ProbeTarget, 0, len(specs))
 	for _, s := range specs {
@@ -106,6 +114,9 @@ func probeFile(t ProbeTarget, s probeSpec) ProbeTarget {
 		return t
 	}
 	enc, plain, credKeys := classifyJSON(obj)
+	if s.special == "opencode" {
+		enc, plain, credKeys = classifyOpenCodeAuth(obj)
+	}
 	switch {
 	case enc > 0 && plain == 0:
 		t.Kind = KindEncJSON
@@ -186,6 +197,39 @@ func classifyJSON(obj map[string]any) (enc, plain int, keys []string) {
 		}
 		keys = append(keys, k)
 		if strings.HasPrefix(s, "enc:v1:") {
+			enc++
+		} else {
+			plain++
+		}
+	}
+	return enc, plain, keys
+}
+
+// classifyOpenCodeAuth 数 OpenCode auth.json 里的可用凭据。
+//
+// 形态（实测 2026-09，730 字节）：顶层键是 providerID，值是 {type:"api", key:"..."}。
+// 键名是 "openrouter" / "opencode" / "zhipuai-coding-plan" 这种，既不含 token 也不含
+// credential，通用 classifyJSON 一个都数不出来——所以这里单写一条：对象里带非空
+// 字符串 key 字段的算一条明文凭据。
+// 只数**本网关真的会取用**的凭据（OpenCode 自家 provider：opencode=Zen / opencode-go）——
+// 与「获取源」卡片、候选列表、导入三处口径一致。用户自己在 OpenCode 里配的第三方
+// provider（openrouter / deepseek / zhipuai-coding-plan …）是「agent 上的模型」，
+// 本网关不取，就不该算进「可直接读取的账号数」，否则卡片会报 6 个而可取用只有 2 个。
+func classifyOpenCodeAuth(obj map[string]any) (enc, plain int, keys []string) {
+	for k, v := range obj {
+		if !isOpenCodeOwnProvider(k) {
+			continue
+		}
+		sub, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		raw, ok := sub["key"].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		keys = append(keys, k)
+		if strings.HasPrefix(raw, "enc:v1:") {
 			enc++
 		} else {
 			plain++

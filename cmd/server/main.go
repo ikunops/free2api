@@ -257,10 +257,11 @@ func main() {
 		// 运维管理端点开关（config admin.enabled，默认 false）。
 		AdminEnabled: cfg.Admin.Enabled,
 		// 「获取源」：导入目标目录 + 各源路径（账本留空走 ~/.wb-switch 默认）。
-		AuthDir:      cfg.AuthDir,
-		WBLedgerPath: cfg.Source.WBLedgerPath,
-		ZCodeDir:     cfg.Source.ZCodeDir,
-		ZCodeAppDir:  cfg.Source.ZCodeAppDir,
+		AuthDir:          cfg.AuthDir,
+		WBLedgerPath:     cfg.Source.WBLedgerPath,
+		ZCodeDir:         cfg.Source.ZCodeDir,
+		ZCodeAppDir:      cfg.Source.ZCodeAppDir,
+		OpenCodeAuthPath: cfg.Source.OpenCodeAuthPath,
 		// Codex 一键接入：config.toml 路径覆盖（空 = $CODEX_HOME / ~/.codex）。
 		CodexConfigPath: cfg.CodexConfigPath,
 		// 输出侧：热可改（模型前缀即时作用于 /v1/models 与入站解析；

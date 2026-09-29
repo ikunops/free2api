@@ -417,7 +417,7 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 // 空串（历史凭证没有台账标注）按 workbuddy 处理，保证零回归。
 // 再接入一家上游时改这一个函数即可放开。
 func servableProducer(producer string) bool {
-	return producer == "" || producer == "workbuddy" || producer == "zcode"
+	return producer == "" || producer == "workbuddy" || producer == "zcode" || producer == "opencode"
 }
 
 // producerMatch 报告账号是否属于请求指定的生产者。非空时要求精确匹配台账/凭证上的
