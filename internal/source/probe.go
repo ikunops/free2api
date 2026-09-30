@@ -4,9 +4,13 @@
 // 多账号清单，读它就够；应用内登录态是工具本体那一个当前登录，散在各家私有目录里
 // （Electron 的 leveldb / SQLite / 私有 json），形状与加密方式各家不同。
 //
-// 本包只做「探查 + 如实上报」：能读的（明文 json）给出路径与账号标识；读不了的
-// （enc:v1 加密 / leveldb 二进制 / sqlite）明确标注原因。**不用猜出来的解析糊弄**——
-// 猜错的 token 比没有 token 更坏事（拿错凭证去打上游 = 直接触发风控）。
+// 本包只做「探查 + 如实上报」：能读的（明文 json / 已实现解密的加密字段）给出路径与
+// 账号标识；读不了的（enc:v1 加密 / leveldb 二进制 / sqlite）明确标注原因。**不用猜出来的
+// 解析糊弄**——猜错的 token 比没有 token 更坏事（拿错凭证去打上游 = 直接触发风控）。
+//
+// 特例：WorkBuddy 桌面端 5.6.2 起把登录态字段做了静态加密（$wbEncrypted），但它用的是
+// 编译期常量钥，本网关已实现解密（见 workbuddy_desktop.go），所以这一条**不再是只发现**，
+// 而是真能读出账号——这是「不装 switch 也能取本机登录态」的落点。
 package source
 
 import (
@@ -46,6 +50,8 @@ type probeSpec struct {
 	//   - ""：默认，按 token/credential 键名数明文/密文字段
 	//   - "opencode"：OpenCode 的 auth.json，形如 {providerID: {type:"api", key:"..."}}，
 	//     键名既不含 token 也不含 credential，必须按「对象里有 key 字段」判定
+	//   - "workbuddy-desktop"：WorkBuddy 客户端登录态目录（多个 .info 快照 + 字段级
+	//     加密），走 workbuddy_desktop.go 的专用解析（含解密），path 是 auth 目录本身
 	special string
 }
 
@@ -54,10 +60,13 @@ type probeSpec struct {
 func Probe() []ProbeTarget {
 	home := HomeDir()
 	specs := []probeSpec{
-		{id: "workbuddy-app", name: "WorkBuddy 桌面端（国际版）", producer: ProducerWorkbuddy,
-			path: filepath.Join(home, ".workbuddy-ai"), hint: "Electron 数据目录"},
-		{id: "workbuddy-app-cn", name: "WorkBuddy 桌面端（国内版）", producer: ProducerWorkbuddy,
-			path: filepath.Join(home, ".workbuddy"), hint: "Electron 数据目录"},
+		// WorkBuddy 桌面端：凭证**不在** Electron 数据目录（~/.workbuddy*）里，而在客户端
+		// 自己的登录态目录（CodeBuddyExtension/.../auth，CN 与国际版同目录、靠文件名区分）。
+		// 5.6.2 起字段级加密，本网关已实现解密，所以这条能直接读出账号。
+		{id: "workbuddy-desktop", name: "WorkBuddy 桌面端登录态（CN + 国际版）",
+			producer: ProducerWorkbuddy, path: WbDeskAuthDir(""),
+			hint: "客户端登录态目录（5.6.2 起字段级加密，本网关已能解）",
+			special: "workbuddy-desktop"},
 		{id: "zcode-app", name: "ZCode 应用当前登录", producer: ProducerZCode,
 			path: filepath.Join(home, ".zcode", "v2", "credentials.json"), hint: "私有 json"},
 		{id: "zcode-app-alt", name: "ZCode 应用（旧版 v2 目录）", producer: ProducerZCode,
@@ -81,6 +90,9 @@ func Probe() []ProbeTarget {
 
 func probeOne(s probeSpec) ProbeTarget {
 	t := ProbeTarget{ID: s.id, Name: s.name, Producer: s.producer, Path: s.path}
+	if s.special == "workbuddy-desktop" {
+		return probeWorkBuddyDesktop(t)
+	}
 	info, err := os.Stat(s.path)
 	if err != nil {
 		t.Kind = KindNone
@@ -135,6 +147,46 @@ func probeFile(t ProbeTarget, s probeSpec) ProbeTarget {
 	default:
 		t.Kind = KindUnknown
 		t.Note = "json 里没有识别到凭证字段（" + itoa(len(obj)) + " 个键）"
+	}
+	return t
+}
+
+// probeWorkBuddyDesktop WorkBuddy 桌面端登录态：走专用解析（含字段解密）。
+//
+// 与其他目标的区别：这里**不是**「看一眼能不能读」，而是真去读一遍——因为
+// 「能读几个账号」正是用户要的答案，而它取决于本机有没有可用的静态钥
+// （现场问客户端 / 内置常量 / 环境变量）。读出来的结果与「看候选」用的是同一套代码，
+// 所以卡片上的数字与实际能导入的数量永远一致。
+func probeWorkBuddyDesktop(t ProbeTarget) ProbeTarget {
+	if _, err := os.Stat(t.Path); err != nil {
+		t.Kind = KindNone
+		t.Note = "本机没有这个路径（该工具没装，或从未登录）"
+		return t
+	}
+	t.Exists = true
+	res, err := ListWorkBuddyDesktop(t.Path)
+	if err != nil {
+		t.Kind = KindUnknown
+		t.Note = "目录存在但读取失败：" + err.Error()
+		return t
+	}
+	if len(res.Accounts) == 0 {
+		t.Kind = KindEncJSON
+		t.Note = "登录态目录存在，但没有解析出可用账号"
+		if n := len(res.Skipped); n > 0 {
+			t.Note += "（" + itoa(n) + " 个快照取不出凭据：钥不匹配或字段缺失）"
+		}
+		return t
+	}
+	t.Kind = KindPlainJSON
+	t.Readable = true
+	t.Accounts = len(res.Accounts)
+	t.Note = "可直接读取 " + itoa(len(res.Accounts)) + " 个账号（含字段级解密）"
+	if n := len(res.Skipped); n > 0 {
+		t.Note += "；另有 " + itoa(n) + " 个快照取不出凭据"
+	}
+	if len(res.KeyIDs) > 0 {
+		t.Note += " · 可用钥 " + strings.Join(res.KeyIDs, ",")
 	}
 	return t
 }

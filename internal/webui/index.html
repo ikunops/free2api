@@ -600,7 +600,7 @@ function viewSources(){
 }
 function kindTag(k){
   var map = {
-    "plain-json": ["ok", "明文可读"],
+    "plain-json": ["ok", "可直接读"],
     "enc-json": ["warn", "字段加密"],
     "leveldb": ["mut", "leveldb"],
     "sqlite": ["mut", "SQLite"],
@@ -641,9 +641,11 @@ function panelApp(d){
     '<table><thead><tr><th style="width:200px">工具</th><th>路径</th><th style="width:92px">形态</th>' +
     '<th class="num" style="width:56px">账号</th><th style="width:36%">结论</th></tr></thead><tbody>' +
     (rows || '<tr><td colspan="5"><div class="empty">没有探查结果</div></td></tr>') + '</tbody></table>' +
-    '<div class="hint">这一路是「只读探查，不猜解析」：加密字段（enc:v1）、Electron leveldb、SQLite 三种形态明确标出读不了——' +
+    '<div class="hint">这一路是「只读探查，不猜解析」：读不了的形态（enc:v1 字段加密、Electron leveldb、SQLite）明确标出原因——' +
     '拿错凭证去打上游会直接触发风控。<br>' +
-    '这些工具自己的号取不到时，正经办法是装一个 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>' +
+    'WorkBuddy 桌面端自 5.6.2 起把登录态做了字段级加密，本网关已实现解密，所以它的号能直接在这里取到（' +
+    '静态钥优先现场问客户端要，取不到时用内置常量，也可用环境变量 WORKBUDDY_AT_REST_SECRET 显式指定）。<br>' +
+    '其余工具自己的号取不到时，正经办法是装一个 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>' +
     usableBlock,
     '<button class="tiny" data-action="src-refresh" title="重新扫一遍本机路径：新装的工具、刚登录的账号、刚导出的账本都会立刻反映">刷新</button>');
 }

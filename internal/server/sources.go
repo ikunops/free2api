@@ -98,6 +98,13 @@ func (h *Handler) adminSourceCandidates(w http.ResponseWriter, r *http.Request) 
 		note  string
 	)
 	switch kind {
+	case "workbuddy-desktop":
+		// WorkBuddy 桌面端登录态（不依赖 wb-switch）：直读客户端自己的 .info 快照，
+		// 含 5.6.2 起的字段级解密（见 internal/source/workbuddy_desktop.go）。
+		cands, err = source.WbDeskCandidates(h.wbDeskAuthDir(), h.cfg.AuthDir)
+		if err == nil && len(cands) == 0 {
+			note = "登录态目录里没有可用账号：先在 WorkBuddy 桌面端登录一次"
+		}
 	case "wb-switch":
 		cands, err = source.ListWBSwitchMarked(h.wbLedgerPath(), h.cfg.AuthDir)
 	case "auths":
@@ -322,6 +329,11 @@ func (h *Handler) adminSourceImport(w http.ResponseWriter, r *http.Request) {
 			opt.Method = source.MethodSwitch
 		}
 		res, err = source.ImportWBSwitchAs(h.wbLedgerPath(), h.cfg.AuthDir, body.IDs, opt)
+	case "workbuddy-desktop":
+		if opt.Method == "" {
+			opt.Method = source.MethodApp
+		}
+		res, err = source.ImportWorkBuddyDesktopAs(h.wbDeskAuthDir(), h.cfg.AuthDir, body.IDs, opt)
 	case "zcode-switch", "zcode":
 		if opt.Method == "" {
 			opt.Method = source.MethodSwitch
@@ -376,6 +388,14 @@ func (h *Handler) adminSourceImport(w http.ResponseWriter, r *http.Request) {
 		"pool":    map[string]int{"total": total, "healthy": healthy},
 		"origins": source.LoadRegistry(h.cfg.AuthDir).Counts(),
 	})
+}
+
+// wbDeskAuthDir WorkBuddy 桌面端登录态目录（配置覆盖 > 本机缺省）。
+func (h *Handler) wbDeskAuthDir() string {
+	if p := strings.TrimSpace(h.cfg.WbDeskAuthDir); p != "" {
+		return p
+	}
+	return source.WbDeskAuthDir("")
 }
 
 // wbLedgerPath wb-switch 账本路径（配置覆盖 > 默认 ~/.wb-switch/accounts.json）。

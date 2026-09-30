@@ -53,6 +53,10 @@ type Config struct {
 		ZCodeAppDir string `json:"zcode_app_dir"`
 		// OpenCodeAuthPath OpenCode CLI/TUI 的 auth.json；空 = ~/.local/share/opencode/auth.json。
 		OpenCodeAuthPath string `json:"opencode_auth_path"`
+		// WbDeskAuthDir WorkBuddy 桌面端登录态目录（CodeBuddyExtension/.../auth）；
+		// 空 = 按平台取缺省（Windows 用 %LOCALAPPDATA%）。该目录里是 CN 与国际版
+		// 客户端写下的 .info 快照，5.6.2 起字段级加密、由网关自行解密。
+		WbDeskAuthDir string `json:"wb_desktop_auth_dir"`
 	} `json:"source"`
 
 	// Codex 一键接入：config.toml 路径覆盖；空 = $CODEX_HOME/config.toml 或 ~/.codex/config.toml。

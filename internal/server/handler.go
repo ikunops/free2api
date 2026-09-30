@@ -70,6 +70,9 @@ type Config struct {
 	ZCodeDir string
 	// OpenCodeAuthPath OpenCode CLI/TUI auth.json 覆盖；空 = ~/.local/share/opencode/auth.json。
 	OpenCodeAuthPath string
+	// WbDeskAuthDir WorkBuddy 桌面端登录态目录覆盖；空 = 按平台取缺省
+	// （Windows 用 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth）。
+	WbDeskAuthDir string
 	// ZCodeAppDir ZCode 应用登录态目录覆盖；空 = ~/.zcode/v2。
 	// 只在「号池文件 + 账本都没有凭据」时被读（读额度凭据的第三层兜底）。
 	ZCodeAppDir string

@@ -321,6 +321,7 @@ func Detect(wbSwitchPath, zcodeDir, authDir string) []Kind {
 	}
 	out := []Kind{
 		detectApp(),
+		detectWorkBuddyDesktop(),
 		detectWBSwitch(wbSwitchPath),
 		{
 			ID:      "paste",
@@ -422,6 +423,48 @@ func detectApp() Kind {
 			"要批量取号请走 switch 账本，或从别的机器导出文件导入"
 	default:
 		k.Note = "可直接读取的账号 " + itoa(readable) + " 个（其余工具目录为加密/私有格式）"
+	}
+	return k
+}
+
+// detectWorkBuddyDesktop WorkBuddy 桌面端登录态的取源结论。
+//
+// 与 OpenCode 同理：它只有「本机客户端自己的登录态」这一条路（不依赖 wb-switch），
+// 所以 Method 记 app——账号来自工具本体自己的登录态。能读几个号取决于本机有没有
+// 可用的静态钥（现场问客户端 / 内置常量 / 环境变量），这里真读一遍再报数。
+func detectWorkBuddyDesktop() Kind {
+	dir := WbDeskAuthDir("")
+	k := Kind{
+		ID:      "workbuddy-desktop",
+		Name:    "WorkBuddy 桌面端登录态（CN + 国际版）",
+		Path:    dir,
+		Methods: []string{"app"},
+		Method:  MethodApp,
+	}
+	res, err := ListWorkBuddyDesktop(dir)
+	switch {
+	case err != nil:
+		k.Note = "没读到 " + dir + "：WorkBuddy 桌面端没装 / 没登录过。" +
+			"在客户端里登录一次即可（不依赖 wb-switch）"
+		return k
+	case len(res.Accounts) == 0:
+		if n := len(res.Skipped); n > 0 {
+			k.Note = "登录态目录里有 " + itoa(n) + " 个快照，但都取不出凭据（静态钥不匹配或字段缺失）；" +
+				"可用环境变量 " + wbDeskEnvSecret + " 显式指定钥"
+		} else {
+			k.Note = "登录态目录存在，但没有可用快照：先在 WorkBuddy 桌面端登录"
+		}
+		return k
+	}
+	k.Available = true
+	k.Count = len(res.Accounts)
+	k.Usable = len(res.Accounts)
+	k.Note = "从客户端自己的登录态读出 " + itoa(len(res.Accounts)) + " 个账号（含字段级解密）"
+	if n := len(res.Skipped); n > 0 {
+		k.Note += "；另有 " + itoa(n) + " 个快照取不出凭据"
+	}
+	if len(res.KeyIDs) > 0 {
+		k.Note += " · 可用钥 " + strings.Join(res.KeyIDs, ",")
 	}
 	return k
 }
