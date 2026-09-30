@@ -938,6 +938,10 @@ func (h *Handler) availableOutputModels() []map[string]any {
 				"producer": g.producer,
 				"selected": selected,
 				"entitled": entitled,
+				// free 该模型在这条通道上是否**不消耗积分**（口径见 upstream.ModelInfo.Free）。
+				// 管理页「只看免费」靠它筛行：opencode Zen 的目录是整家厂商的（79 个），
+				// 用户实际能用的是免费层那一小撮，不筛就得在 79 行里翻。
+				"free": mi.Free,
 			}
 			if mi.Name != "" {
 				e["name"] = mi.Name
@@ -979,6 +983,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 				"realm":    "global",
 				"selected": h.publishAllows(sel, "global", "workbuddy", id),
 				"entitled": true,
+				"free":     gm.Free,
 			}
 			if gm.Name != "" {
 				e["name"] = gm.Name

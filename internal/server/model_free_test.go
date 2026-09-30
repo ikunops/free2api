@@ -79,6 +79,45 @@ func TestModelFreeReadsCatalogSnapshot(t *testing.T) {
 	}
 }
 
+// TestAvailableOutputModelsExposesFree 发布清单必须把 Free 透出去，前端「只看免费」才能筛。
+// 管理页在 opencode Zen 的整家目录（40 个里 31 个收费）里挑号，不给这个字段就只能靠
+// 名字猜哪行免费——那是猜的，不是判定。
+func TestAvailableOutputModelsExposesFree(t *testing.T) {
+	seedFreeCatalog(t)
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	up := newFakeUpstream(t, func(string) (int, string, bool) { return 200, fullFieldsModelsBody, false })
+	h := NewHandler(Config{Pool: p, Upstream: up})
+
+	got := map[string]any{}
+	for _, e := range h.availableOutputModels() {
+		key, _ := e["key"].(string)
+		if key != "" {
+			got[key] = e["free"]
+		}
+	}
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{"hy3-free", true},              // CN 目录标了 Free
+		{"hy3", false},                  // CN 目录存在但未标 Free
+		{"opencode:space-bunny-free", true},
+		{"opencode:claude-fable-5", false},
+		{"kilo:stepfun/step-3.7-flash:free", true},
+		{"zcode:glm-5.3-flash", false},
+	}
+	for _, c := range cases {
+		v, ok := got[c.key]
+		if !ok {
+			t.Errorf("发布清单缺少条目 %q", c.key)
+			continue
+		}
+		if v != c.want {
+			t.Errorf("%q free = %v, want %v", c.key, v, c.want)
+		}
+	}
+}
+
 // TestModelFreeColdCacheIsConservative 缓存冷 → 一律 false（按收费处理），且零上游调用。
 func TestModelFreeColdCacheIsConservative(t *testing.T) {
 	resetModelsCache()

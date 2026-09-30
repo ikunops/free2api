@@ -190,10 +190,12 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
   box-shadow:0 10px 30px rgba(16,16,16,.12)}
 /* 输出白名单：可勾选的模型清单（每行 勾选框 / 客户端看到的模型名 / 上游名 / 标位） */
 .mlist{border:1px solid var(--line2);border-radius:var(--r2);max-height:470px;overflow:auto}
-/* 第二列按实测最长 id（205px）定，留 11px 余量：原来 minmax(150px,300px) 在空间充足时
-   一律取上限 300px，正文只用到 205px，右边就空出一大块。
-   min-height + align-items:center 让带费率标签的行与不带的行等高（原来 41 / 36 参差）。 */
-.mrow{display:grid;grid-template-columns:18px minmax(150px,216px) minmax(0,1fr) auto;align-items:center;
+/* 第二列（模型名）用 max-content 自适应：写死上限（216/300px）时，长 id
+   （kilo:nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free 这类 50+ 字符）
+   一律被省略号截断，而右边第三列（中文名）却空着一大片。max-content 让这一列
+   按最长 id 撑开、把富余宽度让给名字列；窗口窄时 min 值 150px 兜底、省略号照常生效。
+   min-height + align-items:center 让带费率标签的行与不带的行等高。 */
+.mrow{display:grid;grid-template-columns:18px minmax(150px,max-content) minmax(0,1fr) auto;align-items:center;
   min-height:41px;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12.5px;cursor:pointer}
 .mrow:last-child{border-bottom:0}
 .mrow:hover{background:#fafaf8}
@@ -201,6 +203,9 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
 /* 未授权：上游目录里有、号池里没有任何号有额度跑它。看得见、能勾，但默认收起。 */
 .mrow.unent{opacity:.62}
 .mlist.hideunent .mrow.unent{display:none}
+/* 只看免费：opencode Zen 的目录是整家厂商的（79 个），用户实际能用的往往只有免费层。
+   勾上后收起非免费行（与「显示未授权」同一套做法：纯 CSS，不动勾选状态、不改计数口径）。 */
+.mlist.freeonly .mrow.paid{display:none}
 .mrow input{width:15px;height:15px;margin:0;accent-color:var(--acc);cursor:pointer}
 .mrow .mid{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mrow .mname{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -364,7 +369,7 @@ const S = {
   srcTab: "app", cand: null, candKind: "", candNote: "",
   candProbe: false, candBalance: false,
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
-  modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false,
+  modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false, onlyFree: false,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   stats: null, schedule: null, modeldead: null
@@ -1649,12 +1654,17 @@ function viewOutput(){
         if (m.suffix) bits.push('<span class="tag ' + (m.suffix === "-free" ? "ok" : "warn") + '">' +
           esc(m.suffix.replace(/^-/, "")) + '</span>');
         else if (m.credits) bits.push('<span class="tag warn">' + esc(m.credits) + '</span>');
+        // 免费但名字里没带费率尾巴的（如 opencode 的 big-pickle / kilo 的部分条目）
+        // 补一枚「免费」标记，否则光看行看不出它扣不扣积分。
+        else if (m.free) bits.push('<span class="tag ok">免费</span>');
         if (m.is_default) bits.push('<span class="tag ok">默认</span>');
         var un = m.entitled === false;
         if (un) bits.push('<span class="tag mut">未授权</span>');
         var key = m.key || m.id;
         var on = !!sel[key];
-        return '<label class="mrow' + (on ? "" : " off") + (un ? " unent" : "") + '">' +
+        // paid：非免费行。只在「只看免费」勾上时由 CSS 收起（free 由后端按各家口径判定）。
+        var paid = !m.free;
+        return '<label class="mrow' + (on ? "" : " off") + (un ? " unent" : "") + (paid ? " paid" : "") + '">' +
           '<input type="checkbox" data-model="' + esc(key) + '"' + (on ? " checked" : "") + '>' +
           '<span class="mid mono">' + esc(m.full_id) + '</span>' +
           '<span class="mname hint">' + esc(m.name || "") + '</span>' +
@@ -1667,9 +1677,12 @@ function viewOutput(){
         '<button class="tiny" data-action="model-all">全选</button>' +
         '<button class="tiny" data-action="model-none">全不选</button>' +
         '<button class="tiny" data-action="model-default">只留默认</button>' +
+        '<button class="tiny" data-action="model-free" title="把发布清单收窄成「只有免费模型」——不消耗积分的那些">只勾免费</button>' +
         '<button class="tiny" data-action="model-reset">恢复为全部放开</button>' +
         '<button class="tiny" data-action="mgroup-all" data-open="1">展开全部</button>' +
         '<button class="tiny" data-action="mgroup-all" data-open="0">收起全部</button>' +
+        '<label class="inlinechk" title="只看不消耗积分的模型（opencode Zen 目录 79 个里大部分是收费的，勾上后只留免费层）">' +
+          '<input type="checkbox" id="onlyFree"' + (S.onlyFree ? ' checked' : '') + '>只看免费</label>' +
         '<label class="inlinechk" title="上游目录里有、号池任何号都没额度的模型（默认收起）">' +
           '<input type="checkbox" id="showUnent"' + (S.showUnent ? ' checked' : '') + '>显示未授权</label>' +
         '<label class="inlinechk" title="勾上：国内版与国际版（wba）各用一把开关，同名型号互不影响；取消：裸名字一把开关同时管两域（旧清单语义）">' +
@@ -1678,7 +1691,7 @@ function viewOutput(){
         '<span class="hint" style="margin:0" id="mSelCount">' + gcountText(entAvail, unentAvail, sel) + '</span>' +
         '<button class="pri tiny" data-action="save-models">保存发布清单</button>' +
       '</div>' +
-      '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + '" id="mList">' + rows + '</div>' +
+      '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + (S.onlyFree ? ' freeonly' : '') + '" id="mList">' + rows + '</div>' +
       '<div class="hint" style="margin-top:9px">勾上的才会出现在客户端的 <span class="mono">GET /v1/models</span> 里；' +
       '没勾的拿旧名字调也会被 <span class="mono">404 model_not_found</span> 挡回去（清单为空 = 全放）。' +
       '一个都不勾 = 全部放开（等于不过滤）。改完要点「保存发布清单」。<br>' +
@@ -2394,6 +2407,7 @@ async function actOn(t){
     if (act === "model-all") return setModelSel(function(){ return true; });
     if (act === "model-none") return setModelSel(function(){ return false; });
     if (act === "model-default") return setModelSel(function(m){ return !!m.is_default; });
+    if (act === "model-free") return setModelSel(function(m){ return !!m.free; });
     if (act === "model-reset") return resetModels();
     if (act === "mgroup-toggle"){
       var gk = t.getAttribute("data-g") || "";
@@ -2485,6 +2499,12 @@ document.addEventListener("click", function(ev){
       var ml = $("#mList");
       if (ml) ml.classList.toggle("hideunent", !t.checked);
       S.showUnent = !!t.checked; // 记住：重画/保存后别自己收回去
+      return;
+    }
+    if (t.id === "onlyFree"){
+      var ml2 = $("#mList");
+      if (ml2) ml2.classList.toggle("freeonly", !!t.checked);
+      S.onlyFree = !!t.checked; // 同上：这是纯视图开关，不影响勾选
       return;
     }
     if (t.hasAttribute && t.hasAttribute("data-model")){
