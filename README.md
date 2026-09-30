@@ -29,7 +29,7 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 > - 新增 `POST /v1/responses`（OpenAI Responses 出口），与 `/v1/chat/completions` 共用同一号池 /
 >   粘性会话 / 冷却 / 成本台账；Codex CLI / Codex 桌面可直接用 `wire_api="responses"` 接入。
 > - 新增 zcode（智谱 BigModel / Z.ai）号源，与 workbuddy 号并列进同一号池。
-> - 内置 WorkBuddy 桌面端登录态读取：WorkBuddy 5.6.2 起把登录态做了字段级加密，本网关直接解 `$wbEncrypted` 信封，把本机客户端登录过的号一次读出来（含 accessToken / refreshToken / 到期时间 / 域），不再需要先装 wb-switch 之类的第三方账本工具。
+> - 内置 WorkBuddy 桌面端登录态读取：WorkBuddy 5.6.2 起把登录态做了字段级加密，本网关直接解 `$wbEncrypted` 信封，把本机客户端登录过的号一次读出来（含 accessToken / refreshToken / 到期时间 / 域），不再需要先装 wb-switch 之类的第三方账本工具。解密钥默认**现场问客户端要**（版本换了自动跟随），另有两档兜底，见《取源》。
 > - 多出口：同一进程内按来源开多个端口，每个口一套协议 / 前缀 / 费率 / 模型白名单。
 > - 控制台「输出 API」页可视化配置协议 / 端口 / 模型前缀 / 费率后缀 / 发布清单。
 
@@ -58,6 +58,51 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 📖 完整文档见 [GitHub Wiki](https://github.com/ikunops/free2api/wiki)。
 
 ## 核心能力
+
+### 取源（账号从哪来）
+
+网关自己就能把本机已有的登录态读出来，**不要求先装 wb-switch**。三种取源方式：
+
+| 方式 | 说明 | 适用 |
+| --- | --- | --- |
+| **应用内登录态** | 直接读工具自己落盘的凭证（本机客户端登录过的号全在） | WorkBuddy 桌面端、OpenCode、Kilo、ZCode |
+| **switch 账本** | 读 wb-switch / zcode-switch 聚合好的账本文件 | 装了账本工具、想整批导入 |
+| **导入文件** | 粘贴 / 上传别处导出的 JSON | 从另一台机器搬号 |
+
+三者最终都汇进同一份号池（`auths/` 目录），来源归类记在来源台账里，整体拷贝即迁移。
+
+#### WorkBuddy 桌面端登录态（含字段级解密）
+
+WorkBuddy **5.6.2 起**把登录态文件里的敏感字段做了字段级加密，凭证长这样：
+
+```json
+"accessToken": {"$wbEncrypted": 1, "envelope": "<base64>"}
+```
+
+通用解析器只能把它数成「加密字段、读不了」，于是「应用内登录态」这一路在 5.6.2 之后等于失效，
+只能靠 wb-switch 之类的第三方工具代取。**本网关把解密实现出来了**（`internal/source/workbuddy_desktop.go`），
+所以它自己能读：扫 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\` 下的
+`workbuddy-desktop*.info` 快照，按 uid 去重取最新，还原 accessToken / refreshToken / 到期时间 / 域。
+
+> 目录里是**每次登录 / 刷新写一份**的快照，所以「本机登录过的所有账号」都在，
+> 不只是当前登录的那一个。
+
+**解密用的静态钥从哪来（三档，按序尝试）**
+
+1. **现场问客户端要（默认、最稳）** — 以 `ELECTRON_RUN_AS_NODE=1` 起客户端 exe，
+   调它自己的原生绑定 `process._linkedBinding("electron_browser_workbuddy_storage").loggerGet()`。
+   这是**客户端自己用的 API**，版本换了、钥换了自己跟着换，无需网关跟着改。
+   客户端没装 / 起不来 / 版本改了 API 名 → 自动落到下一档。
+2. **环境变量 `WORKBUDDY_AT_REST_SECRET`** — 显式指定静态钥，排障 / 非常规部署用。
+3. **内置常量兜底** — 该钥是**编译期常量**，实测 CN 版与国际版两次独立安装取出的值逐字节相同
+   （keyId `9127dea1b44020a7`），故同一版本的所有机器通用。
+
+三档全失败时如实报错（哪个 keyId 对不上 / 客户端没装），**绝不猜**。
+
+> ⚠️ **维护提示**：第 1 档不依赖任何硬编码，正常情况下永远可用；第 3 档（内置常量）是给
+> 「客户端未安装 / 无法启动」场景兜底的。若上游大版本更换静态钥，第 1 档会**自动跟随**，
+> 而第 3 档会失效——此时网关会在取源结论里报 keyId 不匹配，按提示用环境变量指定新钥即可，
+> 无需改代码。
 
 ### 账号池治理
 
