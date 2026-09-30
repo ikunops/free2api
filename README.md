@@ -312,6 +312,59 @@ PID 写入 `free2api.pid`，标准输出与错误日志分别写入 `data/server
 `data/server.err.log`。停止脚本会先验证 PID 对应的可执行文件确为当前目录下的
 `free2api.exe`，不会因陈旧 PID 误杀其他进程。
 
+#### 开机自启 / 看门狗（Windows）
+
+`scripts\keepalive.vbs` + 计划任务 `\free2api-keepalive` 负责让网关常驻：登录时启动，
+之后每分钟检查一次，发现端口没人应答就把网关拉起来。
+
+**动作必须是 `wscript.exe`，不要改成 `cmd.exe` 或直接指向 `free2api.exe`。**
+`cmd.exe` 和 `free2api.exe` 都是控制台子系统程序，任务计划每次触发时 Windows 都会为它
+分配一个控制台；Windows 11 默认用 Windows Terminal 当控制台宿主，于是那个控制台就是一个
+真实窗口——表现为**每分钟闪一次终端**。`wscript.exe` 是 GUI 子系统宿主，根本不分配控制台，
+再由脚本用 `WshShell.Run(..., SW_HIDE, ...)` 隐藏地启动网关，才真正一个窗口都没有。
+
+安装（在**管理员** PowerShell / CMD 里运行）：
+
+```bat
+rem 只需启用已注册的任务（无需管理员）
+scripts\install-keepalive.cmd minimal
+rem 刷新启动器并重新注册任务（需要管理员）
+scripts\install-keepalive.cmd standard
+rem 上面 + 安装保护启动器文件的 pre-commit 钩子
+scripts\install-keepalive.cmd full
+```
+
+运行期开关（都不用动计划任务）：
+
+```bat
+rem 暂停守护（网关保持现状，不再自动拉起）
+type nul > data\keepalive.pause
+rem 恢复
+del data\keepalive.pause
+rem 彻底停用 / 删除
+schtasks /change /tn "\free2api-keepalive" /disable
+schtasks /delete /tn "\free2api-keepalive" /f
+```
+
+端口从 `config.json` 的 `listen` 字段读取（默认 7864），判断"是否已在运行"用
+`http://127.0.0.1:<port>/status` 探活：**不用 WMI**。在受限或非管理员主机上
+`SELECT ... FROM Win32_Process` 会返回 `0x80041003 拒绝访问`，把这种查询失败错当成
+"已在运行"会让看门狗变成永不启动网关的哑巴，直到下次重启才被发现。端口探活没有这个
+失败模式：有应答就是在跑，连不上才启动。
+
+事件日志写在 `data\keepalive.log`（超过 256 KiB 自动轮转）：
+
+```
+2026-09-30 15:53:19  ALREADY gateway answering on 127.0.0.1:7864; nothing to do
+2026-09-30 15:52:54  START port 7877 silent; launching D:\...\free2api.exe
+2026-09-30 15:52:54  STOP gateway exited; child exit code = -1
+```
+
+`keepalive.vbs` **必须保持纯 ASCII + CRLF**：`wscript.exe` 按系统 ANSI 代码页读取 `.vbs`，
+非 ASCII 字符在别的语言环境下会被读坏，脚本坏了看门狗就静默失效。`scripts\check-launcher-files.py`
+负责检查这一点，`scripts\install-keepalive.cmd full` 会把它装成 pre-commit 钩子。
+
+
 添加账号可使用配套管理面板，或在 Git Bash 中运行现有 `login.sh`（它还负责 CN
 首次签到以及 Global 注册地区/trial 流程；不建议只手工调用 `login.exe` 后跳过这些步骤）。
 

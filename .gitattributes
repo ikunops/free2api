@@ -1,0 +1,16 @@
+# Line-ending policy for the Windows watchdog launcher.
+#
+# Why this file exists: core.autocrlf only normalizes for the machine that has
+# it enabled. A clone on Linux/macOS (or a Windows clone without autocrlf) would
+# otherwise materialize these files as LF-only. keepalive.vbs is read by
+# wscript.exe through cmd.exe's world, and the task XML is consumed by the
+# Windows Task Scheduler -- both expect CRLF. Locking it here means "git clone"
+# produces correct files on every OS, not just on the maintainer's desktop.
+scripts/keepalive.vbs                 text eol=crlf
+scripts/free2api-keepalive.xml        text eol=crlf
+scripts/install-keepalive.cmd         text eol=crlf
+scripts/register-keepalive-task.ps1   text eol=crlf
+
+# Pure-Python guards carry no CRLF requirement; LF keeps diffs quiet.
+scripts/check-launcher-files.py       text eol=lf
+scripts/install_hooks.py              text eol=lf
