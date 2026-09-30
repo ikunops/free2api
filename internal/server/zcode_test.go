@@ -191,7 +191,7 @@ func TestZCodeChatNoPenaltyOnSuccess(t *testing.T) {
 	}
 }
 
-// TestZCodeModelsAndBareNameRouting /v1/models 列出 cn:zcode:* 段；且请求只写裸名
+// TestZCodeModelsAndBareNameRouting /v1/models 列出 zcode:* 段；且请求只写裸名
 // "glm-4.6" 时按「账号自带模型归属」自动落到 zcode 号池（modelOwner 推断）。
 func TestZCodeModelsAndBareNameRouting(t *testing.T) {
 	_, f, h := zcodeTestPool(t)
@@ -212,7 +212,7 @@ func TestZCodeModelsAndBareNameRouting(t *testing.T) {
 	}
 	var gotZCode bool
 	for _, m := range list.Data {
-		if m.ID == "cn:zcode:glm-4.6" {
+		if m.ID == "zcode:glm-4.6" {
 			gotZCode = true
 			if m.OwnedBy != upstream.ProducerZCode {
 				t.Errorf("owned_by = %q, want zcode（模型归属要可见）", m.OwnedBy)
@@ -224,7 +224,7 @@ func TestZCodeModelsAndBareNameRouting(t *testing.T) {
 		for _, m := range list.Data {
 			ids = append(ids, m.ID)
 		}
-		t.Fatalf("/v1/models 缺 cn:zcode:glm-4.6，实际 = %v", ids)
+		t.Fatalf("/v1/models 缺 zcode:glm-4.6，实际 = %v", ids)
 	}
 
 	// 裸名 "glm-4.6"：workbuddy 目录里没有（fake 对它 404）→ 归属判给 zcode。
@@ -344,8 +344,8 @@ func TestOutputWhitelistPerProducer(t *testing.T) {
 	for _, e := range h.modelList() {
 		got[e["id"].(string)] = true
 	}
-	if !got["cn:zcode:glm-4.6"] {
-		t.Errorf("勾了 zcode:glm-4.6，对外清单却没有 cn:zcode:glm-4.6（got=%v）", got)
+	if !got["zcode:glm-4.6"] {
+		t.Errorf("勾了 zcode:glm-4.6，对外清单却没有 zcode:glm-4.6（got=%v）", got)
 	}
 	if got["cn:glm-4.6"] {
 		t.Errorf("勾 zcode 的 glm-4.6 把 CN 的也放开了（got=%v）：白名单又在用裸 id 当键", got)
@@ -353,8 +353,8 @@ func TestOutputWhitelistPerProducer(t *testing.T) {
 	if got["cn:kimi-k2.5"] {
 		t.Errorf("没勾的 CN 模型 cn:kimi-k2.5 出现在对外清单（got=%v）", got)
 	}
-	if got["cn:zcode:glm-5.3"] {
-		t.Errorf("没勾的 zcode 模型 cn:zcode:glm-5.3 出现在对外清单（got=%v）", got)
+	if got["zcode:glm-5.3"] {
+		t.Errorf("没勾的 zcode 模型 zcode:glm-5.3 出现在对外清单（got=%v）", got)
 	}
 }
 

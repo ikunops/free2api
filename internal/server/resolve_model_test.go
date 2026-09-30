@@ -45,3 +45,24 @@ func TestResolveModelEdge(t *testing.T) {
 		}
 	}
 }
+
+// TestModelIDNoRealmForNonWorkbuddy 回归：realm 段（cn/global）只属于 WorkBuddy 的
+// 「国内版 / 国际版」两种域，其他来源（zcode / opencode / kilo）没有域概念，对外模型名
+// 不得带 realm 段。此前 modelIDFor 对所有来源硬拼 realm，opencode 的模型名变成
+// "cn:opencode:xxx"，被误读成「这些模型也分国内国际」。
+func TestModelIDNoRealmForNonWorkbuddy(t *testing.T) {
+	h := NewHandler(Config{Output: NewOutputStore("")})
+	cases := []struct{ realm, producer, bare, want string }{
+		{"cn", "", "auto", "cn:auto"},                           // 主口裸 workbuddy 名
+		{"cn", "workbuddy", "auto", "cn:auto"},                  // 显式 workbuddy 也省 producer 段
+		{"global", "", "gpt-5.4", "global:gpt-5.4"},             // 国际版照旧带 realm
+		{"cn", "zcode", "glm-4.6", "zcode:glm-4.6"},             // 非 WB：producer 段，无 realm
+		{"cn", "opencode", "big-pickle", "opencode:big-pickle"}, // 非 WB：无 realm
+		{"cn", "kilo", "kilo-auto/free", "kilo:kilo-auto/free"}, // 非 WB：无 realm
+	}
+	for _, c := range cases {
+		if got := h.modelIDFor(c.realm, c.producer, c.bare, ""); got != c.want {
+			t.Errorf("modelIDFor(%q,%q,%q)=%q want %q", c.realm, c.producer, c.bare, got, c.want)
+		}
+	}
+}

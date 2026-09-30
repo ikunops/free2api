@@ -50,13 +50,13 @@ func TestResolveRouteKeepsNativeFreeSuffix(t *testing.T) {
 		wantBare string
 		why      string
 	}{
-		{"cn:opencode:mimo-v2.6-flash-free", "mimo-v2.6-flash-free", "模型名自带 -free，不能被剥"},
-		{"cn:opencode:space-bunny-free", "space-bunny-free", "模型名自带 -free，不能被剥"},
-		{"cn:opencode:big-pickle", "big-pickle", "无后缀，原样"},
+		{"opencode:mimo-v2.6-flash-free", "mimo-v2.6-flash-free", "模型名自带 -free，不能被剥"},
+		{"opencode:space-bunny-free", "space-bunny-free", "模型名自带 -free，不能被剥"},
+		{"opencode:big-pickle", "big-pickle", "无后缀，原样"},
 		{"cn:glm-5.2-free", "glm-5.2", "客户端加的费率后缀，剥掉后命中 workbuddy 目录"},
-		{"cn:opencode:glm-5.3-flash-free", "glm-5.3-flash", "客户端加的费率后缀，剥掉后命中 opencode 目录"},
-		{"cn:opencode:jev-1.13-free", "jev-1.13-free", "目录里 jev-1.13-free 与 jev-1.13 并存，必须保留 -free"},
-		{"cn:opencode:jev-1.13", "jev-1.13", "非 -free 版本，原样"},
+		{"opencode:glm-5.3-flash-free", "glm-5.3-flash", "客户端加的费率后缀，剥掉后命中 opencode 目录"},
+		{"opencode:jev-1.13-free", "jev-1.13-free", "目录里 jev-1.13-free 与 jev-1.13 并存，必须保留 -free"},
+		{"opencode:jev-1.13", "jev-1.13", "非 -free 版本，原样"},
 	}
 	for _, c := range cases {
 		_, _, bare := h.resolveRoute(c.in)

@@ -73,7 +73,7 @@ func newZCodeCatalogHandler(t *testing.T) *Handler {
 func zcodeIDs(list []map[string]any) []string {
 	out := []string{}
 	for _, e := range list {
-		if id, _ := e["id"].(string); strings.HasPrefix(id, "cn:zcode:") {
+		if id, _ := e["id"].(string); strings.HasPrefix(id, "zcode:") {
 			out = append(out, id)
 		}
 	}
@@ -110,7 +110,7 @@ func TestModelListHidesUnentitledZCode(t *testing.T) {
 	h := newZCodeCatalogHandler(t)
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
 	ids := zcodeIDs(h.modelList())
-	if len(ids) != 1 || ids[0] != "cn:zcode:glm-5.3-flash" {
+	if len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
 		t.Fatalf("/v1/models 的 zcode 段应只剩有额度的那一个，得到 %v", ids)
 	}
 }
@@ -134,7 +134,7 @@ func TestModelListKeepsExplicitlyPublishedUnentitled(t *testing.T) {
 	st.cur = OutputConfig{Format: FormatOpenAI, Models: []string{modelKey(upstream.ProducerZCode, "glm-4.6")}}
 	h.cfg.Output = st
 	ids := zcodeIDs(h.modelList())
-	if len(ids) != 1 || ids[0] != "cn:zcode:glm-4.6" {
+	if len(ids) != 1 || ids[0] != "zcode:glm-4.6" {
 		t.Fatalf("白名单里的模型要照发，得到 %v", ids)
 	}
 }
@@ -148,7 +148,7 @@ func TestZCodeEntitlementSharedAcrossHandlers(t *testing.T) {
 	exit := NewHandler(Config{Pool: main.cfg.Pool, Upstream: main.cfg.Upstream, ProducerAllow: []string{upstream.ProducerZCode}})
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
 	for name, h := range map[string]*Handler{"主口": main, "出口": exit} {
-		if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "cn:zcode:glm-5.3-flash" {
+		if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
 			t.Fatalf("%s：额度信息该是包级共享的，出口也得收敛成 1 条，得到 %v", name, ids)
 		}
 	}
@@ -201,7 +201,7 @@ func TestZCodePublishListUnentitledNotSelectedByDefault(t *testing.T) {
 	if sel2["glm-5.3-flash"] {
 		t.Error("白名单里没有 glm-5.3-flash，它不该显示成已勾选")
 	}
-	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "cn:zcode:glm-4.6" {
+	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-4.6" {
 		t.Errorf("白名单点名了 glm-4.6，对外就该只发这一条，得到 %v", ids)
 	}
 }

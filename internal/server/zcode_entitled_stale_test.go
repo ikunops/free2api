@@ -47,7 +47,7 @@ func TestZCodeEntitledStaleStillConverges(t *testing.T) {
 	if _, ok := set["glm-5.3-flash"]; !known || !ok {
 		t.Fatalf("过期后仍应拿着旧集合（known=true, glm-5.3-flash），得到 known=%v set=%v", known, set)
 	}
-	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "cn:zcode:glm-5.3-flash" {
+	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
 		t.Fatalf("TTL 到点也不该回退成整家目录，应仍是收敛后的 1 条，得到 %v", ids)
 	}
 }

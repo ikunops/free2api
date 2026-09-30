@@ -1,6 +1,10 @@
 package server
 
-import "strings"
+import (
+	"strings"
+
+	"free2api/internal/source"
+)
 
 // —— Codex 模型目录分支 ——
 //
@@ -109,12 +113,28 @@ func (h *Handler) codexModels() []map[string]any {
 // 例如 "快速 [CN x0.21]"、"Deepseek-V4.1-Flash [GLOBAL free]"。标签只给人看，
 // slug 才是路由依据。
 func codexDisplayName(id, name string) string {
-	realm, rest := "", id
-	switch {
-	case strings.HasPrefix(rest, "cn:"):
-		realm, rest = "CN", strings.TrimPrefix(rest, "cn:")
-	case strings.HasPrefix(rest, "global:"):
-		realm, rest = "GLOBAL", strings.TrimPrefix(rest, "global:")
+	// 前缀解析与 resolveModelRoute 同序：realm（workbuddy 的 cn/global 域）或
+	// producer（来源）。最多各一段，顺序不限。
+	realm, producer, rest := "", "", id
+	for i := 0; i < 2; i++ {
+		idx := strings.IndexByte(rest, ':')
+		if idx < 0 {
+			break
+		}
+		head := rest[:idx]
+		if realm == "" && head == "cn" {
+			realm, rest = "CN", rest[idx+1:]
+			continue
+		}
+		if realm == "" && head == "global" {
+			realm, rest = "GLOBAL", rest[idx+1:]
+			continue
+		}
+		if producer == "" && isProducerPrefix(head) {
+			producer, rest = source.ProducerLabel(head), rest[idx+1:]
+			continue
+		}
+		break
 	}
 	rate := ""
 	if strings.HasSuffix(rest, "-free") {
@@ -122,7 +142,12 @@ func codexDisplayName(id, name string) string {
 	} else if i := strings.LastIndex(rest, "-x"); i >= 0 && i+2 < len(rest) {
 		rate = rest[i+1:]
 	}
-	tag := strings.TrimSpace(realm + " " + rate)
+	// 来源标签优先：非 workbuddy 的模型名只有 producer 段，没有 realm 概念。
+	label := producer
+	if label == "" {
+		label = realm
+	}
+	tag := strings.TrimSpace(label + " " + rate)
 	if tag == "" {
 		return name
 	}

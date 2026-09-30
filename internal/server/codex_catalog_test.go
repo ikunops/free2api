@@ -110,7 +110,7 @@ func TestCodexDisplayName(t *testing.T) {
 		{"cn:auto", "Auto", "Auto [CN]"},
 		{"cn:fast-model-x0.21", "快速", "快速 [CN x0.21]"},
 		{"global:deepseek-v4.1-flash-free", "Deepseek-V4.1-Flash", "Deepseek-V4.1-Flash [GLOBAL free]"},
-		{"cn:zcode:glm-5.3-flash", "GLM-5.3-Flash", "GLM-5.3-Flash [CN]"},
+		{"zcode:glm-5.3-flash", "GLM-5.3-Flash", "GLM-5.3-Flash [ZCode]"},
 		{"gpt-5.2", "gpt-5.2", "gpt-5.2"},
 	}
 	for _, c := range cases {

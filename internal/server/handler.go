@@ -536,13 +536,26 @@ func (h *Handler) modelID(realm, bare, credits string) string {
 	return h.modelIDFor(realm, "", bare, credits)
 }
 
-// modelIDFor 带 producer 段的出站模型名：realm:producer:输出前缀+裸名+费率后缀
-// （producer 为空时省掉该段，与 modelID 逐字等价）。
-// 与 resolveModelPrefixed 严格对称：realm + 可选 producer + 前缀 + 裸名 + 后缀。
+// modelIDFor 带 producer 段的出站模型名。
+//
+// 段序：workbuddy 是 realm:（"cn:auto" / "global:gpt-5.4"）；其他来源是
+// producer:（"zcode:glm-4.6" / "opencode:big-pickle"）。
+//
+// realm 段（cn/global）只对 workbuddy 有意义——那是它自己的「国内版 / 国际版 wba」
+// 两种域，其他来源（zcode / opencode / kilo…）根本没有域的概念。以前对所有来源都
+// 硬拼 realm，于是 opencode / zcode 的模型名变成 "cn:opencode:xxx"，让人误读成
+// 「这些模型也分国内国际」。现在非 workbuddy 来源不再带 realm 段。
+//
+// workbuddy 的 producer 段照旧省略（历史模型名 "cn:auto" 不带 "workbuddy" 段），
+// 与 modelKey 把 workbuddy 归一成裸 id 的口径一致。
+// 与 resolveModelPrefixed 严格对称：可选 realm + 可选 producer + 前缀 + 裸名 + 后缀。
 func (h *Handler) modelIDFor(realm, producer, bare, credits string) string {
+	if producer == "workbuddy" {
+		producer = ""
+	}
 	mid := realm + ":"
 	if producer != "" {
-		mid += producer + ":"
+		mid = producer + ":"
 	}
 	cfg := h.outputCfg()
 	return mid + cfg.ModelPrefix + bare + RateSuffix(cfg.RateHint, credits)
@@ -815,7 +828,7 @@ func (h *Handler) modelList() []map[string]any {
 //
 // 为什么必须带 producer：白名单是按 id 存的集合，两家的裸 id 会重名
 // （CN 有 cn:glm-4.6，zcode 实时目录也有 glm-4.6），共用裸 id 当键会出现
-// 「勾了 zcode 的 glm-4.6 把 CN 的也一起放开」这种串台。full_id（cn:zcode:glm-4.6）
+// 「勾了 zcode 的 glm-4.6 把 CN 的也一起放开」这种串台。full_id（zcode:glm-4.6）
 // 是给客户端看的，拿它当键又会被用户改的 model_prefix 带偏，所以单独定义一个键。
 func modelKey(producer, id string) string {
 	if producer == "" || producer == "workbuddy" {
