@@ -121,13 +121,18 @@ func (h *Handler) suggestedBaseURL() string {
 	return baseURLOf(listen)
 }
 
-// suggestedModels 建议的默认模型：发布清单里的第一个（没发布清单 = 取号池前几个）。
+// suggestedModels 建议的默认模型：发布清单里已勾的那些。
+//
+// 用 full_id（对外全名，带来源/realm 段，如 "zcode:glm-5.3-flash"）而不是裸 id：
+// 裸 id 跨来源会重名（glm-5.3-flash 同时属于 WorkBuddy CN 与 ZCode），写进 Codex
+// 的 model 后 resolveRoute 只能按歧义回落 workbuddy，用户本想用的 zcode 号永远选不上。
+// 客户端在模型选择器里看到的就是 full_id，写进去也才与 /v1/models 逐字一致。
 func (h *Handler) suggestedModels() []string {
 	out := []string{}
 	for _, m := range h.availableOutputModels() {
 		if sel, _ := m["selected"].(bool); sel {
-			if id, _ := m["id"].(string); id != "" {
-				out = append(out, id)
+			if full, _ := m["full_id"].(string); full != "" {
+				out = append(out, full)
 			}
 		}
 	}
