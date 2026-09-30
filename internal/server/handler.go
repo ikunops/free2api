@@ -41,6 +41,11 @@ type Config struct {
 	RedisMode    string
 	SoftCooldown time.Duration // 429/限流文案软冷却基数，默认 600s（连续触发指数退避，封顶 soft_rate_max）
 	RefreshSkew  time.Duration // token 提前刷新窗口，默认 10m
+	// SlotWait 选号时若「池里有健康号但全被在途上限占满」，最多排队等待多久等名额
+	// 释放。0 = 不等待（旧行为零回归），由 config pool.slot_wait 注入（默认 30s）。
+	// 单账号池 + 并发突发场景下把「成片 503」变成「排队」，同时对上游维持
+	// max_in_flight 的并发压制。
+	SlotWait time.Duration
 
 	// PromptMode "passthrough"（默认，透传客户端原始 system）/ "custom"（网关替换）。
 	PromptMode string
@@ -1455,7 +1460,7 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 	// 出口编码器：chat 原样透传；responses 翻译成 Responses 对象/事件流。
 	// model 传 peek.Model（客户端原始请求里的名字，含前缀）——Responses 对象里的
 	// model 字段要原样回显客户端自己写的名字。
-	var sink chatSink = chatSinkOpenAI{}
+	var sink chatSink = chatSinkOpenAI{model: peek.Model}
 	if proto == protocolResponses {
 		sink = chatSinkResponses{model: peek.Model}
 	}
@@ -1665,28 +1670,52 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 			acct = h.cfg.Pool.PickExcludingForProducerRealmFree(
 				tried, bareModel, producer, realm, h.modelFree(realm, producer, bareModel))
 		}
+		// 选号失败分两种：池里真没号（冷却/禁用/来源不符）→ 立即 503；有健康号只是被并发
+		// 占满在途名额 → 短暂排队等名额释放（单账号池突发并发不再成片 503）。
+		if acct == nil {
+			acct = h.waitForSlot(r.Context(), tried, bareModel, producer, realm)
+		}
 		if acct == nil {
 			st.status = http.StatusServiceUnavailable
 			break
 		}
-		st.uid = acct.UID
-		// 同步昵称：请求流水行只写 uid8 时无法直观看是哪一号，昵称随本次选号带入日志行。
-		st.nick = acct.Nickname
-		tried[acct.UID] = true
-
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
 		if !h.cfg.Pool.Acquire(acct.UID) {
+			// 名额被并发抢走：本次**没有**真正打上游，不能算「这个号试过」——撤销
+			// tried 标记。否则单账号池会把自己唯一可用的号排除在候选外，后续选号
+			// 恒为 nil，突发并发成片 503（本轮实测复现）。
+			delete(tried, acct.UID)
 			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
 			// 满载粘性号再浪费一次粘性命中往返（语义与 fail()/粘性命中-nil 的解绑一致）。
 			if stickyUID != "" && acct.UID == stickyUID {
 				unbindSticky()
 			}
-			if !rotateBackoff(i, r.Context()) {
-				// 客户端已断连：换号重试无意义，终止轮转走末端错误透传。
-				break
+			// 有健康号只是名额占满 → 有界等待名额释放（单账号池突发并发的背压）；
+			// 等不到（池里真没可等号/超时/断连）再走轮转退避换号。
+			if w := h.waitForSlot(r.Context(), tried, bareModel, producer, realm); w != nil {
+				acct = w
+				if !h.cfg.Pool.Acquire(acct.UID) {
+					// 等到的名额又被并发抢走：撤销标记并回退轮转。
+					delete(tried, acct.UID)
+					if !rotateBackoff(i, r.Context()) {
+						break
+					}
+					continue
+				}
+			} else {
+				if !rotateBackoff(i, r.Context()) {
+					// 客户端已断连：换号重试无意义，终止轮转走末端错误透传。
+					break
+				}
+				continue // 最后一个名额被并发抢走且无可等号 → 换号
 			}
-			continue // 最后一个名额被并发抢走 → 换号
 		}
+		st.uid = acct.UID
+		// 同步昵称：请求流水行只写 uid8 时无法直观看是哪一号，昵称随本次选号带入日志行。
+		st.nick = acct.Nickname
+		// tried 只在**成功占到在途名额**后标记：它表达「这个号本轮已真实使用」
+		// （失败换号时要跳过），不是「pick 曾提名过」。
+		tried[acct.UID] = true
 		heldUID = acct.UID
 
 		// token 临近过期 → 先 refresh（失败冷却换号）
@@ -1976,6 +2005,41 @@ func promptTooLongMessage(body string) string {
 		return "prompt is too long"
 	}
 	return body
+}
+
+// slotWaitStep 在途名额等待的轮询步长：每步检查一次是否有名额释放 + 重试选号。
+// 50ms 在「及时性」与「不空转 CPU」之间取平衡（池内选号是内存遍历，单次成本极低）。
+const slotWaitStep = 50 * time.Millisecond
+
+// waitForSlot 在「池里有对该模型健康的号、但全部被在途上限挡住」时，最多等待
+// h.cfg.SlotWait 那么久，等一个名额释放后返回可用的候选号；池里确实没有可等号
+// （冷却/禁用/来源不符/模型级冷却）或等待超时/客户端断连则返回 nil，由调用方走 503。
+//
+// 为什么需要它：单账号池（如只有 1 个 opencode/kilo 号）配 max_in_flight=3 时，
+// 第 4 个并发请求此前会立刻 503，客户端看到的是「瞬间打满」。上游单号并发本就要
+// 压住（WAF），正确的背压形态是「排队等前面请求腾名额」，而不是把突发全判失败。
+// SlotWait<=0 时完全不等待（旧行为，零回归）。
+func (h *Handler) waitForSlot(ctx context.Context, tried map[string]bool, bareModel, producer, realm string) *auth.Auth {
+	if h.cfg.SlotWait <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(h.cfg.SlotWait)
+	for {
+		if acct := h.cfg.Pool.PickExcludingForProducerRealmFree(
+			tried, bareModel, producer, realm, h.modelFree(realm, producer, bareModel)); acct != nil {
+			return acct
+		}
+		// 没有「只差一个在途名额」的号：等待不会让选号成功，立即放弃。
+		if !h.cfg.Pool.HasHealthyInFlightFull(tried, bareModel, realm, producer) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		if !sleepCtx(ctx, slotWaitStep) {
+			return nil // 客户端断连/优雅停机：排队中的请求就地放弃，不占名额
+		}
+	}
 }
 
 // rotateBackoff 轮转间指数退避 + 抖动（WAF 403 修复 P0-2，报告 §6）：

@@ -483,6 +483,18 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 // 空流兜底 error 帧（"empty upstream stream"）不带 hint（网关本地故障形态
 // 未覆盖，不编造）。
 func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) error {
+	return StreamHintModel(w, r, hintFn, "")
+}
+
+// StreamHintModel 同 StreamHint，但额外把每帧 chat.completion.chunk 的 model 字段覆写为 model
+// （空串 = 不改写，与 StreamHint 逐字节一致）。
+//
+// 存在的理由：上游只认裸模型名（网关出站前 rewriteModel 剥了 realm/producer 前缀），回程帧的
+// model 也因此是裸名。但 OpenAI 兼容协议要求响应 model 回显**客户端请求里的名字**；同一上游
+// 模型挂多个逻辑名时（cn:x-x0.11 / global:x-free），裸名回程会让严格校验的客户端（如 DSH harness
+// 的 model 一致性检查）判为响应错配。
+// error 帧不在此列（writeRaw 原样透传，不编造 model）。
+func StreamHintModel(w http.ResponseWriter, r io.Reader, hintFn func(string) string, model string) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -523,6 +535,10 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 		var obj map[string]any
 		valid := 0
 		if json.Unmarshal([]byte(payload), &obj) == nil {
+			// 出口 model 回填：客户端请求名原样回显（normalizeFrame 白名单保留 model 字段）。
+			if model != "" {
+				obj["model"] = model
+			}
 			// 上游错误帧透传（error-passthrough）：带 error 键的帧**原样写出**，不走
 			// normalizeFrame 白名单——白名单会剥掉 error 字段，客户端就看不到上游
 			// code/msg/requestId。error.message 即上游原文（如 6004 限流、审核拦截），

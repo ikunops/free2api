@@ -23,15 +23,24 @@ type chatSink interface {
 	Complete(resp map[string]any) (any, error)
 }
 
-// chatSinkOpenAI 现状协议：上游 chat.completion / chat SSE 原样透传
-// （含既有的帧规范化 + gateway_hint 附加，见 upstream.StreamHint）。
-type chatSinkOpenAI struct{}
+// chatSinkOpenAI 现状协议：上游 chat.completion / chat SSE 原样透传（含既有的帧规范化
+// + gateway_hint 附加，见 upstream.StreamHintModel）。
+//
+// model 是客户端**原始**请求里的模型名：出口把响应 model 回显成它。上游只认裸名，回程
+// 帧的 model 是裸名；同源多逻辑名（cn:x-x0.11 / global:x-free）时若不回填，严格校验的
+// 客户端会判模型错配（见 upstream.StreamHintModel 注释）。空串 = 不改写（内部调用零回归）。
+type chatSinkOpenAI struct{ model string }
 
-func (chatSinkOpenAI) Stream(w http.ResponseWriter, rc io.Reader, hint func(string) string) error {
-	return upstream.StreamHint(w, rc, hint)
+func (s chatSinkOpenAI) Stream(w http.ResponseWriter, rc io.Reader, hint func(string) string) error {
+	return upstream.StreamHintModel(w, rc, hint, s.model)
 }
 
-func (chatSinkOpenAI) Complete(resp map[string]any) (any, error) { return resp, nil }
+func (s chatSinkOpenAI) Complete(resp map[string]any) (any, error) {
+	if s.model != "" {
+		resp["model"] = s.model
+	}
+	return resp, nil
+}
 
 // chatSinkResponses Responses 协议：把上游 Chat 翻译成 Responses 对象 / 事件流。
 // model 是客户端**原始**请求里的模型名（含 realm/producer/输出前缀），原样回显。

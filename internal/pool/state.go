@@ -302,6 +302,44 @@ func (p *Pool) AvailableUIDsForModel(model string) []string {
 // availableUIDsLocked 是 AvailableUIDs 四变体（AvailableUIDs/ForModel/ForRealm/
 // ForModelRealm）共用的遍历实现：realm 过滤（""=全池）+ 可替换健康口径（healthy /
 // healthyForModel）+ 在途占满过滤，输出按 UID 排序（稳定）。调用方必须不持锁。
+// HasHealthyInFlightFull 报告在当前 (realm, producer, tried, reqModel) 过滤下，池里是否
+// 「存在账号本身健康（对该模型也可用），但全部被在途上限挡住」。
+//
+// 存在的理由：选号返回 nil 有两种完全不同的成因，调用方（handler）的处置应当不同——
+//   - 池里确实没有健康号（冷却/禁用/来源不符/模型级冷却）→ 排队无意义，立即 503；
+//   - 有健康号、只是并发把在途名额占满 → 高并发突发的正常排队态，应短暂等待名额释放。
+//
+// 本函数只回答第二种：healthyForModel(e) 为真**且** inFlightFull(e) 为真。
+// 过滤口径与 pick 的候选集严格一致（realm 谓词 + servableProducer + producerMatch +
+// tried 排除），避免出现「pick 说没号、这里说有号」的错位等待。
+// 调用方需自行限定时长：本函数只做一次性快照判定。
+func (p *Pool) HasHealthyInFlightFull(tried map[string]bool, reqModel, realm, producer string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for uid, e := range p.byUID {
+		if tried != nil && tried[uid] {
+			continue
+		}
+		if realm != "" && e.a.Realm() != realm {
+			continue
+		}
+		if !servableProducer(p.producerFor(uid)) {
+			continue
+		}
+		if !p.producerMatch(uid, producer) {
+			continue
+		}
+		if !e.healthyForModel(now, reqModel) {
+			continue
+		}
+		if p.inFlightFull(e) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Pool) availableUIDsLocked(realm string, health func(e *entry, now time.Time) bool) []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

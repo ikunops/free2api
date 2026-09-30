@@ -156,6 +156,9 @@ type Config struct {
 		// 错误策略）。默认 "30m"（≤48 次/天/模型）；"0" 关停（完全回到现状行为）；
 		// 空值回落默认。
 		CostExploreInterval string `json:"cost_explore_interval"`
+		// SlotWait 池里有健康号但被在途上限占满时的排队等待时长（默认 "30s"）。
+		// "0" = 不排队、立即 503（旧行为）。单账号池 + 并发突发靠它把成片失败变成排队。
+		SlotWait string `json:"slot_wait"`
 	} `json:"pool"`
 
 	SessionSticky struct {
@@ -176,6 +179,8 @@ type Config struct {
 	ExpiringSoonDur     time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
+	// SlotWaitDur 解析后的排队等待时长（pool.slot_wait，默认 30s；0 = 不排队）。
+	SlotWaitDur time.Duration `json:"-"`
 }
 
 // Default 默认配置。
@@ -221,6 +226,8 @@ func Default() *Config {
 	c.Pool.ExpiringSoon = "168h" // 快过期窗口默认 7 天：官方活动奖励积分多在两周内过期
 	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
+	// 在途占满时的排队等待默认 30s：单账号池高并发下的背压（0 可显式关闭）。
+	c.Pool.SlotWait = "30s"
 	c.SessionSticky.Enabled = true
 	c.SessionSticky.TTL = "30m"
 	c.SessionSticky.GCInterval = "5m"
@@ -421,6 +428,17 @@ func (c *Config) normalize() error {
 	}
 	if c.CostExploreIntervalDur < 0 {
 		c.CostExploreIntervalDur = 0
+	}
+	// 在途占满排队等待（pool.slot_wait）：空值回落默认 30s；"0" 是合法值
+	// （显式关闭排队，立即 503 旧行为）；负值钳 0 同关闭。
+	if c.Pool.SlotWait == "" {
+		c.Pool.SlotWait = "30s"
+	}
+	if c.SlotWaitDur, err = time.ParseDuration(c.Pool.SlotWait); err != nil {
+		return fmt.Errorf("pool.slot_wait: %w", err)
+	}
+	if c.SlotWaitDur < 0 {
+		c.SlotWaitDur = 0
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120

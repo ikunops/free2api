@@ -250,6 +250,7 @@ func main() {
 		StickyCount:  sessCount,
 		RedisMode:    redisMode,
 		SoftCooldown: cfg.SoftRateDur,
+		SlotWait:     cfg.SlotWaitDur, // 在途占满时的排队等待（pool.slot_wait，默认 30s）
 		PromptMode:   cfg.Prompt.Mode,
 		PromptText:   cfg.PromptText,
 		// global realm 开关（handler 侧第三道闸：modelList 据此决定是否列 global 名单）。
