@@ -11,6 +11,23 @@ if not exist "config.json" (
   exit /b 1
 )
 
+rem --- clear the Codex sandbox black-hole proxy (http://127.0.0.1:9) ---
+rem The Codex Windows sandbox injects HTTP(S)_PROXY=127.0.0.1:9 into every
+rem child process to forbid network access. The gateway itself ignores it
+rem (its outbound Transport sets no Proxy, so it never reads these), but
+rem anything it shells out to would inherit a dead proxy. Clear them here so
+rem a launch from inside that sandbox behaves the same as a normal one.
+set "HTTP_PROXY="
+set "HTTPS_PROXY="
+set "ALL_PROXY="
+set "http_proxy="
+set "https_proxy="
+set "all_proxy="
+set "GIT_HTTP_PROXY="
+set "GIT_HTTPS_PROXY="
+rem NO_PROXY: keep whatever the host had; only add loopback if unset.
+if not defined NO_PROXY set "NO_PROXY=localhost,127.0.0.1,::1"
+
 set "FREE2API_ROOT=%CD%"
 set "FREE2API_EXE=%CD%\free2api.exe"
 set "FREE2API_PID_FILE=%CD%\free2api.pid"

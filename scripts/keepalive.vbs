@@ -105,6 +105,23 @@ End If
 builtCmd = "cmd.exe /c " & dq & dq & exePath & dq & " -config " & dq & cfgPath & dq & _
            " >> " & dq & outPath & dq & " 2>> " & dq & errPath & dq & dq
 
+' --- strip the Codex sandbox black-hole proxy ----------------------------
+' The Codex Windows sandbox exports HTTP(S)_PROXY=http://127.0.0.1:9 into
+' every child process to forbid network. The gateway ignores it (its outbound
+' Transport never reads Proxy), but a user shell launched from the same
+' environment would inherit a dead proxy. Delete them so the gateway and its
+' children see a clean environment. ASCII-only, see file header.
+On Error Resume Next
+sh.Environment("PROCESS").Remove "HTTP_PROXY"
+sh.Environment("PROCESS").Remove "HTTPS_PROXY"
+sh.Environment("PROCESS").Remove "ALL_PROXY"
+sh.Environment("PROCESS").Remove "http_proxy"
+sh.Environment("PROCESS").Remove "https_proxy"
+sh.Environment("PROCESS").Remove "all_proxy"
+sh.Environment("PROCESS").Remove "GIT_HTTP_PROXY"
+sh.Environment("PROCESS").Remove "GIT_HTTPS_PROXY"
+On Error GoTo 0
+
 sh.CurrentDirectory = dirPath
 
 LogLine "START port " & port & " silent; launching " & exePath
