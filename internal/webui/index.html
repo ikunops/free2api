@@ -106,6 +106,15 @@ button.pri{background:var(--dark);border-color:var(--dark);color:#fff;font-weigh
 button.pri:hover:not(:disabled){background:#2c2c29;border-color:#2c2c29}
 button.gh{background:#fff}
 button.tiny{padding:4px 9px;font-size:12px}
+button.withico{display:inline-flex;align-items:center;gap:5px}
+button.withico svg{width:13px;height:13px}
+/* 关键动作行（Codex 接入 / 还原）：按钮放进独立容器，别再和普通 hint 挤在一行看不出主次 */
+.actionbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  padding:11px 13px;border:1px solid var(--line2);border-radius:var(--r2);background:#fcfcfb}
+.actionbar button{display:inline-flex;align-items:center;gap:6px}
+.actionbar button svg{width:15px;height:15px}
+button.gh.warn-gh{color:#b4453f;border-color:#f0d3d1}
+button.gh.warn-gh:hover:not(:disabled){border-color:#e2b6b3;background:#fdf6f5}
 
 input,select,textarea{border:1px solid var(--line);border-radius:var(--r3);
   padding:7px 10px;font-size:13px;color:var(--fg);background:#fff;width:100%}
@@ -298,7 +307,10 @@ const ICON = {
   pulse: "M2 12h4l2.5-6 3.5 12 3-8 2 2h5",
   clock: "M12 21a9 9 0 100-18 9 9 0 000 18zM12 7v5l3.5 2",
   trash: "M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6",
-  warn: "M12 3l9.5 17H2.5zM12 10v4M12 17h.01"
+  warn: "M12 3l9.5 17H2.5zM12 10v4M12 17h.01",
+  eye: "M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z",
+  check: "M4 12.5l5 5L20 6.5",
+  undo: "M4 10h9a5 5 0 010 10h-6M4 10l4-4M4 10l4 4"
 };
 function svg(k, cls){
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
@@ -463,10 +475,12 @@ function go(tab, opt){
   S.checked = {};
   render(); window.scrollTo(0, 0);
 }
-function render(){
+function render(opt){
   // 输出页上可能有没保存的出口编辑（输入框 + 勾选）：先把 DOM 里的现值收进草稿再整页重画。
   // 否则后台 15s 一次的健康轮询一 render，用户敲了一半的端口/勾选就被服务端旧值顶掉。
-  if (S.tab === "output") captureChanDraft();
+  // keepDraft=true：调用方（新增/删除出口）已经改好了 S.chanDraft，别再拿「重画前的旧 DOM」
+  // 回读一遍——否则刚删掉的行会被原样读回来，表现成「点删除没反应」。
+  if (S.tab === "output" && !(opt && opt.keepDraft)) captureChanDraft();
   // 后台轮询也会走到这里（30s 状态 / 3s 余额）：innerHTML 整页重画会把滚动位置清零，
   // 用户正勾着发布清单就被拽回列表顶部（cn:auto 那一行）。先把两处滚动位置记下来，
   // 画完原样放回去——重画不该动用户的视野。
@@ -1136,7 +1150,8 @@ function viewPool(){
     '<span class="hint" style="margin:0">余额直查上游 billing（10 分钟缓存）· 上次 ' + esc(credWhen) +
     (S.credits && S.credits.refreshing ? " · 正在后台重查…" : "") + '</span>' +
     '<span class="grow"></span>' +
-    '<span class="hint" style="margin:0">点右上角「刷新」强制重查</span></div>' +
+    '<button class="tiny withico" data-action="credits-refresh" title="立刻重查每个号的积分余额，不等 10 分钟缓存">' +
+      svg("refresh") + '刷新余额</button></div>' +
     '<div class="hint" style="margin:0 0 6px">「可用模型」= 该账号<b>当前真正能用</b>的模型（读得到套餐/权益就按权益算）；' +
     'workbuddy 侧的目录是所有同构号共享的，看「输出 API」的发布清单。</div>';
   var cooldownBtn = '<button class="tiny" data-action="reset-cooldowns" ' +
@@ -1329,12 +1344,15 @@ function updChanRow(i){
 }
 /* chanModelToggle 出口发布清单的三个批量动作：只动 DOM 再刷摘要。 */
 function chanModelToggle(i, fn){
+  var n = 0, total = 0;
   $$('[data-cmk="' + i + '"]').forEach(function(cb){
     cb.checked = !!fn(cb);
+    total++; if (cb.checked) n++;
     var r = cb.closest ? cb.closest(".mrow") : null;
     if (r) r.classList.toggle("off", !cb.checked);
   });
   updChanRow(i);
+  toast("info", "本出口已勾 " + n + " / " + total + " 个模型，点「保存出口」生效", 3000);
 }
 /* ---------- 出口自己的发布清单 ---------- */
 /* chanScopeModels 一个出口「服务来源」范围内的候选模型。出口只发自己来源的模型
@@ -1442,7 +1460,8 @@ function chanRowHtml(c, i, statusById){
     '<div class="chan-head">' +
       '<input data-ck="name" value="' + esc(c.name || "") + '" placeholder="出口名称，例如 ZCode 专用">' +
       '<span class="grow"></span>' +
-      '<button class="tiny" data-action="chan-del" data-i="' + i + '">删除</button>' +
+      '<button class="tiny withico" data-action="chan-del" data-i="' + i + '" ' +
+        'title="从草稿移除这个出口（点「保存出口」后生效）">' + svg("trash") + '删除</button>' +
     '</div>' +
     '<div class="chan-grid">' +
       '<div class="field"><label class="f">id（小写，唯一）</label><input data-ck="id" value="' + esc(c.id || "") + '" placeholder="zcode"></div>' +
@@ -1542,16 +1561,27 @@ function codexCard(){
       "</div>";
   }
 
-  body += '<div class="sep"></div><div class="row">' +
-    '<button data-action="codex-preview">预览改动</button>' +
-    (S.codexPlan && S.codexPlan.changed ? '<button class="pri" data-action="codex-apply">确认写入</button>' : "") +
+  var planState = S.codexPlan
+    ? (S.codexPlan.changed ? '<span class="tag warn">改动预览已生成，待确认写入</span>'
+                           : '<span class="tag ok">已是最新，无需写入</span>')
+    : '<span class="tag mut">还没预览</span>';
+  body += '<div class="sep"></div>' +
+    '<div class="f" style="margin-bottom:7px">接入操作 <span class="hint" style="margin-left:6px">' + planState + '</span></div>' +
+    '<div class="row actionbar">' +
+    '<button class="gh withico" data-action="codex-preview" title="先算出改前 / 改后全文，不落盘">' +
+      svg("eye") + '预览改动</button>' +
+    (S.codexPlan && S.codexPlan.changed
+      ? '<button class="pri withico" data-action="codex-apply" title="把预览里的改后内容写进 config.toml（先自动备份）">' + svg("check") + '确认写入</button>'
+      : "") +
     '<span class="hint" style="margin:0">只写 Codex 的 config.toml，改前自动备份。</span></div>';
 
   // 反向操作：还原官方默认（与 cmd/attach detach 同语义）
-  body += '<div class="sep"></div><div class="row">' +
-    '<button class="tiny" data-action="codex-detach-preview" ' +
+  body += '<div class="sep"></div>' +
+    '<div class="f" style="margin-bottom:7px">还原操作</div>' +
+    '<div class="row actionbar">' +
+    '<button class="gh warn-gh withico" data-action="codex-detach-preview" ' +
     'title="删掉顶层 model_provider（网关模型名一并删），回到 Codex 官方 provider。我们的 provider 段保留，随时可再挂。">' +
-    '还原官方默认</button>' +
+    svg("undo") + '还原官方默认</button>' +
     '<span class="hint" style="margin:0">卸载本网关的接入，不影响其它 provider。改前同样先备份。</span></div>';
   if (S.codexDetachPlan){
     var dp = S.codexDetachPlan;
@@ -1565,7 +1595,7 @@ function codexCard(){
         : ('<div class="hint">' + (dp.kept_model ? ('顶层 model（' + esc(dp.kept_model) + '）是官方名，保留；') : "") +
             "已经是官方默认形态，无需改动。</div>")) +
       (dp.has_our_section ? '<div class="hint">[model_providers.free2api] 段保留，不影响官方使用。</div>' : "") +
-      (dp.changed ? '<div class="row" style="margin-top:8px"><button class="pri tiny" data-action="codex-detach-apply">确认还原</button>' +
+      (dp.changed ? '<div class="row" style="margin-top:8px"><button class="pri withico" data-action="codex-detach-apply">' + svg("check") + '确认还原</button>' +
         (dp.backup_path ? '<span class="hint" style="margin:0">备份到 ' + esc(dp.backup_path) + '</span>' : "") + '</div>' : "") +
       "</div>";
   }
@@ -2109,6 +2139,8 @@ async function codexPreview(){
       model: S.codexModel, base_url: baseEl ? baseEl.value : ""
     }});
     render();
+    if (S.codexPlan && S.codexPlan.changed) toast("ok", "已生成改动预览，确认无误后点「确认写入」", 4200);
+    else toast("info", "配置已是目标状态，无需写入", 3200);
   } catch (e) { toast("err", e.message || String(e)); }
 }
 /* codexApply 落盘（后端先备份）。成功后重新拉一次现状，把「当前值」刷新成新的。 */
@@ -2159,6 +2191,8 @@ function setModelSel(fn){
   S.modelSel = sel;
   S.modelDirty = true; // 用户动过草稿：热切换「国际版单独控制」时别用服务端回显把它冲掉
   render();
+  // 批量勾选只改草稿、不落盘：给一条明确反馈，免得列表已滚到看不见时像没反应。
+  toast("info", "已勾 " + draftSelCount() + " / " + entitledOf(avail).length + " 个模型，点「保存发布清单」生效", 3200);
 }
 /* entitledOf 只留「号池真的有额度」的模型（后端 entitled 字段；缺省视为有额度）。
    计数与「全选」都按它走：未授权的行看得见、能勾，但不该混进默认口径。 */
@@ -2262,12 +2296,17 @@ async function chanAdd(){
   // 默认不写 format/rate_hint：留空 = 继承主口，避免新出口一出生就带一份冗余配置。
   list.push({ id: chanNextId(list), name: "", listen: "127.0.0.1:" + chanNextPort(list),
     format: "", model_prefix: "", rate_hint: "", producers: [], models: [] });
-  S.chanDraft = list; render();
+  S.chanDraft = list; render({ keepDraft: true });
+  toast("info", "已新增一个出口草稿，填好后点「保存出口」生效", 3600);
 }
 function chanDel(i){
   var list = (chanReadDom(chanDraftList()) || chanDraftList()).slice();
-  list.splice(Number(i), 1);
-  S.chanDraft = list; render();
+  var n = Number(i);
+  if (!(n >= 0) || n >= list.length) return;
+  var gone = list[n] || {};
+  list.splice(n, 1);
+  S.chanDraft = list; render({ keepDraft: true });
+  toast("info", "已从草稿移除出口「" + (gone.name || gone.id || (n + 1)) + "」，点「保存出口」生效", 4200);
 }
 async function chanSave(){
   var list = chanReadDom(chanDraftList());
@@ -2339,6 +2378,9 @@ async function codexDetachPreview(){
   try {
     S.codexDetachPlan = await api("/admin/codex/detach", { method: "POST", body: { apply: false } });
     render();
+    var dp = S.codexDetachPlan || {};
+    if (dp.changed) toast("ok", "已生成还原预览，确认后点「确认还原」", 4200);
+    else toast("info", "已经是官方默认形态，无需还原", 3200);
   } catch (e) { toast("err", e.message, 9000); }
 }
 async function codexDetachApply(){
@@ -2388,8 +2430,11 @@ async function actOn(t){
     if (act === "src-refresh") return srcRefresh();
     if (act === "import-paste") return doPaste();
     if (act === "pick-file"){ var fp = $("#filePick"); if (fp) fp.click(); return; }
-    if (act === "cand-all"){ (S.cand || []).forEach(function(x){ if (!x.imported) S.checked[x.id] = true; }); return render(); }
-    if (act === "cand-none"){ S.checked = {}; return render(); }
+    if (act === "cand-all"){
+      (S.cand || []).forEach(function(x){ if (!x.imported) S.checked[x.id] = true; });
+      render(); toast("info", "已勾选 " + checkedIDs().length + " 个待导入账号", 2600); return;
+    }
+    if (act === "cand-none"){ S.checked = {}; render(); toast("info", "已取消全部勾选", 2200); return; }
     if (act === "cand-import"){
       // 两种账本都是「来源 = switch」；粘贴导入（candKind 非账本）才是 file。
       var meth = (S.candKind === "wb-switch" || S.candKind === "zcode-switch") ? "switch"
@@ -2419,7 +2464,7 @@ async function actOn(t){
       var open = t.getAttribute("data-open") === "1";
       S.mgroupOpen = {};
       mgroupKeys().forEach(function(k){ S.mgroupOpen[k] = open; });
-      return render();
+      render(); toast("info", open ? "已展开全部来源分组" : "已收起全部来源分组", 2000); return;
     }
     if (act === "credits-refresh") return loadCredits(true);
     if (act === "reset-cooldowns") return resetCooldowns();
