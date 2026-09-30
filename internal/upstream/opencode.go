@@ -13,30 +13,36 @@
 // ---------- 免费层（zen 的 *-free / big-pickle）怎么做 ----------
 //
 // 2026-09-30 更正：旧版本这里写着「免费层直连必 403、只有 Bun/TLS 指纹能过」——
-// **那是错的**。免费层闸门是**两个条件的与**，都在请求体里，与 UA / 会话 id /
-// TLS 指纹**都无关**（对照实验：把 CLI 自己的 195KB 真实请求原样重放即 200，
-// 说明上游不看指纹；换成小请求逐字段二分，才定位到下面两条）：
+// **那是错的**。免费层闸门是**三个条件的与**，与 UA / TLS 指纹**都无关**（对照实验：
+// 把 CLI 自己的 195KB 真实请求原样重放即 200，说明上游不看指纹；换成小请求逐字段
+// 二分，才定位到下面三条）：
 //
-//	1. stream=true —— 免费层只走流式。同一条请求把 stream 改 false 立刻 403。
-//	2. tools 里同时含名为 bash 与 read 的工具（opencode 本体内置的两个工具名）。
+//	1. x-opencode-session 头必须是 **"ses_" 前缀 + 恰好 26 位小写十六进制** 的合法
+//	   形态。缺头 / 长度不对 / 含非 [0-9a-f] 字符 / 大写字母 → 一律 403 FreeTierError。
+//	   上游不校验 id 对应的"真实会话"——随机生成的合规 id（如 ses_0123456789abcdef0123456789）
+//	   也 200。这是**本适配器最易踩的一闸**：opencodeSessionID 用 sha256 前 13 字节
+//	   （= 26 个小写 hex）派生，恰好合规；若把长度改成 12/14 字节就会全池静默 403。
+//	2. stream=true —— 免费层只走流式。同一条请求把 stream 改 false 立刻 403。
+//	3. tools 里同时含名为 bash 与 read 的工具（opencode 本体内置的两个工具名）。
 //	   只给 bash 或只给 read 仍 403。
 //
 // 实测（2026-09-30，本机，Go net/http 直连，Bearer public 即可、无需任何 key）：
 //
-//	stream=T tools=[bash,read]  model=longcat-2.5-preview-free → 200 SSE 真回复
-//	stream=T tools=[bash,read]  model=mimo-v2.5-free            → 200 SSE
-//	stream=T tools=[bash,read]  model=nemotron-3-ultra-free     → 200
-//	stream=T tools=[bash,read]  model=big-pickle                → 200
-//	stream=T tools=[bash,read]  model=glm-5.3-flash（付费）    → 200（付费不受影响）
-//	stream=F tools=[bash,read]  model=longcat-2.5-preview-free → 403 FreeTierError
-//	stream=T tools=[bash]       model=longcat-2.5-preview-free → 403 FreeTierError
-//	stream=T 无 tools           model=longcat-2.5-preview-free → 403 FreeTierError
+//	ses=26hex stream=T tools=[bash,read]  model=longcat-2.5-preview-free → 200 SSE
+//	ses=26hex stream=T tools=[bash,read]  model=mimo-v2.5-free            → 200 SSE
+//	ses=26hex stream=T tools=[bash,read]  model=big-pickle                → 200
+//	ses=26hex stream=T tools=[bash,read]  model=glm-5.3-flash（付费）    → 200
+//	ses=24hex（长度不对）                 model=big-pickle                → 403
+//	ses=26hex stream=F  tools=[bash,read] model=longcat-2.5-preview-free → 403
+//	ses=26hex stream=T  tools=[bash]      model=longcat-2.5-preview-free → 403
+//	ses=26hex stream=T  无 tools          model=longcat-2.5-preview-free → 403
 //
-// 本适配器两个条件都自动满足：stream 由 opencodeForceStream 强制 true（网关本来
-// 只走流式上游通道），工具由 opencodeInjectFreeTools 按需补齐（见下）。所以免费层
-// 和付费层共用同一个直连通道，无需任何特殊处理。
+// 本适配器三条都自动满足：session 由 opencodeSessionID 派生（26hex，见上），stream 由
+// opencodeForceStream 强制 true（网关本来只走流式上游通道），工具由
+// opencodeInjectFreeTools 补齐 bash+read（见下，实测**只需这两个**，edit/glob/grep 可选）。
+// 所以免费层和付费层共用同一个直连通道，无需任何特殊处理。
 //
-// 例外：space-bunny-free 是**无条件**放行（stream:F/stream:T、带不带 tools 都 200），
+// 例外：space-bunny-free 是**无条件**放行（session/stream/tools 全不管都 200），
 // 无需闸门。它挂在 Zen 免费层目录里，走同一路径即可。
 //
 // 免费层无需账号（Bearer public），但网关按「账号/号池」建模，故免费层仍挂在已有
@@ -115,9 +121,14 @@ func (c *Client) opencodeBase(a *auth.Auth) string {
 
 // opencodeSessionID 派生一枚**稳定**的 x-opencode-session 值。
 //
-// 上游只要这个头存在且形态像会话 id（"ses" 前缀）就放行，值本身不校验（实测
-// ses_probe 也过）。这里用凭据的 sha256 前缀派生，好处有二：同账号每次请求同一个
-// 值（上游侧归因稳定、便于排障），且**不泄露凭据**（只透出哈希片段）。
+// 上游对免费层的判定**严格依赖这个头的字面形态**：必须 "ses_" 前缀 + 恰好 26 位
+// 小写十六进制（见文件头闸门 1）。值本身不校验——随机合规 id 一样放行。
+//
+// 所以 sha256 取前 13 字节不是随手选的：13 字节 == 26 个小写 hex 字符，恰好合规。
+// **这个长度是承重的**，改成 12/14 字节（24/28 hex）会让免费层全池 403 FreeTierError，
+// 而且付费模型照常 200、只有免费层静默全灭，极难排查。改长度前先做上游实测。
+// 其余两个好处：同账号每次请求同一个值（上游侧归因稳定、便于排障），且**不泄露
+// 凭据**（只透出哈希片段）。
 func opencodeSessionID(a *auth.Auth) string {
 	seed := ""
 	if a != nil {

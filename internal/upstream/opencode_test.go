@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -108,6 +109,26 @@ func TestOpenCodeChatHeadersAndStream(t *testing.T) {
 	for _, h := range []string{"X-Enterprise-Id", "X-Domain", "X-Device-Token"} {
 		if v := gotHdr.Get(h); v != "" {
 			t.Errorf("workbuddy 专有头 %s = %q 不该出现在 opencode 请求上", h, v)
+		}
+	}
+}
+
+// TestOpenCodeSessionIDFormat 会话 id 的**字面形态**是免费层的承重闸门：
+// 上游只放行 "ses_" + 恰好 26 位小写十六进制（见 opencode.go 文件头闸门 1）。
+// 长度/大小写/字符集任一不符 → 免费层全池 403 FreeTierError，而付费模型照常，
+// 极难排查。这里把形态钉死，改派生长度会立刻红。
+func TestOpenCodeSessionIDFormat(t *testing.T) {
+	re := regexp.MustCompile(`^ses_[0-9a-f]{26}$`)
+	cases := []*auth.Auth{
+		{UID: "oc1", AccessToken: "sk-key-one"},
+		{UID: "oc2", AccessToken: "sk-key-two"},
+		{UID: "u", AccessToken: ""},
+	}
+	for _, a := range cases {
+		a.SetProducer(ProducerOpenCode)
+		got := opencodeSessionID(a)
+		if !re.MatchString(got) {
+			t.Errorf("opencodeSessionID = %q, want 匹配 ^ses_[0-9a-f]{26}$（免费层闸门）", got)
 		}
 	}
 }
