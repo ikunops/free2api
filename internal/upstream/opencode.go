@@ -158,20 +158,42 @@ func (c *Client) opencodeHeaders(req *http.Request, a *auth.Auth) {
 	}
 }
 
-// classifyOpenCode 在通用 Classify 之上补三条 OpenCode 特有的口径：
+// classifyOpenCode 在通用 Classify 之上补四条 OpenCode 特有的口径。
 //
-//   - 鉴权失败（401 / Invalid credential / invalid api key）→ ErrSessionDead。
-//     通用 Classify 会把 401 兜底成 ErrClient（「只换号不罚」），而 OpenCode 的 401
-//     是确定性坏凭据，必须走「连续 N 次 → 禁用」的终态路径。
-//   - 免费层门禁（403 FreeTierError / "free tier can only be used from within OpenCode"）
-//     → ErrModelBlocked：这是**模型级**限制（任何账号、任何 IP 直连都一样），标记为
-//     池级死模型后从目录与路由剔除，避免反复白打（见文件头「免费层为什么不做」）。
-//   - 模型不可用（400 "Model is unavailable" / ModelProtocolUnsupported）→ ErrModelBlocked
-//     （同上：换号无意义）。
+// 关键区分：**401 不等于账号坏了**。2026-10-01 实测（同一枚有效 key）：
+//
+//	model=glm-5.3-flash（该 key 能跑）        → 200
+//	model=gpt-5.4-mini / gpt-6-astra          → 401 {"type":"AuthError","message":"Incorrect API key provided: zen"}
+//	model=claude-sonnet-4-5（协议不支持）      → 400 ModelProtocolUnsupported
+//	整枚无效 key 打任何模型                     → 401 {"type":"AuthError","message":"Invalid API key."}
+//
+// 也就是说 Zen 对「这个号没有该模型的上游凭证」也回 401 AuthError，文案里带的是
+// **模型供应商**（"Incorrect API key provided: zen" 指 zen 自己那条上游），不是
+// 「你的 opencode key 无效」。把这种 401 当成 session dead 会让号池在轮转撞上几个
+// 这类模型后把**好号**禁用掉（本机实测：opencode 号被连续 3 次 12153 打进终态，
+// 之后连它本来能跑的免费层都拉不到目录了）——所以按「模型级」处理。
+//
+// 判定口径：
+//   - 401 且文案是「你的 key 无效」（Invalid API key / Invalid credential）→ ErrSessionDead
+//     （真的坏凭据，走连续 N 次 → 禁用）；
+//   - 401 但文案指向模型侧（Incorrect API key provided: <provider>、model/upstream 相关）
+//     → ErrModelBlocked（换号无意义，标记池级死模型）；
+//   - 免费层门禁（403 FreeTierError）→ ErrModelBlocked；
+//   - 模型不可用 / 协议不支持（400 Model is unavailable / ModelProtocolUnsupported）
+//     → ErrModelBlocked。
 func classifyOpenCode(status int, body string) ErrKind {
 	lower := strings.ToLower(body)
-	if status == http.StatusUnauthorized ||
-		strings.Contains(lower, "invalid credential") ||
+	if status == http.StatusUnauthorized {
+		// 「Incorrect API key provided: <供应商>」是上游替**模型供应商**报的账（本机实测：
+		// 同一枚有效 key 打 glm-5.3-flash 是 200、打 gpt-5.4-mini 就是这个 401），
+		// 属于模型级。只有明确说「本 key 无效」的才是账号级。
+		// 注意别用 "model"/"provider" 这种宽泛词做判据：真正的坏凭据文案里也可能带它们。
+		if strings.Contains(lower, "incorrect api key provided") {
+			return ErrModelBlocked
+		}
+		return ErrSessionDead
+	}
+	if strings.Contains(lower, "invalid credential") ||
 		strings.Contains(lower, "invalid api key") ||
 		strings.Contains(lower, "authentication") {
 		return ErrSessionDead

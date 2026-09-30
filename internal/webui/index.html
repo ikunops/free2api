@@ -209,6 +209,15 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
 .mgroup{display:flex;justify-content:space-between;align-items:center;gap:10px;
   padding:7px 13px;background:#fafaf8;border-bottom:1px solid var(--line2);
   font-size:12px;color:var(--fg2);position:sticky;top:0;z-index:1}
+/* 发布清单两级折叠：来源表头可点，收起时只留这一行摘要（181 个模型平铺太累）。
+   只有 .tog 才是可点的——出口自己那份清单复用 .mgroup 但不折叠。 */
+.mgroup.tog{cursor:pointer;user-select:none}
+.mgroup.tog:hover{background:#f3f3ef}
+.mgroup .mcaret{display:inline-block;width:10px;margin-right:1px;color:var(--fg3);
+  transition:transform .12s ease}
+.mgroup.open .mcaret{transform:rotate(90deg)}
+.mbody{display:none}
+.mgroup.open + .mbody{display:block}
 @media(max-width:860px){.mrow{grid-template-columns:18px minmax(0,1fr) auto}.mrow .mname{display:none}}
 /* 多出口：每个出口一块；「服务来源」用圆角标签勾选 */
 .chan{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;margin-bottom:12px}
@@ -355,7 +364,7 @@ const S = {
   srcTab: "app", cand: null, candKind: "", candNote: "",
   candProbe: false, candBalance: false,
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
-  modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, realmScoped: true, showUnent: false,
+  modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   stats: null, schedule: null, modeldead: null
@@ -1626,7 +1635,10 @@ function viewOutput(){
       // 「可用模型 N 个」数的是真有额度的那些，未授权的另标一个数，想看能展开。
       var ent = entitledOf(g);
       var unent = g.filter(function(m){ return m.entitled === false; });
-      var head = '<div class="mgroup"><span><b>' + esc(groupName) + '</b> · 可用模型 ' +
+      var gopen = !!S.mgroupOpen[pk];
+      var head = '<div class="mgroup tog' + (gopen ? " open" : "") + '" data-action="mgroup-toggle" ' +
+        'data-g="' + esc(pk) + '" title="点击展开 / 收起这个来源的模型">' +
+        '<span><span class="mcaret">\u25B8</span><b>' + esc(groupName) + '</b> · 可用模型 ' +
         ent.length + ' 个' + (unent.length ? '<span class="tag mut" style="margin-left:6px">另有 ' +
         unent.length + ' 个未授权</span>' : "") +
         '</span><span class="hint" style="margin:0" data-gcount="' + esc(pk) + '">' +
@@ -1648,7 +1660,7 @@ function viewOutput(){
           '<span class="mname hint">' + esc(m.name || "") + '</span>' +
           '<span class="mbits">' + bits.join("") + '</span></label>';
       };
-      return head + ent.map(rowOf).join("") + unent.map(rowOf).join("");
+      return head + '<div class="mbody">' + ent.map(rowOf).join("") + unent.map(rowOf).join("") + '</div>';
     }).join("");
     modelBody =
       '<div class="row" style="margin-bottom:9px">' +
@@ -1656,6 +1668,8 @@ function viewOutput(){
         '<button class="tiny" data-action="model-none">全不选</button>' +
         '<button class="tiny" data-action="model-default">只留默认</button>' +
         '<button class="tiny" data-action="model-reset">恢复为全部放开</button>' +
+        '<button class="tiny" data-action="mgroup-all" data-open="1">展开全部</button>' +
+        '<button class="tiny" data-action="mgroup-all" data-open="0">收起全部</button>' +
         '<label class="inlinechk" title="上游目录里有、号池任何号都没额度的模型（默认收起）">' +
           '<input type="checkbox" id="showUnent"' + (S.showUnent ? ' checked' : '') + '>显示未授权</label>' +
         '<label class="inlinechk" title="勾上：国内版与国际版（wba）各用一把开关，同名型号互不影响；取消：裸名字一把开关同时管两域（旧清单语义）">' +
@@ -1688,8 +1702,9 @@ function viewOutput(){
     '<div class="note" style="margin-top:10px">' +
     '<b>清单从哪来</b>：网关带账号自己的 token 去上游读模型目录（/v3/config 全量口径，按 id 去重），' +
     '不读本机任何 agent 的自定义模型——所以这里看到的都是<b>账号本身携带</b>的能力。<br>' +
-    '<b>为什么是 44~45 个</b>：上游目录里的 cli 面（16 个）是它的子集，另外那些是 web/console 面的条目；' +
-    '默认全量发布，不需要的在这里取消勾选即可（一个都不勾 = 全部放开）。<br>' +
+    '<b>为什么有上百个</b>：每一家都是<b>整家厂商的目录</b>，不是这个号真能跑的子集——workbuddy 44+28（CN/国际版）、' +
+    'opencode Zen 79、kilo 19、zcode 11。目录里的 cli 面往往只是子集，其余是 web/console 面的条目；' +
+    '默认全量发布，不需要的在这里取消勾选即可（一个都不勾 = 全部放开）。真打不通的会被池级死标记（24h）自动收敛。<br>' +
     '<b>名字尾巴上的 -free / -x0.11</b>：就是费率档位落在模型名上的样子（免费 -free，收费按自身倍率 -x0.11）。' +
     '客户端拉到的模型名带这个尾巴，请求带回来网关会自动剥掉再路由，所以带不带都能调。<br>' +
     '<b>国际版（wba）为什么单列一组</b>：它的型号和国内版<b>不是同一批</b>（gpt-6-astra / ' +
@@ -2112,6 +2127,16 @@ async function saveOutput(){
     await refreshAll(true);
   } catch (e) { toast("err", e.message, 9000); }
 }
+/* mgroupKeys 发布清单的分组键（producer + realm），与渲染、批量展开共用一套口径。 */
+function mgroupKeys(){
+  var avail = (S.out && S.out.available_models) || [];
+  var seen = {}, out = [];
+  avail.forEach(function(m){
+    var k = (m.producer || "workbuddy") + (m.realm ? "/" + m.realm : "");
+    if (!seen[k]){ seen[k] = 1; out.push(k); }
+  });
+  return out;
+}
 /* setModelSel 用谓词重铺勾选草稿（全选/全不选/只留默认共用一套）。 */
 function setModelSel(fn){
   var avail = (S.out && S.out.available_models) || [];
@@ -2370,6 +2395,18 @@ async function actOn(t){
     if (act === "model-none") return setModelSel(function(){ return false; });
     if (act === "model-default") return setModelSel(function(m){ return !!m.is_default; });
     if (act === "model-reset") return resetModels();
+    if (act === "mgroup-toggle"){
+      var gk = t.getAttribute("data-g") || "";
+      S.mgroupOpen[gk] = !S.mgroupOpen[gk];
+      t.classList.toggle("open", !!S.mgroupOpen[gk]);
+      return;
+    }
+    if (act === "mgroup-all"){
+      var open = t.getAttribute("data-open") === "1";
+      S.mgroupOpen = {};
+      mgroupKeys().forEach(function(k){ S.mgroupOpen[k] = open; });
+      return render();
+    }
     if (act === "credits-refresh") return loadCredits(true);
     if (act === "reset-cooldowns") return resetCooldowns();
     if (act === "stats-reset") return statsReset();

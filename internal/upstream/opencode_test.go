@@ -160,7 +160,13 @@ func TestOpenCodeClassify(t *testing.T) {
 		body   string
 		want   ErrKind
 	}{
+		// 账号级：真的坏凭据（本机实测：整枚无效 key 打任何模型都是这条文案）。
+		{401, `{"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}`, ErrSessionDead},
 		{401, `{"error":{"type":"server_error","message":"Upstream request failed: Invalid credential"}}`, ErrSessionDead},
+		// 模型级：同一枚**有效** key，打某些模型会被上游替模型供应商报 401
+		// （本机实测 gpt-5.4-mini / gpt-6-astra 都是这条）。以前归 ErrSessionDead，
+		// 结果号池轮转撞几个这种模型就把好号禁用了——必须归 ErrModelBlocked。
+		{401, `{"error":{"message":"Incorrect API key provided: zen. You can find your API key at https://platform.openai.com/account/api-keys.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}`, ErrModelBlocked},
 		{403, `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`, ErrModelBlocked},
 		{400, `{"error":{"type":"server_error","message":"Upstream request failed: Model is unavailable."}}`, ErrModelBlocked},
 		{400, `{"error":{"message":"ModelProtocolUnsupported"}}`, ErrModelBlocked},
