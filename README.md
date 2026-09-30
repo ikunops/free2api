@@ -29,6 +29,7 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 > - 新增 `POST /v1/responses`（OpenAI Responses 出口），与 `/v1/chat/completions` 共用同一号池 /
 >   粘性会话 / 冷却 / 成本台账；Codex CLI / Codex 桌面可直接用 `wire_api="responses"` 接入。
 > - 新增 zcode（智谱 BigModel / Z.ai）号源，与 workbuddy 号并列进同一号池。
+> - 内置 WorkBuddy 桌面端登录态读取：WorkBuddy 5.6.2 起把登录态做了字段级加密，本网关直接解 `$wbEncrypted` 信封，把本机客户端登录过的号一次读出来（含 accessToken / refreshToken / 到期时间 / 域），不再需要先装 wb-switch 之类的第三方账本工具。
 > - 多出口：同一进程内按来源开多个端口，每个口一套协议 / 前缀 / 费率 / 模型白名单。
 > - 控制台「输出 API」页可视化配置协议 / 端口 / 模型前缀 / 费率后缀 / 发布清单。
 
@@ -44,7 +45,6 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 ### 本项目不做什么
 
 - **只做上游网关，不做下游协议转换** — 本项目仅负责对接上游 ```CodeBuddy``` 并暴露 OpenAI Chat 协议；Anthropic Messages、Gemini 等其他协议的适配应由下游网关负责；
-- **不内嵌 Web 管理面板** — 网关核心保持精简，可视化面板作为独立项目维护，数据直取上游接口，不增加网关适配负担。
 
 ### 社区前端面板
 
