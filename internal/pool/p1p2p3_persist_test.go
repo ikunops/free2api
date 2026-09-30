@@ -151,7 +151,7 @@ func TestBreakerPersistFailsNotPersisted(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestCreditsExpiringPersistRoundTrip creditsExpiring 现已持久化：落盘 → 重启 → 恢复。
-// 修复第四因子（weightOf ×8）重启失忆：重启后到下次签到之间不应丢失快过期积分偏好。
+// 修复快过期权重项（weightOf 的 expiringWeight）重启失忆：重启后到下次签到之间不应丢失快过期积分偏好。
 func TestCreditsExpiringPersistRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	fp := dir + "/state.json"

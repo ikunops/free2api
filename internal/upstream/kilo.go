@@ -277,7 +277,8 @@ func (c *Client) FetchKiloModels(ctx context.Context, a *auth.Auth) ([]ModelInfo
 		if id == "" || !kiloModelIsFree(m) {
 			continue
 		}
-		mi := ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id)}
+		// Kilo 目录在 FetchKiloModels 里已按零价过滤，留下的全是免费层，故恒 true。
+		mi := ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id), Free: true}
 		if m.ContextLength > 0 {
 			mi.ContextWindow = m.ContextLength
 		} else if m.TopProvider.ContextLength > 0 {

@@ -49,7 +49,7 @@ func TestManualDisabledStopsSelection(t *testing.T) {
 		t.Fatalf("停用后不应被选中, got %+v", got)
 	}
 	// 也不参与全冷却兜底（pickEarliestExpiryLocked 路径）
-	if got := p.pick(nil, "", "", ""); got != nil {
+	if got := p.pick(nil, "", "", "", false); got != nil {
 		t.Fatalf("停用后不应参与兜底选号, got %+v", got)
 	}
 
@@ -224,10 +224,10 @@ func TestManualDisabledRealmScoped(t *testing.T) {
 
 	p.SetManualDisabled("cn1", true, "只摘 CN")
 
-	if got := p.pick(nil, "", "cn", ""); got != nil {
+	if got := p.pick(nil, "", "cn", "", false); got != nil {
 		t.Fatalf("CN 域应无可选账号, got %+v", got)
 	}
-	if got := p.pick(nil, "", "global", ""); got == nil || got.UID != "gl1" {
+	if got := p.pick(nil, "", "global", "", false); got == nil || got.UID != "gl1" {
 		t.Fatalf("Global 域应不受影响, got %+v", got)
 	}
 }

@@ -1204,6 +1204,15 @@ type ModelInfo struct {
 	MaxAllowedSize    int64    // maxAllowedSize 最大允许上下文（与 maxInputTokens 口径并列，上游各自下发）
 	ReasoningEffort   string   // reasoning.effort 推理模式（与 supportedEfforts 数组不同源）
 	ReasoningSummary  string   // reasoning.summary 推理摘要模式（如 "auto"）
+
+	// Free 该模型在这条上游通道上是否**不消耗积分**。判定口径按生产者分支，见
+	// upstream.CreditRateIsZero 与各 Fetch*Models 的写入点：
+	//   - workbuddy / global / zcode：按 credits 倍率原文（"x0.00" → 免费）
+	//   - opencode：Zen 免费层命名规律（见 isOpenCodeFreeTierModel）
+	//   - kilo：目录本身就只留免费层，恒 true
+	// 用途是选号分层（免费模型不必按余额加权，见 pool.pickWith 的 freeModel 分支），
+	// 与"展示用 credits 原文"解耦——credits 只负责显示，Free 只负责策略。
+	Free bool
 }
 
 // dynModelEntry 上游模型目录（CN /console 与 global /v2 同构）的单条模型解析形态，
@@ -1255,6 +1264,7 @@ func (m dynModelEntry) modelInfo() ModelInfo {
 		MaxAllowedSize:    m.MaxAllowedSize,
 		ReasoningEffort:   m.Reasoning.Effort,
 		ReasoningSummary:  m.Reasoning.Summary,
+		Free:              CreditRateIsZero(m.Credits),
 	}
 }
 

@@ -156,7 +156,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 		}
 		// creditsExpiring 恢复时钳到 [0, credits]（与 SetCreditsDetailed 的写入钳制
 		// 对称）：state.json 手工脏数据/旧版本 bug 数据不得让 expiring/credits > 1
-		// 放大 ×8 权重项。
+		// 放大 expiringWeight 权重项。
 		expiring := s.CreditsExpiring
 		if expiring < 0 {
 			expiring = 0

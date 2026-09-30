@@ -199,6 +199,52 @@ func (r *Router) ResolveForModel(key, model string) (string, bool) {
 	return uid, true
 }
 
+// Lookup 只读查询会话当前绑定的账号（不分配、不写入）。
+//
+// 存在的理由（2026-09-30 修复）：此前 handler 每次新建会话都调 ResolveForModel，
+// 由**本包自己**从「可用账号列表」里挑一个号再写绑定——这条分配路径完全绕过了
+// pool.pick 的全部策略：成本分层（免费号优先）、快过期积分硬分层、免费模型不按
+// 余额加权、健康/熔断/在途/生产者的成熟加权随机。实测后果：workbuddy 池里
+// 「谁新建会话就固定分到哪台」，与模型是否免费、积分是否快过期完全无关，
+// 选号修复在真实流量上根本观察不到（粘性命中日志里 model= 恒为空即此症候）。
+//
+// 修复后职责切分：**本包只负责记住与复用绑定**（Lookup / Bind / Unbind / TTL /
+// 去重），**选哪个号一律由 handler 走 pool.pick 决定**。代价是失去原先「优先绑定到
+// 无会话账号」的批处理去重，但该职能已由 pool 侧闲置补偿权重 + 防惊群窗口承担，
+// 且正确性（按模型规则分流）优先于这一层额外的均匀性。
+//
+// 语义：命中且该号在 model 上仍可用 → (uid, true) 并续期；无绑定 / 已过期 /
+// 该号在 model 上不可用 → ("", false)，调用方回落 pool.pick 重新选择。
+// 与 ResolveForModel 的差异：本方法**绝不**自行分配新号，因此不会绕过选号策略。
+func (r *Router) Lookup(key, model string) (string, bool) {
+	if key == "" {
+		return "", false
+	}
+	now := time.Now()
+	available := r.availableSet(model)
+
+	// Fast path: RLock 快查（绝大多数请求已绑定）。
+	r.mu.RLock()
+	e, found := r.entries[key]
+	r.mu.RUnlock()
+	if found && !expired(e, now, r.cfg.TTL) && available[e.uid] {
+		r.touch(key, e.uid, now)
+		return e.uid, true
+	}
+	// 未命中 → 无事可做。命中但过期/该号在目标模型已不可用 → **只清除失效绑定**，
+	// 不分配。清除是必要的：否则陈旧绑定会一直走快路径，把会话钉死在一个已不健康的
+	// 号上。（条件与快路径相反，故到这里的 found 一定是失效绑定。）
+	if found {
+		r.mu.Lock()
+		if cur, ok := r.entries[key]; ok && cur.uid == e.uid {
+			delete(r.entries, key)
+		}
+		r.mu.Unlock()
+		r.cfg.Store.DelBind(key)
+	}
+	return "", false
+}
+
 // touch 滚动 lastActive 并异步镜像（只在快路径命中时写最后一次）。
 func (r *Router) touch(key, uid string, now time.Time) {
 	r.mu.Lock()

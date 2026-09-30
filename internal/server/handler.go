@@ -451,6 +451,52 @@ func (h *Handler) modelKnown(realm, producer, bare string) bool {
 	return false
 }
 
+// modelFree 报告某裸名在当前 (realm, producer) 口径下是否为「零积分模型」
+// （上游 ModelInfo.Free，口径见 upstream.CreditRateIsZero / isOpenCodeFreeTierModel /
+// kilo 全量免费）。选号侧据此决定要不要按余额加权（见 pool.PickExcludingForProducerRealmFree）。
+//
+// **只读 1h 缓存快照，绝不触发上游探测**——这是选号热路径的一部分，每个请求、每轮
+// 轮转都会调用一次，任何一次网络往返都会把对话延迟拖垮（且会在池刚起、缓存冷时给
+// 每个请求加一次串行探测）。因此这里刻意不复用 modelKnown/fetchDynamicModels 这些
+// 「冷缓存会打上游」的函数，而是直接读各自的 *_Snapshot（口径见 cachedModelsSnapshot
+// 等同族函数）。与 cachedModelsSnapshot 的差异只在注释与 Free 字段而非存在性。
+//
+// 缓存冷 / 模型不在目录 / 自定义模型 → false（**保守按收费处理**，退回既有的余额
+// 加权行为）。宁可让一个新模型继续走旧规则（可能把流量堆到余额高的号，但至少会正常
+// 扣费），也不能把收费模型误判成免费、让所有请求挤到一个号上把余额烧穿还互相 429。
+//
+// producer=="" 表示来源未知：四家目录都查，任一家命中且标 Free 即为免费。模型名跨家
+// 重名时选号侧仍会靠 producer 谓词落到具体一家，这里只回答「这个名字的免费属性」。
+func (h *Handler) modelFree(realm, producer, bare string) bool {
+	if bare == "" {
+		return false
+	}
+	if realm == "global" {
+		return containsFreeModel(h.cfg.Upstream.GlobalModelInfosSnapshot(), bare)
+	}
+	if producer == "" || producer == "workbuddy" {
+		if containsFreeModel(cachedModelsSnapshot(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerZCode {
+		if containsFreeModel(zcodeCatalogSnapshot(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerOpenCode {
+		if containsFreeModel(opencodeCatalogSnapshot(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerKilo {
+		if containsFreeModel(kiloCatalogSnapshot(), bare) {
+			return true
+		}
+	}
+	return false
+}
+
 // singleProducer 该口恰好只服务一家时返回它（用于消解裸名的歧义路由，见 resolveRoute）。
 func (h *Handler) singleProducer() (string, bool) {
 	if len(h.cfg.ProducerAllow) == 1 {
@@ -1287,6 +1333,18 @@ func containsModelID(infos []upstream.ModelInfo, id string) bool {
 	return false
 }
 
+// containsFreeModel 同 containsModelID 的线性查找口径，额外要求该条目标了 Free。
+// 与 containsModelID 并列而不是合成一个「返回 *ModelInfo」的查找：两处调用点都不需要
+// 其余字段，返回指针会把「目录条目是不是拷贝」这种实现细节泄漏给调用方。
+func containsFreeModel(infos []upstream.ModelInfo, id string) bool {
+	for _, mi := range infos {
+		if mi.ID == id {
+			return mi.Free
+		}
+	}
+	return false
+}
+
 // fetchDynamicModels 从池中任一健康 CN 账号拉模型列表（含 contextWindow/maxTokens），缓存 1h。
 // 拉取失败记录时间戳进入 5min 负缓存，冷却期内直接返回 nil（纯动态，无静态表兜底），
 // 避免反复打上游。
@@ -1472,7 +1530,12 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 		// 恒剥出 realm=cn，跨 realm 粘性会话会被错误钉回 CN 集合；完整前缀才能让
 		// 闭包正确过滤到 global 集合（见 cmd/server/wiring.go realmAwareAvailableForModel）。
 		// 模型名也参与成本账本与选号过滤，不能用 "-" 占位污染模型键。
-		if uid, ok := h.cfg.Session.ResolveForModel(stickyKey, peek.Model); ok {
+		// Lookup（而非 ResolveForModel）：只复用既有绑定，绝不在本处自行分配账号。
+		// 新建会话时 stickyUID 为空 → 下方选中 acct 后由流末统一 Bind（见"粘性跟随
+		// 最终成功号"），于是**选号策略只有 pool.pick 一条**：成本分层、快过期积分
+		// 硬分层、免费模型不按余额加权全都生效。此前用 ResolveForModel 由 session
+		// 包自行按"空闲号哈希"分配，绕过了全部选号策略（2026-09-30 修复）。
+		if uid, ok := h.cfg.Session.Lookup(stickyKey, peek.Model); ok {
 			stickyUID = uid
 		}
 	}
@@ -1596,7 +1659,11 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 		if acct == nil {
 			// 模型感知 + realm 感知选号：模型非空时启用 6004 模型级冷却豁免
 			// （healthyForModel），realm 谓词过滤跨域账号。
-			acct = h.cfg.Pool.PickExcludingForProducerRealm(tried, bareModel, producer, realm)
+			// freeModel：零积分模型跳过成本分层并按「不读余额」的权重选号（见
+			// pool.weightOfFree）——免费调用不扣积分，按余额加权只会把流量堆到
+			// 余额高的号上白耗它的上游限额。判定只读目录缓存，每轮多一次线性查找。
+			acct = h.cfg.Pool.PickExcludingForProducerRealmFree(
+				tried, bareModel, producer, realm, h.modelFree(realm, producer, bareModel))
 		}
 		if acct == nil {
 			st.status = http.StatusServiceUnavailable
@@ -2156,6 +2223,36 @@ func (h *Handler) hintContext(bareModel string, hasImage bool) upstream.HintCont
 		}
 	}
 	return ctx
+}
+
+// zcodeCatalogSnapshot / opencodeCatalogSnapshot / kiloCatalogSnapshot 只读 1h 缓存
+// 快照（冷/过期 → nil），供选号热路径查 Free 字段用——绝不触发上游探测。
+// 与 cachedModelsSnapshot（CN workbuddy 目录）同形同口径，命名对齐便于对照。
+func zcodeCatalogSnapshot() []upstream.ModelInfo {
+	zcodeCatalogCache.RLock()
+	defer zcodeCatalogCache.RUnlock()
+	if len(zcodeCatalogCache.infos) == 0 || time.Since(zcodeCatalogCache.fetched) >= zcodeCatalogTTL {
+		return nil
+	}
+	return zcodeCatalogCache.infos
+}
+
+func opencodeCatalogSnapshot() []upstream.ModelInfo {
+	opencodeCatalogCache.RLock()
+	defer opencodeCatalogCache.RUnlock()
+	if len(opencodeCatalogCache.infos) == 0 || time.Since(opencodeCatalogCache.fetched) >= opencodeCatalogTTL {
+		return nil
+	}
+	return opencodeCatalogCache.infos
+}
+
+func kiloCatalogSnapshot() []upstream.ModelInfo {
+	kiloCatalogCache.RLock()
+	defer kiloCatalogCache.RUnlock()
+	if len(kiloCatalogCache.infos) == 0 || time.Since(kiloCatalogCache.fetched) >= kiloCatalogTTL {
+		return nil
+	}
+	return kiloCatalogCache.infos
 }
 
 // cachedModelsSnapshot 只读模型目录缓存（TTL 内快照）；缓存冷/空 → nil。

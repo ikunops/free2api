@@ -55,7 +55,7 @@ func TestNoteModelCostDeductClampsAtZero(t *testing.T) {
 	}
 }
 
-// TestNoteModelCostDeductsExpiring creditsExpiring 同步按消耗扣减（快过期桶打空后 ×8 不虚高）。
+// TestNoteModelCostDeductsExpiring creditsExpiring 同步按消耗扣减（快过期桶打空后 expiringWeight 项不虚高）。
 func TestNoteModelCostDeductsExpiring(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
@@ -241,7 +241,7 @@ func TestWeightOfThreeFactorsNoSuccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRestoreClampsExpiring 恢复路径钳制 creditsExpiring 到 [0, credits]
-// （与 SetCreditsDetailed 对称，防手工脏数据放大 ×8 项）。
+// （与 SetCreditsDetailed 对称，防手工脏数据放大 expiringWeight 项）。
 func TestRestoreClampsExpiring(t *testing.T) {
 	dir := t.TempDir()
 	fp := stateFilePath(t, dir)

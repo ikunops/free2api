@@ -1,4 +1,6 @@
-// 选号：Pick 簇（healthy 三因子加权 Top5 短名单 + 加权随机 + 全冷却兜底 + 在途占满过滤）。
+// 选号：Pick 簇（healthy 加权 Top5 短名单 + 加权随机 + 全冷却兜底 + 在途占满过滤）。
+// 权重口径按模型分两支：收费模型走 weightOf（余额三因子 + 快过期硬分层），
+// 零积分模型走 weightOfFree（只看闲置补偿）——见 pick 的 freeModel 参数。
 package pool
 
 import (
@@ -17,25 +19,28 @@ import (
 // PickByUIDForModel。保留是因为测试需要无轮换/无 realm 的最小选号原语；
 // 迁 export_test.go 不可行——export_test 对包外不可见，而本方法的语义文档
 // （挑选策略全文）对生产簇（pick 私有实现）仍有维护参考价值。
-// 挑选策略：healthy 账号中按三因子权重取前 5 名，再在 Top5 内按同一权重加权随机抽签，
+// 挑选策略：healthy 账号中按权重取前 5 名，再在 Top5 内按同一权重加权随机抽签，
 // 意图是打散热点，避免永远打同一个账号。
 // model 非空时启用 6004 模型级冷却豁免（healthyForModel）；空则等价账号级 healthy。
 // 需要请求级轮换（tried）或分池（realm）时用 PickExcludingForRealm。
 func (p *Pool) Pick(model string) *auth.Auth {
-	return p.pick(nil, model, "", "")
+	return p.pick(nil, model, "", "", false)
 }
 
-// pick 在 healthy 候选集中按三因子权重加权随机选出账号，并记录 lastUsed（防并发撞号）。
-// 候选集是 top5 近似：先按三因子权重（weightOf）降序取前 5（credits 只是权重的一个因子，
+// pick 在 healthy 候选集中按权重加权随机选出账号，并记录 lastUsed（防并发撞号）。
+// 候选集是 top5 近似：先按权重（weightOf / weightOfFree，见 freeModel）降序取前 5（credits 只是权重的一个因子，
 // 闲置补偿与成功率同样决定谁进短名单），再在 top5 内做防撞号过滤。
 // 并发防雪崩：跳过 lastUsed 距今 < minPickGap 的账号（除非 top5 全部刚被用过，
 // 此时退回最近最少使用 LRU 账号），迫使高并发请求发散，而不是全部撞同一高分账号。
 // minPickGap=0（测试用）时过滤恒通过，退化为纯加权随机。
 // reqModel 非空时把健康口径换成 healthyForModel（6004 模型豁免生效；PickExcluding 传 ""）。
 // realm 非空时候选过滤叠加 Realm()==realm 谓词（分池选号域；PickExcluding 传 ""）。
+// freeModel 报告 reqModel 是否为「零积分」模型（口径见 upstream.ModelInfo.Free）。
+// 为真时跳过成本分层，并把余额/快过期两项从权重里拿掉——免费模型的调用不扣积分，
+// 按余额加权只会把流量堆到余额高的号上白耗它的上游限额（详见 weightOfFree）。
 // 注意：模型豁免只进 normal 选号（候选 healthy 判定）；全冷却兜底不参与模型豁免——
 // 兜底本来就是在"无任何 direct 可用"时的降级，切模型可用性已在 normal 阶段体现。
-func (p *Pool) pick(tried map[string]bool, reqModel, realm, producer string) *auth.Auth {
+func (p *Pool) pick(tried map[string]bool, reqModel, realm, producer string, freeModel bool) *auth.Auth {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -74,7 +79,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm, producer string) *au
 		// （熔断/冷却共用 expiry 口径，取较早截止者）。禁用的账号永不参与兜底。
 		return p.pickEarliestExpiryLocked(tried, now, realm, producer)
 	}
-	// top5 短名单按三因子权重降序截断（而非 credits 单纯降序）：否则闲置补偿
+	// top5 短名单按权重降序截断（而非 credits 单纯降序）：否则闲置补偿
 	// 根本进不了短名单决策，低 credits 但久置的账号会永远排不进 top5。
 	// maxCredits 统一用**全集口径**（tier 过滤前的全部 healthy 候选）：截断排序与
 	// 抽签权重共享同一基准，两个阶段权重可比（旧实现 pickWeighted 在 eligible 子集
@@ -128,7 +133,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm, producer string) *au
 	// 串行进入写锁，只有一个进入者能通过窗口判定（天然防重复探索）。
 	// key = realm + "\x1f" + reqModel：同模型名可跨域，探索节奏按 (域, 模型)
 	// 独立；realm==""（Pick 老语义）单独成键。
-	if p.costExploreInterval > 0 && bestTier == 0 && reqModel != "" {
+	if !freeModel && p.costExploreInterval > 0 && bestTier == 0 && reqModel != "" {
 		for _, e := range cands {
 			if ti, _ := costTier(e); ti == 1 {
 				hasTier1 = true
@@ -145,9 +150,41 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm, producer string) *au
 	}
 	ws := make([]weighted, 0, len(cands))
 	for _, e := range cands {
+		if freeModel {
+			// 免费模型不按余额加权（见 weightOfFree），也跳过成本分层——「这模型本来就
+			// 不扣积分」比「哪个号实测扣 0」更根本，再分层只剩噪音。
+			ws = append(ws, weighted{e: e, w: p.weightOfFree(e, now)})
+			continue
+		}
 		ti, ci := costTier(e)
 		if ti == bestTier {
 			ws = append(ws, weighted{e: e, w: p.weightOf(e, maxCredits, now), tier: ti, cost1k: ci})
+		}
+	}
+	// 快过期积分硬分层（收费模型分支，层内）：本层只要有一个号带快过期积分，就只在
+	// 「带快过期积分」的号里挑。为什么从软加成升级为硬过滤：creditsExpiring 是 credits
+	// 的子集，而 credits 项（×10）量级远大于 expiring 项，实测 A(100 积分全快过期) 权重
+	// 8.35 仍输给 B(2889 积分、无快过期) 的 11.00 —— 快过期积分永远排不上号、到期作废。
+	// 修成硬分层后 A 类号必胜；层内再按 expiringWeight 拉开号与号的差距（不把流量全压一个号）。
+	// 放在成本层**之内**：成本层（免费 > 未知 > 收费）仍是外层语义，本过滤只会让
+	// 「同价位里先用快过期的」，不会把实测便宜的号换成为烧积分而用的贵号。
+	// 本层全部无快过期积分时不过滤（ws 保持不变），空集不可能出现（过滤条件自身非空）。
+	if !freeModel && len(ws) > 1 {
+		anyExpiring := false
+		for _, we := range ws {
+			if we.e.creditsExpiring > 0 {
+				anyExpiring = true
+				break
+			}
+		}
+		if anyExpiring {
+			kept := ws[:0]
+			for _, we := range ws {
+				if we.e.creditsExpiring > 0 {
+					kept = append(kept, we)
+				}
+			}
+			ws = kept
 		}
 	}
 	// 等权重洗牌：仅当存在权重并列（epsilon 比较，防浮点微差让洗牌静默失效）且
@@ -308,9 +345,11 @@ type weighted struct {
 }
 
 // expiringWeight 快过期积分占比的权重系数（三因子之一，issue:积分过期）。
-// 取 8：略低于 credits 总量项（×10），足以在"快过期多"与"总量相近"的号之间拉开差距，
-// 又不至于压过总量项让"总量大但快过期少"的号被完全饿死。
-const expiringWeight = 8.0
+// 取 30：远高于 credits 总量项（×10）。旧值 8 在实测里被总量项压过——A(100 积分、100 快过期)
+// 权重 8.35 仍输给 B(2889 积分、0 快过期) 的 11.00，快过期积分永远消耗不掉、到期作废。
+// 需要说明的是：这仍然只是**层内**差距调节，真正的「必须先烧快过期积分」由 pick 里的
+// 硬分层（anyExpiring）保证，本常量负责让层内多个带快过期积分的号不要平均分摊。
+const expiringWeight = 30.0
 
 // pickWeighted 三因子加权随机（claude-api selectWeightedRandom 参考口径）：
 //
@@ -318,7 +357,7 @@ const expiringWeight = 8.0
 //
 //	  - credits 比例 = 该号 credits / 全集最大 credits（避免量纲爆炸；全集口径：
 //	    tier 过滤前的全部 healthy 候选，与截断排序共享基准——见 weighted 预计算注释）
-//	  - 快过期积分占比 = creditsExpiring/credits（×8，issue:积分过期）
+//	  - 快过期积分占比 = creditsExpiring/credits（×expiringWeight，issue:积分过期）
 //	  - idleWeight = min(距 lastUsed 小时数 × idleWeightPerHour, idleWeightMax)；从未使用给满分
 //
 // credits 全 0 时仍按 idle+expiring 加权（不退化均匀随机）。
@@ -362,7 +401,7 @@ func (p *Pool) pickWeighted(cands []weighted) *entry {
 // 精确相等比较会让等权重洗牌静默失效、回到字典序截断饿死问题。
 const weightEpsilon = 1e-9
 
-// weightOf 计算单个账号的三因子权重。单次 pick 内对每个候选只调用一次
+// weightOf 计算单个账号的收费模型三因子权重。单次 pick 内对每个候选只调用一次
 // （预计算存入 weighted.w，sort 比较器与 pickWeighted 均读缓存不重算）。
 func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 	if p.weightOfHook != nil {
@@ -400,7 +439,43 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 	// （原第 3 因子「成功率 EMA ×3」已删，success-ema-review §4：双饱和计数器对
 	// 真实成功率不敏感、成熟池退化为与默认值重合的常数 1.5、失败侧与熔断器
 	// 100% 同源——机制名存实亡且冗余，删除后 weightOf 为三因子。）
+	// 调用前提：本函数只服务收费模型；零积分模型请用 weightOfFree（见其注释说明
+	// 「为什么免费模型不能按余额加权」）。两支的判定分叉在 pick 的 freeModel 参数。
 	return w
+}
+
+// weightOfFree 免费模型的选号权重：只保留闲置补偿，**不读 credits / creditsExpiring**。
+//
+// 为什么单独一支：免费模型（目录 credits=x0.00 / "-free" 后缀 / kilo 全量免费）跑一次
+// 不扣任何号的积分，余额与快过期紧迫度都不再是「谁该接这一单」的理由。继续按余额项
+// 加权只会把流量堆到余额最高的号上，把它的上游限额（429 / 日额度）白耗掉，而余额低的
+// 号闲置——实测 B(2889 积分) 吃走绝大部分免费流量，A(0 积分、其实同样能跑免费模型) 饿死。
+//
+// 保留闲置补偿的理由：它同时承担「防热点」职责——刚被用过的号权重低，流量自然摊开，
+// 这正是免费模型想要的（所有号在免费模型上等价，唯一要避免的是单号被打爆）。
+// 不保留任何余额项：即使某号 credits 为 0 也不影响它跑免费模型（免费调用不扣积分）；
+// 某号 credits 为 0 且模型其实收费时，它根本不在这条分支上（freeModel 由目录判定，
+// 不由余额判定）——兜底的正确性由 costTier 路径负责，不靠这里。
+//
+// 与 weightOf 的分工：那个算收费模型的「谁有积分、谁快过期、谁闲置」；这个只算
+// 「谁最久没被用过」。两个函数共用闲置窗口参数（idleWeightPerHour / idleWeightMax）。
+func (p *Pool) weightOfFree(e *entry, now time.Time) float64 {
+	if p.weightOfHook != nil {
+		p.weightOfHook() // DeptestOnly 观测：与 weightOf 同口径计入「每候选一次」
+	}
+	w := 1.0 // 基线：保证 pickWeighted 的定点权重恒 ≥1（见其宽度保底注释）
+	if e.lastUsed.IsZero() {
+		return w + p.idleWeightMax // 从未使用 → 满分
+	}
+	hours := now.Sub(e.lastUsed).Hours()
+	idleW := hours * p.idleWeightPerHour
+	if idleW > p.idleWeightMax {
+		idleW = p.idleWeightMax
+	}
+	if idleW < 0 {
+		idleW = 0 // lastUsed 在未来（时钟回拨）时钳 0
+	}
+	return w + idleW
 }
 
 // servableProducer 报告某生产者（AI 客户端）的账号今天能不能真的承接对话流量。

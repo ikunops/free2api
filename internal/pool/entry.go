@@ -119,7 +119,7 @@ type entry struct {
 	// 是 credits 的一部分（credits = creditsExpiring + 长期积分）。选号权重对其
 	// 额外加成：优先消耗快过期积分，避免官方活动赠送的奖励积分到期作废
 	// （issue:积分过期）。持久化（stateAccount.CreditsExpiring）：重启后到下次
-	// 签到之间第四因子（weightOf ×8）不应失忆——签到 09:00/21:00 定期刷新，
+	// 签到之间快过期权重项（weightOf 的 expiringWeight）不应失忆——签到 09:00/21:00 定期刷新，
 	// 窗口外重启会丢快过期积分偏好，可能让奖励积分到期作废。
 	creditsExpiring int64
 	successCount    int64 // 累计成功
@@ -402,7 +402,7 @@ type stateAccount struct {
 	// 恢复时若 BreakerUntil 已过期则 retryCount 归零（不保留无用退避指数）。
 	RetryCount int `json:"retry_count,omitempty"`
 	// CreditsExpiring 快过期积分子集（credits 的子集）。持久化以保留第四因子
-	// （weightOf ×8）的快过期积分偏好——重启后到下次签到之间不应失忆。
+	// （weightOf 的 expiringWeight 项）的快过期积分偏好——重启后到下次签到之间不应失忆。
 	// 零值也显式写出（运维口径，见 err_total 注释）。
 	CreditsExpiring int64 `json:"credits_expiring"`
 	// ModelCooldowns 6004 模型级独立冷却表（model → 冷却记录）。持久化：

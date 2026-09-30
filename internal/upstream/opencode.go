@@ -370,7 +370,7 @@ func (c *Client) FetchOpenCodeModels(ctx context.Context, a *auth.Auth) ([]Model
 		if id == "" {
 			continue
 		}
-		out = append(out, ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id)})
+		out = append(out, ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id), Free: isOpenCodeFreeTierModel(id)})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("opencode models: 上游返回空清单")
