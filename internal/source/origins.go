@@ -32,10 +32,14 @@ const (
 	ProducerWorkbuddy = "workbuddy"
 	ProducerZCode     = "zcode"
 	ProducerQoder     = "qoder"
-	// ProducerOpenCode OpenCode?CLI/TUI????????????OpenCode ???
-	// ????????? zen ???? internal/upstream/opencode.go ?????
-	// ????? `opencode serve` ????????????????????
+	// ProducerOpenCode OpenCode（CLI/TUI）自家上游生产者。Zen 付费层与免费层都直连
+	// 反代（免费层出站自动补 bash/read 占位工具即可过闸，见 internal/upstream/opencode.go
+	// 文件头 2026-09-30 更正）；不接 `opencode serve` 那条命令执行旁路。
 	ProducerOpenCode = "opencode"
+	// ProducerKilo Kilo Code（api.kilo.ai）。与前几家不同，Kilo 没有「账号」：
+	// 它的 OpenRouter 兼容网关对匿名调用直接放行，号池里挂一条「匿名」占位号即可
+	// 把免费层反代出去（见 internal/upstream/kilo.go 文件头实测）。
+	ProducerKilo = "kilo"
 )
 
 // MethodOrder 三种来源的展示顺序（管理页按这个顺序排，后端定死避免前后端各写一份）。
@@ -68,6 +72,8 @@ func ProducerLabel(p string) string {
 		return "Qoder"
 	case ProducerOpenCode:
 		return "OpenCode"
+	case ProducerKilo:
+		return "Kilo Code"
 	}
 	if p == "" {
 		return "未知"

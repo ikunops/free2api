@@ -86,6 +86,12 @@ const producerZCode = "zcode"
 // （理由同 producerZCode）。
 const producerOpenCode = "opencode"
 
+// producerKilo Kilo Code（api.kilo.ai）的标识。与 zcode / opencode 同属静态凭据型
+// 生产者：凭据本体就是一枚长期 key（匿名通道则是一枚占位值），没有刷新端点、
+// ExpiresAt 恒 0，只要 key 不为空就认为长期有效——否则每个请求都走「刷新失败」、
+// 白把刚导入的号禁掉。
+const producerKilo = "kilo"
+
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
 func (a *Auth) Lock() { a.mu.Lock() }
 
@@ -339,7 +345,7 @@ func isGlobalDomain(d string) bool {
 func (a *Auth) NeedsRefresh(within time.Duration) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.producer == producerZCode || a.producer == producerOpenCode {
+	if a.producer == producerZCode || a.producer == producerOpenCode || a.producer == producerKilo {
 		return false
 	}
 	if a.ExpiresAt <= 0 {

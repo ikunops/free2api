@@ -15,14 +15,12 @@
 //     provider（openrouter / deepseek / zhipuai-coding-plan / tencent-tokenhub …）
 //     一律排除：那些是「agent 上的模型」，收进来会变成拿别家 key 打 OpenCode。
 //
-//  2. 免费层（zen 的 *-free / big-pickle 等）在服务端有「只能从 OpenCode 本体发起」的
-//     闸门（实测直连 zen 端点必回 403 FreeTierError，且是**传输层指纹**级门禁——把
-//     opencode 本体发出的请求逐字节重放仍然 403，只有 Bun runtime 的 TLS/HTTP2 指纹
-//     才放行；见 internal/upstream/opencode.go 文件头）。唯一能过闸的路径是经本机
-//     `opencode serve` 中转，但那会把「宿主机命令执行」暴露给任何能访问网关的客户端，
-//     **本网关刻意不做**。所以这里 zen 账号的 upstream_base 写成**直连 zen 端点**，
-//     只反代付费模型；免费层模型在目录里被 upstream 侧过滤掉。
-//     opencode-go（付费额度）无此闸门，直连 zen/go 端点即可。
+//  2. 免费层（zen 的 *-free / big-pickle 等）同样直连 zen 端点即可：2026-09-30 实测
+//     免费层闸门是「stream=true」与「tools 含 bash/read」两条的与，都在请求体里，
+//     与 UA / TLS 指纹无关（详见 internal/upstream/opencode.go 文件头更正）。故 zen
+//     账号的 upstream_base 写成 **直连 zen 端点**，付费层与免费层一并反代（出站自动
+//     stream 强制 true 并补 bash/read 占位工具）。
+//     opencode-go（免费额度）直连 zen/go 端点即可。
 package source
 
 import (
@@ -40,13 +38,13 @@ const (
 	// OpenCodeGoProvider OpenCode Go（付费额度）。
 	OpenCodeGoProvider = "opencode-go"
 
-	// OpenCodeZenBase 直连 Zen 端点（付费模型可用；免费模型会被 FreeTier 闸拦）。
+	// OpenCodeZenBase 直连 Zen 端点（付费层与免费层都可反代；免费层出站由
+	// stream=true + bash/read 两条闸门放行）。
 	OpenCodeZenBase = "https://opencode.ai/zen/v1"
 	// OpenCodeGoBase 直连 Go 端点（需 x-opencode-session 头，适配器会补）。
 	OpenCodeGoBase = "https://opencode.ai/zen/go/v1"
-	// OpenCodeServeBase 本机 opencode serve 的缺省地址。**本网关不使用**：zen 免费层
-	// 经它能过闸，但 serve 的内置 agent 会真的在宿主机执行命令（RCE），不能作为反代
-	// 上游。保留此常量仅供文档/诊断引用。
+	// OpenCodeServeBase 本机 opencode serve 的缺省地址。**本网关不使用**：serve 会走
+	// 宿主机命令执行（RCE），本适配器刻意不做，直连 zen 端点即可（免费层亦然）。
 	OpenCodeServeBase = "http://127.0.0.1:4096"
 )
 
@@ -59,9 +57,8 @@ func DefaultOpenCodeAuthPath() string {
 type OpenCodeAccount struct {
 	Provider string // providerID：opencode / opencode-go
 	Key      string // 明文 api key（不序列化，只在进程内流转）
-	Base     string // 建议上游 base（zen 免费走本机 serve；go 直连）
-	// Free 该 provider 是否含免费层（zen 有、go 没有）。前端据此提示「免费额度需本机
-	// opencode serve 在跑」。
+	Base     string // 建议上游 base（zen 直连；go 直连）
+	// Free 该 provider 是否含免费层（zen 有、go 没有），前端据此标「免费额度」。
 	Free bool
 }
 
@@ -99,8 +96,7 @@ func ListOpenCodeAccounts(path string) ([]OpenCodeAccount, error) {
 		case OpenCodeGoProvider:
 			acc.Base = OpenCodeGoBase
 		default:
-			// zen：直连 zen 端点（付费模型实测 200）。免费层直连必 403，已在 upstream
-			// 侧剔除，不在这里写 serve base（那会把本机命令执行暴露给网关调用方）。
+			// zen：直连 zen 端点，付费层与免费层都反代（免费层出站补 stream + bash/read）。
 			acc.Base = OpenCodeZenBase
 			acc.Free = true
 		}
@@ -212,7 +208,7 @@ func OpenCodeCandidates(path, authDir string) ([]Candidate, error) {
 		uid := OpenCodeUID(acc.Provider)
 		detail := "provider=" + acc.Provider + " · key=" + keyHint(acc.Key)
 		if acc.Free {
-			detail += " · 含免费层模型（服务端闸：只能从 OpenCode 本体发起，直连 403，本网关只反代付费模型）"
+			detail += " · 含免费层模型（出站 stream=true + 补 bash/read 占位工具即可直连反代）"
 		}
 		c := Candidate{
 			ID:         acc.Provider,

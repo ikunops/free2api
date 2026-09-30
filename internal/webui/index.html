@@ -388,7 +388,7 @@ function methodTag(uid){
 }
 /* 生产者（AI 客户端）：workbuddy / zcode / qoder … 由账号来源台账标注。
    显示名优先用 /status 的 producer_totals[].name（后端定死枚举），取不到再回落本地表。 */
-const PRODUCER_FALLBACK = { workbuddy: "WorkBuddy", zcode: "ZCode", qoder: "Qoder", opencode: "OpenCode" };
+const PRODUCER_FALLBACK = { workbuddy: "WorkBuddy", zcode: "ZCode", qoder: "Qoder", opencode: "OpenCode", kilo: "Kilo Code" };
 function producerName(p){
   var list = (S.status && S.status.producer_totals) || [];
   for (var i = 0; i < list.length; i++){ if ((list[i].producer || "") === (p || "")) return list[i].name || PRODUCER_FALLBACK[p] || p || "未标注"; }
@@ -2016,7 +2016,8 @@ async function doImport(kind, ids, text, method, detail){
 async function openCands(kind, opt){
   S.tab = "sources";
   // 候选面板挂在它所属的「来源」tab 下：账本类在 switch，OpenCode 在应用内登录态。
-  S.srcTab = (kind === "opencode") ? "app" : "switch";
+  // Kilo 与 OpenCode 同挂在「应用内登录态」下：两者都无需 switch 账本（Kilo 甚至无需账号）。
+  S.srcTab = (kind === "opencode" || kind === "kilo") ? "app" : "switch";
   S.checked = {};
   var o = opt || {};
   S.candProbe = !!o.probe; S.candBalance = !!o.balance;
@@ -2341,6 +2342,7 @@ async function actOn(t){
       var qk = t.getAttribute("data-kind") || "wb-switch";
       if (qk === "zcode-switch") return doImport("zcode-switch", null, null, "switch", "zcode-switch 账本");
       if (qk === "opencode") return doImport("opencode", null, null, "app", "opencode auth.json");
+      if (qk === "kilo") return doImport("kilo", null, null, "app", "kilo anonymous free lane");
       return doImport("wb-switch", null, null, "switch", "wb-switch 账本");
     }
     if (act === "src-refresh") return srcRefresh();
@@ -2351,7 +2353,7 @@ async function actOn(t){
     if (act === "cand-import"){
       // 两种账本都是「来源 = switch」；粘贴导入（candKind 非账本）才是 file。
       var meth = (S.candKind === "wb-switch" || S.candKind === "zcode-switch") ? "switch"
-        : (S.candKind === "opencode" ? "app" : "file");
+        : ((S.candKind === "opencode" || S.candKind === "kilo") ? "app" : "file");
       return doImport(S.candKind, checkedIDs(), null, meth, S.candKind);
     }
     if (act === "zcode-probe") return reloadCands(true, false);

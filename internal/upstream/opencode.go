@@ -10,27 +10,38 @@
 // true，与 zcode 同因：网关对客户端只有流式上游通道）。不做 fingerprint 中和、
 // 不注 prompt_cache_key、不做 effort 降级——那些是 workbuddy 上游的特定需要。
 //
-// ---------- 免费层（zen 的 *-free / big-pickle）为什么不做 ----------
+// ---------- 免费层（zen 的 *-free / big-pickle）怎么做 ----------
 //
-// 实测（2026-09，本机 zen key）：
+// 2026-09-30 更正：旧版本这里写着「免费层直连必 403、只有 Bun/TLS 指纹能过」——
+// **那是错的**。免费层闸门是**两个条件的与**，都在请求体里，与 UA / 会话 id /
+// TLS 指纹**都无关**（对照实验：把 CLI 自己的 195KB 真实请求原样重放即 200，
+// 说明上游不看指纹；换成小请求逐字段二分，才定位到下面两条）：
 //
-//	POST zen/v1/chat/completions  model=glm-5.3-flash（付费）  → 200 真回复
-//	POST zen/v1/chat/completions  model=big-pickle（免费层）    → 403 FreeTierError
-//	POST zen/v1/chat/completions  model=x-preview-f-free        → 403 FreeTierError
+//	1. stream=true —— 免费层只走流式。同一条请求把 stream 改 false 立刻 403。
+//	2. tools 里同时含名为 bash 与 read 的工具（opencode 本体内置的两个工具名）。
+//	   只给 bash 或只给 read 仍 403。
 //
-// 403 文案是「OpenCode's free tier can only be used from within OpenCode」。门禁
-// 不是看请求头/请求体（把 opencode 本体发出的请求逐字节重放，仍然 403），而是
-// **传输层指纹**：只有 opencode 本体（Bun runtime / 其 TLS·HTTP2 指纹）发起的连接
-// 才被放行。Go / curl / Python 的 HTTP 客户端一律过不去。
+// 实测（2026-09-30，本机，Go net/http 直连，Bearer public 即可、无需任何 key）：
 //
-// 唯一能过闸的路径是经本机 `opencode serve` 中转（它内部用 Bun 出站）。但那条路
-// 有**硬伤**：serve 的 /session/{id}/message 会真的在宿主机执行内置 agent 的工具
-// （实测：bash 能读到真实 hostname、能写文件）。把这条路径接进网关，等于把「远程
-// 命令执行」暴露给任何能访问网关的客户端——本适配器**刻意不做**。
+//	stream=T tools=[bash,read]  model=longcat-2.5-preview-free → 200 SSE 真回复
+//	stream=T tools=[bash,read]  model=mimo-v2.5-free            → 200 SSE
+//	stream=T tools=[bash,read]  model=nemotron-3-ultra-free     → 200
+//	stream=T tools=[bash,read]  model=big-pickle                → 200
+//	stream=T tools=[bash,read]  model=glm-5.3-flash（付费）    → 200（付费不受影响）
+//	stream=F tools=[bash,read]  model=longcat-2.5-preview-free → 403 FreeTierError
+//	stream=T tools=[bash]       model=longcat-2.5-preview-free → 403 FreeTierError
+//	stream=T 无 tools           model=longcat-2.5-preview-free → 403 FreeTierError
 //
-// 所以：本适配器只做 zen **付费模型**直连（安全、实测 200）。免费层模型在目录里
-// 被过滤掉（见 isOpenCodeFreeTierModel），且真被调用时 403 FreeTierError 会被
-// 分类成 ErrModelBlocked（池级标记为死模型，下次不再列出/不再路由）。
+// 本适配器两个条件都自动满足：stream 由 opencodeForceStream 强制 true（网关本来
+// 只走流式上游通道），工具由 opencodeInjectFreeTools 按需补齐（见下）。所以免费层
+// 和付费层共用同一个直连通道，无需任何特殊处理。
+//
+// 例外：space-bunny-free 是**无条件**放行（stream:F/stream:T、带不带 tools 都 200），
+// 无需闸门。它挂在 Zen 免费层目录里，走同一路径即可。
+//
+// 免费层无需账号（Bearer public），但网关按「账号/号池」建模，故免费层仍挂在已有
+// opencode 账号上借它的通道出去（session 鉴权沿用该账号）；无账号时也可显式导入一个
+// 仅用免费层的占位号。
 package upstream
 
 import (
@@ -61,7 +72,21 @@ const (
 	// opencodeUserAgent 出站 UA。Cloudflare 会拦默认 Go UA（403 error 1010），
 	// 带 opencode 形态的 UA 才能过。版本段对齐本机 opencode 实测值。
 	opencodeUserAgent = "opencode/1.18.32 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+
+	// opencodeFreeToolNames 免费层闸门要求出站 tools 里出现的工具名（opencode 本体内置
+	// 五个工具，实测只认名字，描述/参数随便）。闸门必需的是 bash + read；另三个
+	// （edit / glob / grep）参考实现 zhuweiyou/oc2api 与 jasonxu114514/opencode2api 都会
+	// 补全，这里对齐以稳妥。注意工具还需配合 stream=true，见 opencodeForceStream 与
+	// 文件头的两条闸门说明。
+	opencodeFreeToolNames = "bash,edit,glob,grep,read"
+	// opencodeFreeToolDescription 补的占位工具的描述（与 oc2api 同款文案）。
+	opencodeFreeToolDescription = "Compatibility marker only. Do not call or select this function."
+	// opencodePublicAuth 免费层不需要任何凭据，Authorization 用这个占位值即可（实测 200）。
+	opencodePublicAuth = "public"
 )
+
+// opencodeFreeToolNameList 拆开 opencodeFreeToolNames，供逐名判缺。
+var opencodeFreeToolNameList = strings.Split(opencodeFreeToolNames, ",")
 
 // ProducerOpenCode OpenCode 生产者标识。与 internal/source.ProducerOpenCode 同值——
 // 这里刻意不 import internal/source（理由同 zcode.go：出站层不反向依赖取源层）。
@@ -104,7 +129,7 @@ func opencodeSessionID(a *auth.Auth) string {
 		}
 	}
 	sum := sha256.Sum256([]byte(seed))
-	return "ses_" + hex.EncodeToString(sum[:8])
+	return "ses_" + hex.EncodeToString(sum[:13])
 }
 
 // opencodeHeaders OpenCode Zen 端点要的头：鉴权 + 内容类型 + opencode 客户端指纹。
@@ -149,6 +174,75 @@ func classifyOpenCode(status int, body string) ErrKind {
 	return Classify(status, body)
 }
 
+// opencodeInjectFreeTools 在出站体里补齐免费层闸门要求的工具名（bash + read）。
+//
+// 免费层闸门（2026-09-30 实测，见文件头）只认 tools 数组里是否**同时存在**名为
+// "bash" 与 "read" 的 function 工具：缺哪个补哪个，客户端已带的同名工具原样保留。
+// 上游不校验描述/参数，占位工具即可。付费模型不设闸，但补这两个占位工具对它们同样
+// 无害（实测付费模型带 tools 仍 200），所以本函数对全部 opencode 出站一律生效，
+// 不区分模型——免费/付费共用一条通道，路由层无需做模型分级。
+//
+// 与 oc2api 的差异：oc2api 无条件追加全部 5 个占位工具；这里只补闸门真正要求的
+// bash/read，且仅在客户端**没带同名工具**时补——客户端自带的工具一律不动。另外
+// 照 oc2api：客户端**完全没带 tools** 时，把 tool_choice 置 none，免得模型选中
+// 这两个补进来的占位工具。客户端带了 tools 时 tool_choice 原样透传。
+func opencodeInjectFreeTools(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	var tools []any
+	if v, ok := obj["tools"].([]any); ok {
+		tools = v
+	}
+	hadUserTools := len(tools) > 0
+	present := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tm["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := fn["name"].(string); ok {
+			present[name] = true
+		}
+	}
+	changed := false
+	for _, name := range opencodeFreeToolNameList {
+		if name == "" || present[name] {
+			continue
+		}
+		tools = append(tools, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        name,
+				"description": opencodeFreeToolDescription,
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		})
+		present[name] = true
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	obj["tools"] = tools
+	if !hadUserTools {
+		obj["tool_choice"] = "none"
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // opencodeForceStream 把出站体的 stream 字段强制为 true，其余字段一律不动
 // （与 zcodeForceStream 同因同形：网关只走流式上游通道，客户端写 stream:false 时
 // 上游回非流式 JSON，Aggregate 找不到 SSE 帧即 502 upstream_parse）。
@@ -179,6 +273,7 @@ func (c *Client) opencodeChatStreamContext(ctx context.Context, a *auth.Auth, bo
 		ctx = context.Background()
 	}
 	body = opencodeForceStream(body)
+	body = opencodeInjectFreeTools(body)
 	url := c.opencodeBase(a) + opencodeChatPath
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -219,8 +314,10 @@ func (c *Client) opencodeChatStreamContext(ctx context.Context, a *auth.Auth, bo
 
 // FetchOpenCodeModels 拉 OpenCode Zen 上游的模型清单（实时权威）。
 // GET /zen/v1/models 实测**必须带 opencode UA**（默认 Go UA 被 Cloudflare 403 error 1010）。
-// 免费层模型在这里被过滤掉（见 isOpenCodeFreeTierModel）：它们直连必 403，列出去
-// 等于承诺「能调」。上游没号/拉失败时返回错误，由调用方决定是否回落。
+// 免费层与付费层一并列出：免费层现在可通过出站「stream=true + 补 bash/read 占位工具」
+// 直连（见文件头
+// 2026-09-30 更正与 opencodeInjectFreeTools）。上游没号/拉失败时返回错误，由调用方
+// 决定是否回落。
 func (c *Client) FetchOpenCodeModels(ctx context.Context, a *auth.Auth) ([]ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.opencodeBase(a)+opencodeModelsPath, nil)
 	if err != nil {
@@ -259,13 +356,13 @@ func (c *Client) FetchOpenCodeModels(ctx context.Context, a *auth.Auth) ([]Model
 	out := make([]ModelInfo, 0, len(list))
 	for _, m := range list {
 		id := strings.TrimSpace(m.ID)
-		if id == "" || isOpenCodeFreeTierModel(id) {
+		if id == "" {
 			continue
 		}
 		out = append(out, ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id)})
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("opencode models: 上游返回空清单（或全部是免费层模型）")
+		return nil, fmt.Errorf("opencode models: 上游返回空清单")
 	}
 	return out, nil
 }
@@ -273,9 +370,9 @@ func (c *Client) FetchOpenCodeModels(ctx context.Context, a *auth.Auth) ([]Model
 // isOpenCodeFreeTierModel 判定模型 id 是否属于 OpenCode 免费层。
 //
 // Zen 目录的免费层命名有规律：绝大多数带 "-free" 后缀；少数例外按名硬编码
-// （big-pickle 是本机实测确认的免费层）。这些模型直连必 403 FreeTierError
-// （见文件头），所以从目录里剔除。漏网之鱼由 classifyOpenCode 的 ErrModelBlocked
-// 兜底（真被调用时标记为死模型，下次不再出现）。
+// （big-pickle 是本机实测确认的免费层）。免费层现在**可直连**（出站满足
+// stream=true + tools 含 bash/read 两条闸门即可，见文件头 2026-09-30 更正），
+// 所以此函数不再是「过滤」用途，只作分类标签（例如管理页可据此标「免费」）。
 func isOpenCodeFreeTierModel(id string) bool {
 	l := strings.ToLower(strings.TrimSpace(id))
 	if l == "" {
@@ -349,7 +446,7 @@ func ProbeOpenCodeKey(ctx context.Context, client *http.Client, base, key string
 		var ids []string
 		if json.Unmarshal(raw, &env) == nil {
 			for _, m := range env.Data {
-				if id := strings.TrimSpace(m.ID); id != "" && !isOpenCodeFreeTierModel(id) {
+				if id := strings.TrimSpace(m.ID); id != "" {
 					ids = append(ids, id)
 				}
 			}

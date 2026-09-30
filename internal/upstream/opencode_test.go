@@ -152,6 +152,76 @@ func TestOpenCodeClassify(t *testing.T) {
 	}
 }
 
+// TestOpenCodeInjectFreeTools 出站补占位工具：免费层闸门要求 tools 里含
+// opencode 内置工具名（2026-09-30 实测闸门需 bash+read，这里按参考实现补全 5 个，
+// 见文件头）。补的规则：
+//   - 缺哪个 core 工具就补哪个，已有的同名工具原样保留、不重复；
+//   - 客户端本来有 tools → tool_choice 原样透传；完全没 tools → 置 tool_choice=none；
+//   - 已含全部 5 个时字节级原样返回（不重排、不动其它字段）。
+func TestOpenCodeInjectFreeTools(t *testing.T) {
+	toolsOf := func(body []byte) map[string]any {
+		var obj map[string]any
+		if err := json.Unmarshal(body, &obj); err != nil {
+			t.Fatalf("出站体不是 JSON: %v (%s)", err, body)
+		}
+		return obj
+	}
+	namesOf := func(obj map[string]any) map[string]bool {
+		out := map[string]bool{}
+		arr, _ := obj["tools"].([]any)
+		for _, x := range arr {
+			tm, _ := x.(map[string]any)
+			fn, _ := tm["function"].(map[string]any)
+			if n, ok := fn["name"].(string); ok {
+				out[n] = true
+			}
+		}
+		return out
+	}
+
+	t.Run("无 tools 时补 bash+read 且 tool_choice=none", func(t *testing.T) {
+		obj := toolsOf(opencodeInjectFreeTools([]byte(`{"model":"big-pickle","messages":[]}`)))
+		names := namesOf(obj)
+		for _, n := range opencodeFreeToolNameList {
+			if !names[n] {
+				t.Fatalf("tools 未补齐 %q: %#v", n, obj["tools"])
+			}
+		}
+		if obj["tool_choice"] != "none" {
+			t.Errorf("tool_choice = %#v, want none", obj["tool_choice"])
+		}
+	})
+
+	t.Run("只带其中一个时补全其余，tool_choice 原样", func(t *testing.T) {
+		in := `{"model":"big-pickle","tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}],"tool_choice":"auto"}`
+		obj := toolsOf(opencodeInjectFreeTools([]byte(in)))
+		names := namesOf(obj)
+		for _, n := range opencodeFreeToolNameList {
+			if !names[n] {
+				t.Fatalf("tools 未补齐 %q: %#v", n, obj["tools"])
+			}
+		}
+		if obj["tool_choice"] != "auto" {
+			t.Errorf("tool_choice = %#v, want auto（客户端带了 tools 就原样透传）", obj["tool_choice"])
+		}
+	})
+
+	t.Run("已含全部 core 工具时字节级原样", func(t *testing.T) {
+		in := `{"model":"big-pickle","tools":[{"type":"function","function":{"name":"read"}},{"type":"function","function":{"name":"bash"}},{"type":"function","function":{"name":"edit"}},{"type":"function","function":{"name":"glob"}},{"type":"function","function":{"name":"grep"}}],"tool_choice":"auto"}`
+		out := opencodeInjectFreeTools([]byte(in))
+		if string(out) != in {
+			t.Errorf("应原样返回，得到 %s", out)
+		}
+	})
+
+	t.Run("坏 JSON 字节级原样", func(t *testing.T) {
+		in := `{"model":`
+		if string(opencodeInjectFreeTools([]byte(in))) != in {
+			t.Errorf("坏 JSON 应原样返回")
+		}
+	})
+}
+
 // TestOpenCodeFreeTierFilter 免费层判定："-free" 后缀与 big-pickle 都要被剔，
 // 付费模型不能被误剔。
 func TestOpenCodeFreeTierFilter(t *testing.T) {
@@ -169,9 +239,10 @@ func TestOpenCodeFreeTierFilter(t *testing.T) {
 	}
 }
 
-// TestOpenCodeFetchModelsFiltersFree FetchOpenCodeModels 解析 Zen /models 的
-// {"object":"list","data":[...]} 形态，并剔除免费层模型。
-func TestOpenCodeFetchModelsFiltersFree(t *testing.T) {
+// TestOpenCodeFetchModelsKeepsAll FetchOpenCodeModels 解析 Zen /models 的
+// {"object":"list","data":[...]} 形态，并**保留免费层**（2026-09-30 起免费层可直连，
+// 见文件头更正：出站补 bash/read 占位工具即可）。
+func TestOpenCodeFetchModelsKeepsAll(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			t.Errorf("路径 = %q, want /models", r.URL.Path)
@@ -202,9 +273,9 @@ func TestOpenCodeFetchModelsFiltersFree(t *testing.T) {
 	for _, m := range infos {
 		got = append(got, m.ID)
 	}
-	want := []string{"glm-5.3-flash", "kimi-k3"}
+	want := []string{"big-pickle", "mimo-v2.5-free", "glm-5.3-flash", "kimi-k3"}
 	if len(got) != len(want) {
-		t.Fatalf("infos = %v, want %v（免费层必须被剔）", got, want)
+		t.Fatalf("infos = %v, want %v（免费层必须保留）", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {

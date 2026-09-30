@@ -732,6 +732,11 @@ type Client struct {
 	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
 	ChatBaseZCode string
 
+	// ChatBaseKilo Kilo Code（api.kilo.ai）生产者的上游 base 覆盖。
+	// 空 = 内置缺省 https://api.kilo.ai/api/openrouter（见 kilo.go）。
+	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
+	ChatBaseKilo string
+
 	// ChatBaseOpenCode OpenCode（Zen / Go）生产者的上游 base 覆盖。
 	// 空 = 内置缺省 https://opencode.ai/zen/v1（见 opencode.go）。
 	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
@@ -1094,10 +1099,17 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		return c.zcodeChatStreamContext(ctx, a, body, meta)
 	}
 	// opencode（Zen / Go）生产者同走独立通道：base/路径/头组/分类全换，请求体几乎
-	// 原样透传（唯一改写是 stream 强制 true，见 opencodeForceStream）。免费层直连
-	// 必 403，已在适配器层剔除（见 opencode.go 文件头）。
+	// 原样透传（唯一改写是 stream 强制 true，见 opencodeForceStream）。免费层由
+	// 「stream=true + 补 bash/read 占位工具」两条闸门放行（见 opencodeInjectFreeTools
+	// 与 opencode.go 文件头 2026-09-30 更正）。
 	if c.opencodeOn(a) {
 		return c.opencodeChatStreamContext(ctx, a, body, meta)
+	}
+	// kilo 生产者同走独立通道：base/路径/头组/分类全换，请求体几乎原样透传
+	// （唯一改写是 stream 强制 true，见 kiloForceStream）。Kilo 是匿名免费通道，
+	// 无需补工具、无需 session 头（见 kilo.go 文件头实测）。
+	if c.kiloOn(a) {
+		return c.kiloChatStreamContext(ctx, a, body, meta)
 	}
 	prepared := c.prepareBody(body, a.Realm(), a.UID, meta.ConversationID)
 	if c.globalOn(a) {

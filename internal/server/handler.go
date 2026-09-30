@@ -368,7 +368,14 @@ func (h *Handler) resolveModel(model string) (realm, bare string) {
 // 落地——客户端连的就是「ZCode 专用口」，它写裸名 glm-4.6 不可能是想打 WorkBuddy。
 // 那种情况下再回 workbuddy 等于把这个口废掉（请求必被出口范围检查挡下）。
 func (h *Handler) resolveRoute(model string) (realm, producer, bare string) {
-	realm, producer, bare = resolveModelPrefixed(model, h.outputCfg().ModelPrefix)
+	// 先剥 realm/producer 前缀，**但先不剥费率后缀**——上游模型名自身就可能以 "-free"
+	// 结尾（opencode 免费层：mimo-v2.6-flash-free 等），无条件剥会改成不存在的名字。
+	// 后缀剥不剥交给 reconcileRateSuffix 按目录裁决（见下）。
+	realm, producer, bare = resolveModelRoute(model)
+	if prefix := h.outputCfg().ModelPrefix; prefix != "" {
+		bare = strings.TrimPrefix(bare, prefix)
+	}
+	bare = h.reconcileRateSuffix(bare, realm, producer)
 	if producer == "" {
 		if owner, ambiguous := h.modelOwnerEx(bare); owner != "" {
 			producer = owner
@@ -379,6 +386,69 @@ func (h *Handler) resolveRoute(model string) (realm, producer, bare string) {
 		}
 	}
 	return realm, producer, bare
+}
+
+// reconcileRateSuffix 决定是否剥掉入站模型名尾部的费率后缀（"-free" / "-x<数字>"）。
+// 入参 bare 是**未剥后缀**的裸名（realm/producer 前缀已剥）。
+//
+// 为什么要按目录裁决：resolveModelPrefixed 为了「客户端拿带后缀的名字回传还能路由」
+// 会无条件剥尾巴，但上游模型名自身就可能以 "-free" 结尾（opencode 免费层：
+// mimo-v2.6-flash-free 等）。无条件剥会把合法模型名改成不存在的名字
+// （mimo-v2.6-flash）→ 上游 400 Model is unavailable，并被误标池级死模型。
+//
+// 判据：先算出「剥了尾巴」的候选裸名 stripped，再看它是否出现在对应上游目录里
+// （workbuddy CN / zcode / opencode / global）。在目录里 → 认它是我们加的费率后缀，剥；
+// 不在 → 保留原串（上游模型名自带的尾巴）。查目录只读 1h 缓存，不额外打上游。
+func (h *Handler) reconcileRateSuffix(bare, realm, producer string) string {
+	stripped := StripRateSuffix(bare)
+	if stripped == bare || stripped == "" {
+		return bare // 没有可剥的尾巴
+	}
+	// 原串本身就在目录里 → 它是上游真实模型名（尾巴是自带的，不是我们加的），保留。
+	// 这条必须先判：jev-1.13-free 与 jev-1.13 在 zen 目录里都存在，若先看 stripped
+	// 会把用户点名要的 -free 版本错路由到另一个模型。
+	if h.modelKnown(realm, producer, bare) {
+		return bare
+	}
+	// 原串不在目录、剥完的候选在目录里 → 尾巴是我们加的费率后缀，剥。
+	if h.modelKnown(realm, producer, stripped) {
+		return stripped
+	}
+	// 两个都不在目录（目录为空 / 尚未拉取 / 自定义模型）：回落到旧行为「剥」，
+	// 保证「客户端拿带费率后缀的名字回传」这一既有契约不因目录缺失而失效。
+	return stripped
+}
+
+// modelKnown 该裸名是否出现在对应域/来源的上游目录里（含 global）。producer 为空表示
+// 未知来源，则四家目录都查一遍。
+func (h *Handler) modelKnown(realm, producer, bare string) bool {
+	if bare == "" {
+		return false
+	}
+	if realm == "global" {
+		return containsModelID(h.cfg.Upstream.GlobalModelInfosSnapshot(), bare)
+	}
+	if producer == "" || producer == "workbuddy" {
+		if containsModelID(h.fetchDynamicModels(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerZCode {
+		if containsModelID(h.fetchZCodeCatalog(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerOpenCode {
+		if containsModelID(h.fetchOpenCodeCatalog(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerKilo {
+		if containsModelID(h.fetchKiloCatalog(), bare) {
+			return true
+		}
+	}
+	return false
 }
 
 // singleProducer 该口恰好只服务一家时返回它（用于消解裸名的歧义路由，见 resolveRoute）。
@@ -569,8 +639,8 @@ func (h *Handler) modelList() []map[string]any {
 	}
 	// opencode（Zen）模型名单：与 zcode 段同构——从号池里任一健康 opencode 号实时拉
 	// 目录（1h 缓存），modelIDFor 带 "opencode" 段，客户端整串回传即路由固定到
-	// opencode 号池（与 resolveModelRoute 对称）。免费层模型已在 FetchOpenCodeModels
-	// 里剔除（直连必 403 FreeTierError，见 upstream/opencode.go 文件头）。
+	// opencode 号池（与 resolveModelRoute 对称）。免费层模型也在列（2026-09-30 起可直连）
+	// 见 upstream/opencode.go 文件头更正。
 	var opencodeModels []upstream.ModelInfo
 	if h.producerAllowed(upstream.ProducerOpenCode) {
 		opencodeModels = h.fetchOpenCodeCatalog()
@@ -587,6 +657,33 @@ func (h *Handler) modelList() []map[string]any {
 			"object":   "model",
 			"created":  1753600000,
 			"owned_by": upstream.ProducerOpenCode,
+		}
+		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
+		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+			entry["max_output_tokens"] = mo
+		}
+		entry = h.applyModelInfoFields(entry, mi)
+		out = append(out, entry)
+	}
+	// kilo（Kilo Code 匿名免费层）模型名单：与前面几段同构——目录实时从上游拉
+	// （1h 缓存），modelIDFor 带 "kilo" 段，客户端整串回传即路由固定到 kilo 段。
+	// Kilo 没有账号：目录拉取用池里那条匿名占位号出去（见 internal/source/kilo.go）。
+	var kiloModels []upstream.ModelInfo
+	if h.producerAllowed(upstream.ProducerKilo) {
+		kiloModels = h.fetchKiloCatalog()
+	}
+	for _, mi := range kiloModels {
+		if !h.publishAllows(published, "cn", upstream.ProducerKilo, mi.ID) {
+			continue
+		}
+		if h.modelDead.active("cn", upstream.ProducerKilo, mi.ID) {
+			continue
+		}
+		entry := map[string]any{
+			"id":       h.modelIDFor("cn", upstream.ProducerKilo, mi.ID, mi.Credits),
+			"object":   "model",
+			"created":  1753600000,
+			"owned_by": upstream.ProducerKilo,
 		}
 		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
 		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
@@ -744,6 +841,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		{"workbuddy", h.fetchDynamicModels()},
 		{upstream.ProducerZCode, h.fetchZCodeCatalog()},
 		{upstream.ProducerOpenCode, h.fetchOpenCodeCatalog()},
+		{upstream.ProducerKilo, h.fetchKiloCatalog()},
 	} {
 		for _, mi := range g.infos {
 			if mi.ID == "" {
@@ -983,8 +1081,8 @@ func (h *Handler) fetchZCodeCatalog() []upstream.ModelInfo {
 }
 
 // opencodeCatalogCache OpenCode（Zen）上游模型目录缓存：1h TTL + 5min 负缓存，
-// 与 zcodeCatalogCache 同形（纯动态，无静态兜底）。注意这里缓存的是**已过滤掉免费层**
-// 的清单（见 upstream.FetchOpenCodeModels）：免费层直连必 403，列出去等于承诺能调。
+// 与 zcodeCatalogCache 同形（纯动态，无静态兜底）。缓存的是 Zen 全量清单（含免费层）
+// 见 upstream.FetchOpenCodeModels。
 var opencodeCatalogCache struct {
 	sync.RWMutex
 	infos    []upstream.ModelInfo
@@ -1050,6 +1148,72 @@ func (h *Handler) fetchOpenCodeCatalog() []upstream.ModelInfo {
 	return nil
 }
 
+// kiloCatalogCache Kilo 上游免费模型目录缓存：1h TTL + 5min 负缓存，与
+// opencodeCatalogCache 同形（纯动态，无静态兜底）。缓存的是 /gateway/models 过滤
+// 出 pricing 双零之后的清单（见 upstream.FetchKiloModels）。
+var kiloCatalogCache struct {
+	sync.RWMutex
+	infos    []upstream.ModelInfo
+	fetched  time.Time
+	lastFail time.Time
+}
+
+const kiloCatalogTTL = time.Hour
+
+// kiloCatalogMaxAttempts 目录拉取最多试几个号（与 zcode / opencode 同口径）。
+const kiloCatalogMaxAttempts = 2
+
+// fetchKiloCatalog 从池中那条 kilo 匿名号拉上游目录，缓存 1h。
+// 失败只进负缓存，不 NoteError——列模型失败 ≠ chat 通道坏了（与 zcode/opencode 同）。
+func (h *Handler) fetchKiloCatalog() []upstream.ModelInfo {
+	kiloCatalogCache.RLock()
+	if len(kiloCatalogCache.infos) > 0 && time.Since(kiloCatalogCache.fetched) < kiloCatalogTTL {
+		out := kiloCatalogCache.infos
+		kiloCatalogCache.RUnlock()
+		return out
+	}
+	if !kiloCatalogCache.lastFail.IsZero() && time.Since(kiloCatalogCache.lastFail) < modelsFetchFailCooldown {
+		kiloCatalogCache.RUnlock()
+		return nil
+	}
+	kiloCatalogCache.RUnlock()
+
+	tried := map[string]bool{}
+	var lastErr error
+	attempts := 0
+	for attempts < kiloCatalogMaxAttempts {
+		acct := h.cfg.Pool.PickExcludingForProducerRealm(tried, "", upstream.ProducerKilo, "")
+		if acct == nil {
+			break
+		}
+		attempts++
+		tried[acct.UID] = true
+		infos, err := h.cfg.Upstream.FetchKiloModels(context.Background(), acct)
+		if err == nil && len(infos) > 0 {
+			kiloCatalogCache.Lock()
+			kiloCatalogCache.infos = infos
+			kiloCatalogCache.fetched = time.Now()
+			kiloCatalogCache.lastFail = time.Time{}
+			kiloCatalogCache.Unlock()
+			return infos
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("上游返回空清单")
+		}
+	}
+	if attempts == 0 {
+		// 池里没有 kilo 号 = 这家还没接进来，不写失败缓存（与 zcode/opencode 同口径）。
+		return nil
+	}
+	log.Printf("WARN: [server] kilo 模型目录拉取失败（已试 %d 个号）：%v", attempts, lastErr)
+	kiloCatalogCache.Lock()
+	kiloCatalogCache.lastFail = time.Now()
+	kiloCatalogCache.Unlock()
+	return nil
+}
+
 // modelOwner 推断某裸模型名该走哪家上游。返回 "" = 不唯一/不确定，按 workbuddy。
 //
 // 判据只有一条：**zcode 目录里有、workbuddy 目录里没有** → zcode。两家都有 →
@@ -1078,6 +1242,8 @@ func (h *Handler) modelOwnerEx(bare string) (producer string, ambiguous bool) {
 	inWB := containsModelID(h.fetchDynamicModels(), bare)
 	inZC := len(zc) > 0 && containsModelID(zc, bare)
 	inOC := len(oc) > 0 && containsModelID(oc, bare)
+	kl := h.fetchKiloCatalog()
+	inKL := len(kl) > 0 && containsModelID(kl, bare)
 	// 数「目录里有这个裸名的家数」：workbuddy 也是一家（与接入 opencode 之前的口径
 	// 一致——那时 inWB&&inZC 就判歧义）。0 家 → 按 workbuddy（默认，不算歧义）；
 	// 1 家且是 workbuddy → 同样按 workbuddy；1 家是别家 → 确定归它；≥2 家 → 真歧义。
@@ -1093,6 +1259,10 @@ func (h *Handler) modelOwnerEx(bare string) (producer string, ambiguous bool) {
 	if inOC {
 		n++
 		owner = upstream.ProducerOpenCode
+	}
+	if inKL {
+		n++
+		owner = upstream.ProducerKilo
 	}
 	switch {
 	case n == 0:

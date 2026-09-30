@@ -52,7 +52,7 @@ func isRealmPrefix(s string) bool { return s == "cn" || s == "global" }
 // isProducerPrefix 生产者前缀枚举。与 internal/source 的 Producer* 常量同值
 // （两处同值由 server 侧测试锚定，见 resolve_model_test.go）。
 func isProducerPrefix(s string) bool {
-	return s == "workbuddy" || s == "zcode" || s == "qoder" || s == "opencode"
+	return s == "workbuddy" || s == "zcode" || s == "qoder" || s == "opencode" || s == "kilo"
 }
 
 // ResolveModel 是 resolveModel 的导出面（跨包调用）。

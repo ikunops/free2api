@@ -162,6 +162,15 @@ func (h *Handler) collectCredits() []creditRow {
 		// zcode 走另一条链路：没有 billing 积分接口，只有套餐权益（plans/balances）。
 		// 混用 workbuddy 的 UserResourceFull 只会拿到一个光秃秃的 401——那正是
 		// 管理页上"余额查不到 + 一整页 HTML"的来源。
+		// kilo 是匿名免费通道：没有账号、没有 billing 接口、没有到期时间，也无需探活
+		// （上游放行即用）。这里给一行恒定的「免费通道」说明，不走下面 workbuddy 的
+		// UserResourceFull（那会拿它的占位 token 去打 workbuddy 域，必然 401）。
+		if st.Producer == source.ProducerKilo {
+			out[i].OK = true
+			out[i].Note = "匿名免费通道：无积分/额度概念，上游按模型 pricing 免费放行"
+			out[i].CredSource = "内置"
+			continue
+		}
 		if st.Producer == source.ProducerZCode {
 			plan := zcreds[st.UID]
 			wg.Add(1)

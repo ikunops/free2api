@@ -102,6 +102,9 @@ func (h *Handler) adminSourceCandidates(w http.ResponseWriter, r *http.Request) 
 		cands, err = source.ListWBSwitchMarked(h.wbLedgerPath(), h.cfg.AuthDir)
 	case "auths":
 		cands, err = source.ListAuths(h.cfg.AuthDir)
+	case "kilo":
+		// Kilo Code：免费层无需账号，合成一条「匿名」候选即可。
+		cands, err = source.KiloCandidates(h.cfg.AuthDir)
 	case "opencode":
 		// OpenCode（CLI/TUI）：账号来自本机 ~/.local/share/opencode/auth.json，
 		// 只取 OpenCode 自家 provider（opencode=Zen / opencode-go）。第三方 provider
@@ -335,6 +338,15 @@ func (h *Handler) adminSourceImport(w http.ResponseWriter, r *http.Request) {
 			opt.Producer = source.ProducerOpenCode
 		}
 		res, err = source.ImportOpenCodeAs(h.openCodeAuthPath(), h.cfg.AuthDir, body.IDs, opt)
+	case "kilo":
+		// Kilo 免费层无需账号：导入的就是那条匿名占位号（幂等）。
+		if opt.Method == "" {
+			opt.Method = source.MethodApp
+		}
+		if opt.Producer == "" {
+			opt.Producer = source.ProducerKilo
+		}
+		res, err = source.ImportKilo(h.cfg.AuthDir, body.IDs, opt)
 	case "import", "paste":
 		if strings.TrimSpace(body.Text) == "" {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "text is required for kind=import")

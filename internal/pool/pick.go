@@ -409,6 +409,8 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 //
 //	workbuddy → {chatBase}/v2/chat/completions（桌面端头族，见 upstream/headers.go）
 //	zcode     → https://open.bigmodel.cn/api/paas/v4/chat/completions
+//	kilo      → https://api.kilo.ai/api/openrouter/chat/completions
+//	            （匿名免费通道，无需 key，见 upstream/kilo.go）
 //	            （智谱账号自带的 49 位 id.secret，Bearer 即可，见 upstream/zcode.go）
 //
 // qoder 仍未接入：这类号可以进池、管理页要看得到、余额也要能查，但选号一律跳过
@@ -417,7 +419,7 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 // 空串（历史凭证没有台账标注）按 workbuddy 处理，保证零回归。
 // 再接入一家上游时改这一个函数即可放开。
 func servableProducer(producer string) bool {
-	return producer == "" || producer == "workbuddy" || producer == "zcode" || producer == "opencode"
+	return producer == "" || producer == "workbuddy" || producer == "zcode" || producer == "opencode" || producer == "kilo"
 }
 
 // producerMatch 报告账号是否属于请求指定的生产者。非空时要求精确匹配台账/凭证上的

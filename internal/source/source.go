@@ -332,6 +332,7 @@ func Detect(wbSwitchPath, zcodeDir, authDir string) []Kind {
 		},
 		detectZCodeSwitch(zcodeDir),
 		detectOpenCode(),
+		detectKilo(),
 		detectAuths(authDir),
 	}
 	return out
@@ -370,7 +371,24 @@ func detectOpenCode() Kind {
 		}
 	}
 	k.Note = "读到 " + itoa(len(accounts)) + " 条自家凭据（OpenCode Zen " + itoa(zen) + " · OpenCode Go " + itoa(goN) + "）；" +
-		"Zen 付费模型可直连反代；免费层有服务端闸（只能从 OpenCode 本体发起，直连 403 FreeTierError），本网关不反代免费层"
+		"Zen 付费层与免费层都可直连反代（免费层出站自动补 bash/read 占位工具）"
+	return k
+}
+
+// detectKilo Kilo Code 的取源结论。Kilo 不需要账号（匿名可用），所以恒定可用，
+// 计数按「号池里有没有那条匿名占位号」给 0/1——没有就是「还没接进来」。
+func detectKilo() Kind {
+	k := Kind{
+		ID:      "kilo",
+		Name:    "Kilo Code（匿名免费层）",
+		Path:    "",
+		Methods: []string{"app"},
+		Method:  MethodApp,
+	}
+	k.Available = true
+	k.Count = 1
+	k.Usable = 1
+	k.Note = "无需账号：Kilo 的 OpenAI 兼容网关对匿名调用直接放行；免费层按上游目录 pricing 双零判定，勾选后可反代"
 	return k
 }
 
