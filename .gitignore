@@ -44,6 +44,10 @@ PLAN.md
 SPEC.md
 docs/
 
-# 设计/计划文档（但 README.md 必须进版本库）
+# 设计/计划文档（但 README.md 与 go:embed 的提示词必须进版本库）
 *.md
 !README.md
+# go:embed 的默认系统提示词。被上面的 *.md 误伤过：文件没进版本库，
+# 本机因为有工作区副本照样能编，CI 全新 clone 则直接
+# `pattern defaultprompt.md: no matching files found` 编译失败。
+!internal/prompt/defaultprompt.md
