@@ -103,6 +103,15 @@ type Config struct {
 	// ExpiringSoon 快过期积分窗口（config expiring_soon_days，与调度器签到用同一值）。
 	// 仅供 /admin/credits 把余额里「窗口内就要作废」的部分单独标出来；0 = 不分桶。
 	ExpiringSoon time.Duration
+
+	// Shutdown 触发进程优雅停机（由 cmd/server 注入 ctx 的 cancel）。
+	//
+	// 为什么要有这个端点：桌面控制台（cmd/desktop）可能代理到一个**别的进程**起的
+	// 网关（计划任务 / 命令行 / 另一个 exe）。用户在那个窗口点「停止网关」的意图是
+	// 「把网关停了」，而不是「解除代理」。走 HTTP 让网关自己 cancel 掉生命周期，
+	// 比在外部猜 PID、发控制台信号干净得多：落盘、Flush、关监听全走同一条路径。
+	// nil 时不注册该路由。
+	Shutdown func()
 }
 
 // notFoundCooldown 上游 404 的固定短冷却时长。
@@ -210,6 +219,11 @@ func NewHandler(cfg Config) *Handler {
 		// 定时任务可见性（读 config.json schedule 段）+ 开关（写回配置，重启生效）。
 		h.mux.HandleFunc("GET /admin/schedule", h.withLocalOrAuth(h.adminScheduleGet))
 		h.mux.HandleFunc("POST /admin/schedule", h.withLocalOrAuth(h.adminSchedulePut))
+		// 优雅停机（桌面控制台的「停止网关」按钮走这里）。
+		// 只在注入了 Shutdown 时才注册：嵌入式用法没生命周期可停，不该暴露这个口子。
+		if h.cfg.Shutdown != nil {
+			h.mux.HandleFunc("POST /admin/shutdown", h.withLocalOrAuth(h.adminShutdown))
+		}
 	}
 	// 内嵌中文控制台：GET /{$} 是精确根路径（Go 1.22 mux 语法），
 	// 不用 "/" 以免变成 catch-all 把 404 语义吃掉。

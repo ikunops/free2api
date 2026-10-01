@@ -1,4 +1,4 @@
-package main
+package gateway
 
 import (
 	"path/filepath"
@@ -25,7 +25,7 @@ func realmPool(t *testing.T) *pool.Pool {
 // 带前缀的模型名按 realm 过滤可用账号，裸名走 cn。
 func TestRealmAwareAvailableForModel(t *testing.T) {
 	p := realmPool(t)
-	fn := realmAwareAvailableForModel(p, nil)
+	fn := RealmAwareAvailableForModel(p, nil)
 
 	cases := []struct {
 		model string
@@ -50,7 +50,7 @@ func TestRealmAwareAvailableForModelGlobalDisabled(t *testing.T) {
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "g1", Domain: "www.workbuddy.ai"})
-	fn := realmAwareAvailableForModel(p, nil)
+	fn := RealmAwareAvailableForModel(p, nil)
 
 	// 开关关闭 → 该 global 账号 Realm()=="cn"（逃生门），对 global: 前缀不可见。
 	if got := fn("global:gpt-5.4"); len(got) != 0 {
@@ -71,7 +71,7 @@ func TestRealmAwareAvailableForModelDefaultOnCNZeroRegression(t *testing.T) {
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "cn1", Domain: "www.codebuddy.cn"})
 	p.Add(&auth.Auth{UID: "cn2", Domain: ""}) // 空 domain → cn（老 CN 凭证）
-	fn := realmAwareAvailableForModel(p, nil)
+	fn := RealmAwareAvailableForModel(p, nil)
 
 	cases := []struct {
 		model string
@@ -105,11 +105,11 @@ func TestModelJSONPath(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		// 归一化 got 侧：modelJSONPath 走 filepath.Join，Windows 产出反斜杠；
+		// 归一化 got 侧：ModelJSONPath 走 filepath.Join，Windows 产出反斜杠；
 		// want 本就是正斜杠字面量（跨平台规范形式），对 want 做 ToSlash 是无操作，
 		// 反斜杠会原样留在 got 里导致断言在 Windows 必然失败。
-		if got := filepath.ToSlash(modelJSONPath(c.state)); got != c.want {
-			t.Errorf("modelJSONPath(%q)=%q want %q", c.state, got, c.want)
+		if got := filepath.ToSlash(ModelJSONPath(c.state)); got != c.want {
+			t.Errorf("ModelJSONPath(%q)=%q want %q", c.state, got, c.want)
 		}
 	}
 }
@@ -125,7 +125,7 @@ func TestRealmAwareAvailableForModelWithOutputPrefix(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set output: %v", err)
 	}
-	fn := realmAwareAvailableForModel(p, out)
+	fn := RealmAwareAvailableForModel(p, out)
 
 	cases := []struct {
 		model string
@@ -154,8 +154,8 @@ func TestOutputJSONPath(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		if got := filepath.ToSlash(outputJSONPath(c.state)); got != c.want {
-			t.Errorf("outputJSONPath(%q)=%q want %q", c.state, got, c.want)
+		if got := filepath.ToSlash(OutputJSONPath(c.state)); got != c.want {
+			t.Errorf("OutputJSONPath(%q)=%q want %q", c.state, got, c.want)
 		}
 	}
 }

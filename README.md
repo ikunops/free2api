@@ -329,6 +329,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o free2api ./cmd/server
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o signin_bin ./cmd/signin
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o login ./cmd/login
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o credit ./cmd/credit
+# Windows 桌面控制台（WebView2；其他平台跳过）
+GOOS=windows CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o free2api-desktop.exe ./cmd/desktop
 ```
 
 #### Windows 原生运行（无需 Docker）
@@ -343,6 +345,7 @@ go build -trimpath -ldflags="-s -w" -o free2api.exe ./cmd/server
 go build -trimpath -ldflags="-s -w" -o login.exe ./cmd/login
 go build -trimpath -ldflags="-s -w" -o signin_bin.exe ./cmd/signin
 go build -trimpath -ldflags="-s -w" -o credit.exe ./cmd/credit
+go build -trimpath -ldflags="-s -w" -o free2api-desktop.exe ./cmd/desktop
 ```
 
 使用仓库自带脚本在后台启停并查看状态：
@@ -414,6 +417,43 @@ Task Scheduler 会直接拒收 GroupId 那种写法（报 `the task XML contains
 非 ASCII 字符在别的语言环境下会被读坏，脚本坏了看门狗就静默失效。`scripts\check-launcher-files.py`
 负责检查这一点，`scripts\install-keepalive.cmd full` 会把它装成 pre-commit 钩子。
 
+
+#### 桌面控制台（Windows，单文件 exe）
+
+不想开浏览器、也不想碰命令行时，用桌面程序：一个 exe，窗口里直接管网关。
+
+```powershell
+go build -trimpath -ldflags="-s -w" -o free2api-desktop.exe ./cmd/desktop
+```
+
+把 `free2api-desktop.exe` 和 `config.json`、`auths\`、`data\` 放同一个目录，双击即可。
+程序的工作目录会切到 `config.json` 所在目录，所以相对路径的 `auth_dir` / `state_file`
+照常成立——整个文件夹拷到另一台机器就能跑。
+
+窗口里的**概览页顶部有「网关开关」**，三种状态分别说话：
+
+- **运行中**：网关由本窗口托管，监听 `config.json` 里的端口。关窗口不会停掉它，
+  想停就点「停止网关」。
+- **运行中（外部进程）**：端口上已经有一个网关在跑（计划任务 / 命令行 / 另一个 exe）。
+  这个窗口只当控制台用；点「停止网关」会让**那个进程**优雅停机（走
+  `POST /admin/shutdown`，落盘 / Flush / 关监听与 Ctrl+C 完全同路；端点不可达时
+  退回进程级 CTRL_BREAK / TerminateProcess，并且只肯停映像名含 `free2api` 的进程）。
+- **已停止**：点「启动网关」在当前进程里把它拉起来，不需要另开 exe。
+
+窗口用的是系统自带的 **Microsoft Edge WebView2**（Windows 10/11 默认预装）。
+没有运行时会弹窗提示，也可以退回无头模式：
+
+```powershell
+.\free2api-desktop.exe -headless -ctrl 7900
+# 然后浏览器打开 http://127.0.0.1:7900/management.html
+```
+
+控制台服务只监听回环地址，端口默认随机（`-ctrl` 可指定）。它把管理页直接发给浏览器、
+其余请求反向代理到网关端口，所以**网关停着的时候页面照样能打开**——不然用户就没地方
+点「启动」了。页面里会注入真实网关地址，显示的 Base URL 始终是网关端口，不是控制端口。
+
+> 桌面程序是 Windows 专属（依赖 WebView2）。其他平台用 `./cmd/server` 即可，
+> 两边共用同一份装配代码（`internal/gateway`），行为不会漂移。
 
 添加账号可使用配套管理面板，或在 Git Bash 中运行现有 `login.sh`（它还负责 CN
 首次签到以及 Global 注册地区/trial 流程；不建议只手工调用 `login.exe` 后跳过这些步骤）。

@@ -1,5 +1,5 @@
 // config.go 加载 JSON 配置 + 环境变量覆盖。
-package main
+package gateway
 
 import (
 	"encoding/json"

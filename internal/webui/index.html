@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Free2API · WorkBuddy 网关控制台</title>
+<title>Free2API · 网关控制台</title>
 <link rel="icon" href="data:,">
 <style>
 :root{
@@ -253,6 +253,14 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
 .chan-adv>summary::before{content:"\25B8";color:var(--fg3);font-size:10px}
 .chan-adv[open]>summary::before{content:"\25BE"}
 .chan-adv .chan-grid{margin-top:10px}
+/* 网关开关（只在桌面程序里出现）：一排「状态点 + 文案 + 按钮」，不用表格。 */
+.gwrow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.gwdot{width:10px;height:10px;border-radius:50%;flex:0 0 10px;background:#d4d4d0}
+.gwdot.on{background:var(--acc);box-shadow:0 0 0 4px var(--acc-bg)}
+.gwtext{flex:1;min-width:220px}
+.gwtext .t{font-size:14px;font-weight:600}
+.gwtext .d{font-size:12px;color:var(--fg3);margin-top:2px;line-height:1.6}
+.gwbtn{min-width:118px;justify-content:center;display:inline-flex;align-items:center;gap:6px}
 </style>
 </head>
 <body>
@@ -260,7 +268,7 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
   <aside class="side">
     <div class="brand">
       <div class="logo">Wb</div>
-      <div><b>Free2API</b><span>WorkBuddy 网关控制台</span></div>
+      <div><b>Free2API</b><span>网关控制台</span></div>
     </div>
     <nav id="nav"></nav>
     <div class="side-foot">
@@ -292,6 +300,12 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
 <script>
 "use strict";
 /* ---------- 基础工具 ---------- */
+/* 桌面程序（cmd/desktop）会把页面内嵌进自己的控制服务，并在 <head> 注入
+   window.__F2A_DESKTOP__ / window.__F2A_BASE__：前者决定要不要显示网关开关，
+   后者是真正的网关地址（控制服务端口是随机分配的，不能拿 location.origin 当网关）。
+   在浏览器里直接打开网关自己的管理页时这两个变量都不存在，行为与以前完全一致。 */
+const DESKTOP = !!window.__F2A_DESKTOP__;
+function gwBase(){ return window.__F2A_BASE__ || location.origin || ""; }
 const $  = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const ICON = {
@@ -382,6 +396,7 @@ const S = {
   candProbe: false, candBalance: false,
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
   modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false, onlyFree: false,
+  desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   stats: null, schedule: null, modeldead: null
@@ -488,7 +503,16 @@ function render(opt){
   if (l0) keepListTop = l0.scrollTop;
   var keepPageTop = window.scrollY || window.pageYOffset || 0;
   var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, stats: viewStats, runtime: viewRuntime, help: viewHelp }[S.tab] || viewOverview;
-  $("#view").innerHTML = fn();
+  var down = DESKTOP && S.desk && !(S.desk.running || S.desk.external);
+  if (down && S.tab !== "overview" && S.tab !== "help"){
+    $("#view").innerHTML = head("网关已停止", "这一页的数据由网关提供，先把它启动起来。") +
+      '<div class="card"><div class="gwrow"><span class="gwdot"></span>' +
+      '<div class="gwtext"><div class="t">没有可显示的数据</div>' +
+      '<div class="d">账号池、来源台账、输出配置都要问运行中的网关拿。启动后这一页会自动恢复。</div></div>' +
+      '<button class="pri gwbtn" data-action="gw-start">启动网关</button></div></div>';
+  } else {
+    $("#view").innerHTML = fn();
+  }
   // 折叠区摘要与发布清单计数从刚画出来的 DOM 现算，保证跟勾选状态一致。
   if (S.tab === "output") $$("[data-chan-row]").forEach(function(x){ updChanRow(x.getAttribute("data-chan-row")); });
   renderNav();
@@ -502,6 +526,12 @@ function render(opt){
 function updateSvcDot(){
   var dot = $("#svcDot"), t = $("#svcText");
   if (!dot || !t) return;
+  // 桌面程序里网关可能是被用户自己关掉的：这时「未连接」会误导成故障，得说清楚。
+  if (DESKTOP && S.desk && !(S.desk.running || S.desk.external)){
+    dot.classList.add("off");
+    t.textContent = S.desk.starting ? "网关正在启动…" : "网关已停止";
+    return;
+  }
   if (S.health){
     dot.classList.toggle("off", !S.health.healthy);
     t.textContent = S.health.healthy ? ("网关正常 · " + S.health.healthy + "/" + S.health.total + " 可用") : "网关在线 · 无可用账号";
@@ -525,12 +555,18 @@ function viewOverview(){
   var total = st ? st.total : 0, healthy = st ? st.healthy : 0;
   var cooling = st ? st.cooling : 0, disabled = st ? st.disabled : 0;
   var title = "正在连接网关…", sub = "正在读取账号池与来源信息。";
+  var dsk = S.desk || null;
+  var dskRunning = !!(dsk && (dsk.running || dsk.external));
+  if (DESKTOP && dsk && !dskRunning){
+    title = "网关已停止";
+    sub = dsk.error ? ("上次启动失败：" + dsk.error) : "网关现在不承接任何请求。在下面点「启动网关」即可恢复。";
+  }
   if (st){
     if (total === 0){ title = "还没有账号"; sub = "从「获取源」把本机登录态、switch 账本或别的机器导出的文件加进来，网关才有号可用。"; }
     else if (healthy === 0){ title = "账号全部不可用"; sub = "池里有 " + total + " 个账号，但当前没有一个能接请求：全部在冷却 / 熔断 / 已禁用。"; }
     else { title = "网关运行中"; sub = "有 " + healthy + " 个账号可立即承接请求，共 " + total + " 个。"; }
   }
-  var base = location.origin || "";
+  var base = gwBase();
   var oc = (S.src && S.src.origin_counts) || {};
   var annotated = METHOD_ORDER.reduce(function(a, k){ return a + (oc[k] || 0); }, 0);
   var stats = [
@@ -540,6 +576,12 @@ function viewOverview(){
     { k: "输出模型", v: m.length, n: m.length ? "GET /v1/models" : "需要健康账号" }
   ];
   var html = head(title, sub);
+  if (DESKTOP) html += gwCard(dsk, dskRunning);
+  if (DESKTOP && dsk && !dskRunning){
+    return html + card("网关停着的时候", "",
+      '<div class="sub" style="margin:0">账号池、来源台账、发布清单都存在磁盘上，网关一停只是不再承接请求，' +
+      '数据不会丢。把网关启动起来，这一页就会恢复成完整的账号与模型视图。</div>');
+  }
   html += '<div class="grid4">' + stats.map(function(s){
     return '<div class="stat"><div class="k">' + esc(s.k) + '</div><div class="v">' + esc(s.v) +
       '</div><div class="n">' + esc(s.n) + '</div></div>';
@@ -607,6 +649,39 @@ function viewOverview(){
       ["模型列表", copySpan(base + "/v1/models"), true]
     ]));
   return html;
+}
+
+/* gwCard 网关开关：只在桌面程序里画。三种状态分开说话，别让用户猜——
+   运行中（本窗口宿主）/ 运行中（别的进程，本窗口只当控制台）/ 已停止。 */
+function gwCard(d, running){
+  var busy = !!(d && d.starting);
+  var external = !!(d && d.external && !(d && d.running));
+  var state, desc;
+  if (busy){
+    state = "正在启动…";
+    desc = "正在装配号池与监听端口，通常一两秒。";
+  } else if (running && external){
+    state = "运行中（外部进程）";
+    desc = "端口上已经有一个网关在跑（例如计划任务拉起来的）。这个窗口现在只当控制台用，" +
+           "点「停止网关」会停掉那个进程，之后可以用这里的「启动网关」重新拉起。";
+  } else if (running){
+    state = "运行中";
+    desc = "网关由本窗口托管，监听 " + esc((d && d.listen) || "") + "。关掉窗口不会停掉它——" +
+           "想停就点右边按钮。";
+  } else {
+    state = "已停止";
+    desc = "网关当前不承接请求。点「启动网关」在当前进程里把它拉起来，不需要另开 exe。";
+  }
+  var btn = running
+    ? '<button class="pri gwbtn" data-action="gw-stop"' + (busy ? " disabled" : "") + '>停止网关</button>'
+    : '<button class="pri gwbtn" data-action="gw-start"' + (busy ? " disabled" : "") + '>启动网关</button>';
+  var err = (d && d.error) ? '<div class="hint" style="color:#b4453f;margin-top:8px">' + esc(d.error) + '</div>' : "";
+  return card("网关开关", "整个 free2api 的启停都在这里，不用去碰计划任务或命令行。",
+    '<div class="gwrow">' +
+      '<span class="gwdot' + (running ? " on" : "") + '"></span>' +
+      '<div class="gwtext"><div class="t">' + esc(state) + '</div><div class="d">' + desc + '</div></div>' +
+      btn +
+    '</div>' + err);
 }
 
 /* ---------- 获取源 ---------- */
@@ -1608,7 +1683,7 @@ function viewOutput(){
   var o = S.out;
   if (!o) return head("输出 API", "正在读取输出配置…");
   var cfg = o.output || {};
-  var base = location.origin || "";
+  var base = gwBase();
   var models = S.models || [];
   var fmtOpts = fmtOptions(cfg.format);
   var rateOpts = rateOptions(cfg.rate_hint);
@@ -1950,6 +2025,38 @@ function viewHelp(){
   return html;
 }
 
+/* ---------- 桌面程序控制面 ---------- */
+/* loadDesktop 拉一次宿主状态。网关停着时普通 API 全部会失败，所以这个端点是
+   「停着也要能刷」的那一个：它走控制服务，不经过网关。 */
+async function loadDesktop(){
+  if (!DESKTOP) return;
+  try {
+    var r = await fetch("/__desktop/state", { cache: "no-store" });
+    S.desk = r.ok ? await r.json() : null;
+  } catch (e) { S.desk = null; }
+}
+/* deskCtl 启停网关。走控制服务的 POST，成功后整页重刷——网关刚起来时
+   /status 之类的数据还是空的，让 refreshAll 那一轮去把它们补齐。 */
+async function deskCtl(op){
+  var label = op === "start" ? "启动" : "停止";
+  try {
+    var r = await fetch("/__desktop/gateway/" + op, { method: "POST" });
+    var j = null;
+    try { j = await r.json(); } catch (e) {}
+    if (!r.ok){
+      var m = (j && j.error && j.error.message) || ("HTTP " + r.status);
+      toast("err", label + "失败：" + m, 9000);
+    } else {
+      toast("ok", "网关已" + label, 2600);
+    }
+  } catch (e) {
+    toast("err", "控制服务连不上：" + e.message, 9000);
+  }
+  await loadDesktop();
+  await refreshAll(true);
+  render();
+}
+
 /* ---------- 数据加载 ---------- */
 async function loadHealth(){
   try { S.health = await api("/healthz"); } catch (e) { S.health = null; }
@@ -2026,7 +2133,7 @@ async function refreshAll(silent){
   var err = null;
   var jobs = [
     loadStatus(), loadSources(), loadOrigins(), loadOutput(), loadModels(), loadHealth(),
-    loadCredits(!first)
+    loadCredits(!first), loadDesktop()
   ];
   if (S.stats) jobs.push(loadStats());
   if (S.schedule || S.modeldead) jobs.push(loadRuntime());
@@ -2419,6 +2526,8 @@ async function actOn(t){
   if (t.hasAttribute("data-copy") && !t.hasAttribute("data-action")){ copyText(t.getAttribute("data-copy")); return; }
   var act = t.getAttribute("data-action");
   if (act){
+    if (act === "gw-start") return deskCtl("start");
+    if (act === "gw-stop") return deskCtl("stop");
     if (act === "cands") return openCands(t.getAttribute("data-kind"));
     if (act === "quick"){
       var qk = t.getAttribute("data-kind") || "wb-switch";
@@ -2597,6 +2706,7 @@ document.addEventListener("click", function(ev){
   $("#btnRefresh").innerHTML = svg("refresh");
   bind();
   renderNav();
+  await loadDesktop();
   render();
   await refreshAll(true);
   // 网关刚重启时模型池要几秒才从上游拉回来，这一轮会拿到空表，
@@ -2606,6 +2716,16 @@ document.addEventListener("click", function(ev){
   }
   setInterval(function(){ loadHealth(); }, 15000);
   setInterval(function(){ loadStatus().then(function(changed){ if (changed) render(); }); }, 30000);
+  // 桌面程序：宿主状态轮询。网关被计划任务之类的外部动作停掉/拉起时，页面不用手动刷新。
+  if (DESKTOP){
+    setInterval(function(){
+      var before = JSON.stringify(S.desk);
+      loadDesktop().then(function(){
+        if (JSON.stringify(S.desk) !== before) render();
+        else updateSvcDot();
+      });
+    }, 5000);
+  }
 })();
 </script>
 </body>

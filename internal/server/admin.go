@@ -237,3 +237,21 @@ func resetMessage(scope string, res pool.ResetResult) string {
 	}
 	return msg
 }
+
+// adminShutdown 优雅停机：先回 200 再触发停机。
+//
+// 顺序很重要——先写响应再 cancel。反过来的话，cancel 会立刻开始 srv.Shutdown，
+// 正在写的这个响应可能被掐掉，调用方看到的是"连接被重置"，分不清"停机已开始"
+// 还是"请求根本没到"。
+func (h *Handler) adminShutdown(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.Shutdown == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found", "本次启动没有可停机的生命周期")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "正在优雅停机"})
+	go func() {
+		// 留一点时间把上面的响应刷出去（TCP 层已写完，但客户端可能还没读完）。
+		time.Sleep(150 * time.Millisecond)
+		h.cfg.Shutdown()
+	}()
+}

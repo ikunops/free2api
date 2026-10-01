@@ -1,6 +1,6 @@
 // cost_explore_config_test.go pool.cost_explore_interval 配置测试（issue #136）：
 // 默认 30m / 文件覆盖 / "0" 关停 / 空值回落默认 / 非法值报错。
-package main
+package gateway
 
 import (
 	"os"
