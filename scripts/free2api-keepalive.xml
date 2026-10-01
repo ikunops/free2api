@@ -20,7 +20,7 @@
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <GroupId>S-1-5-32-545</GroupId>
+      <UserId>__USERID__</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>

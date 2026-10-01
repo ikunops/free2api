@@ -405,6 +405,11 @@ schtasks /delete /tn "\free2api-keepalive" /f
 2026-09-30 15:52:54  STOP gateway exited; child exit code = -1
 ```
 
+任务 XML 的 `<Principal>` 里，`InteractiveToken` **必须配 `<UserId>`，不能配 `<GroupId>`**：
+Task Scheduler 会直接拒收 GroupId 那种写法（报 `the task XML contains an unexpected node`），
+注册失败后宿主往往退回 `cmd.exe` 动作——那就又变回每分钟闪终端了。注册脚本用
+`__USERID__` 占位，安装时自动填当前用户 SID。`scripts\check-launcher-files.py` 会守住这一点。
+
 `keepalive.vbs` **必须保持纯 ASCII + CRLF**：`wscript.exe` 按系统 ANSI 代码页读取 `.vbs`，
 非 ASCII 字符在别的语言环境下会被读坏，脚本坏了看门狗就静默失效。`scripts\check-launcher-files.py`
 负责检查这一点，`scripts\install-keepalive.cmd full` 会把它装成 pre-commit 钩子。

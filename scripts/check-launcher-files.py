@@ -9,6 +9,11 @@ the watchdog either flash a window or die silently:
   2. keepalive.vbs and the task XML must use CRLF. cmd.exe and Task Scheduler
      are far happier with CRLF, and a mixed-EOL file is a classic "works on my
      machine" bug.
+  3. the task XML principal must pair InteractiveToken with UserId, not GroupId.
+     Task Scheduler rejects the GroupId form outright ("the task XML contains an
+     unexpected node"), so registration fails and the host falls back to a
+     cmd.exe action -- which is exactly the every-minute terminal flash this
+     whole launcher exists to prevent.
 
 Runs standalone (prints findings, exits 1 on failure) and from a pre-commit
 hook. Invoked by scripts/install-keepalive.cmd in 'full' mode.
@@ -46,11 +51,31 @@ def check(path, want_ascii):
     return problems
 
 
+def check_task_xml(path):
+    """Guard the principal that makes registration actually succeed."""
+    problems = []
+    if not os.path.exists(path):
+        problems.append("missing")
+        return problems
+    with open(path, "rb") as handle:
+        text = handle.read().decode("utf-8", "replace")
+    if "<GroupId>" in text:
+        problems.append(
+            "uses <GroupId>; InteractiveToken must pair with <UserId>, or Task "
+            "Scheduler rejects the XML and the host falls back to a cmd.exe "
+            "action (every-minute terminal flash)")
+    if "<UserId>__USERID__</UserId>" not in text:
+        problems.append("missing <UserId>__USERID__</UserId> placeholder")
+    return problems
+
+
 def main():
     failed = False
     for mode, path in TARGETS:
         want_ascii = "ascii" in mode
         problems = check(path, want_ascii)
+        if path.endswith("free2api-keepalive.xml"):
+            problems = problems + check_task_xml(path)
         name = os.path.relpath(path, ROOT)
         if problems:
             failed = True

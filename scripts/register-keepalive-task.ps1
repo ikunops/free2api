@@ -38,10 +38,15 @@ $ErrorActionPreference = 'Stop'
 
 function Esc([string]$value) { [System.Security.SecurityElement]::Escape($value) }
 
+# InteractiveToken must be paired with UserId: pairing it with GroupId is
+# rejected by Task Scheduler ("the task XML contains an unexpected node").
+$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+
 if (-not (Test-Path -LiteralPath $Template)) { throw "template not found: $Template" }
 if (-not (Test-Path -LiteralPath $Launcher)) { throw "launcher not found: $Launcher" }
 
 $text = [IO.File]::ReadAllText($Template)
+$text = $text -replace '__USERID__', (Esc $UserSid)
 $text = $text -replace '__LAUNCHER__', (Esc $Launcher)
 $text = $text -replace '__WORKDIR__', (Esc $WorkDir)
 $text = $text -replace '__TASKNAME__', (Esc $TaskName)
