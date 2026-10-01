@@ -1542,6 +1542,9 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 
 	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。
 	st := newChatStat(time.Now(), body, peek.Stream)
+	// 按来源统计：producer 在这里已经解析出来（含「裸名推断」与「单来源口兜底」），
+	// 直接记进统计对象——再晚就只剩模型名，来源维度就丢了。
+	st.producer = producer
 	defer st.done()
 
 	tried := map[string]bool{}

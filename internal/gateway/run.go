@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -318,6 +319,10 @@ func Start(opts Options) (*Instance, error) {
 	// 目录当「可用」列出去），再后台热一遍拿新值。见 server.LoadZCodeEntitled / WarmCredits。
 	server.SetZCodeEntitledPath(ZCodeEntitledJSONPath(cfg.StateFile))
 	server.LoadZCodeEntitled()
+	// 请求统计的逐日历史（今天 / 近 7 天 / 近 30 天视图的数据源）：落 state.json 同级的
+	// data/stats.json，启动载入、停机强刷。不挂这里的话区间视图会被进程重启清空。
+	server.InitMetricsPersist(metricsJSONPath(cfg.StateFile))
+	cleanups.add(server.FlushMetrics)
 	// 启动就把额度缓存热一遍（后台，不阻塞起服务）：zcode 的对外模型表按套餐额度收敛，
 	// 读的就是这份缓存——见 server.Handler.WarmCredits。
 	go h.WarmCredits()
@@ -371,6 +376,17 @@ func Start(opts Options) (*Instance, error) {
 	}()
 	ok = true
 	return inst, nil
+}
+
+// metricsJSONPath 请求统计逐日历史的落盘路径：**与 state.json 同目录**的 stats.json。
+// 不再往下面再拼一层 "data"——state_file 缺省就是 ./data/state.json，再拼一层会变成
+// data/data/stats.json，载入时静默读不到（踩过）。state_file 为空（嵌入/测试形态）时
+// 退到 ./data/stats.json。
+func metricsJSONPath(stateFile string) string {
+	if stateFile == "" {
+		return filepath.Join("data", "stats.json")
+	}
+	return filepath.Join(filepath.Dir(stateFile), "stats.json")
 }
 
 // Done 在监听 goroutine 退出后关闭。桌面程序用它做「启动即失败」的非阻塞探测：

@@ -205,6 +205,14 @@ label.f{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:5px}
 .chip.on,.chip.on:hover{background:var(--dark);border-color:var(--dark);color:var(--on-dark)}
 
 /* 列多的表放在会横向滚动的容器里：整页不出现横向滚动条，列宽也不被压扁 */
+/* 活跃热力图：周几（7 行）× 小时（24 列）。窄屏横向滚动兜住，不缩成一团。 */
+.heatwrap{overflow-x:auto;padding-bottom:4px}
+.hrow{display:flex;gap:3px;align-items:center;margin-bottom:3px;min-width:max-content}
+.hlabel{width:34px;flex:0 0 34px;font-size:11px;color:var(--fg3);text-align:right;padding-right:5px}
+.hlab{width:22px;flex:0 0 22px;font-size:10px;color:var(--fg4);text-align:center}
+.hc{width:22px;height:22px;flex:0 0 22px;border-radius:4px;font-size:10px;
+  display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;
+  border:1px solid var(--line2)}
 .tablewrap{overflow-x:auto;margin:0 -2px}
 .tablewrap table{min-width:100%}
 table{width:100%;border-collapse:collapse}
@@ -422,9 +430,18 @@ function esc(s){
     .replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; });
 }
 function fmtTime(t){
-  var n = Number(t) || 0; if (!n) return "—";
-  if (n > 1e12) n = Math.floor(n / 1000);
-  var d = new Date(n * 1000);
+  // 两种口径都认：unix 秒/毫秒（各 admin 端点）与 RFC3339 字符串（/v1/stats 的
+  // since / last_seen 走 Go 的 time.Time，序列化出来是 ISO 串）。以前只认数字，
+  // 字符串一律显示成 "—"。
+  var d;
+  if (typeof t === "string" && t){
+    d = new Date(t);
+    if (isNaN(d.getTime())) return "—";
+  } else {
+    var n = Number(t) || 0; if (!n) return "—";
+    if (n > 1e12) n = Math.floor(n / 1000);
+    d = new Date(n * 1000);
+  }
   var p = function(x){ return (x < 10 ? "0" : "") + x; };
   return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
 }
@@ -485,7 +502,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  stats: null, schedule: null, modeldead: null, selftest: null,
+  stats: null, statsRange: "7d", schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
   mq: "", mfProducer: "all", mfRate: "all"
@@ -571,8 +588,14 @@ function renderNav(){
 function go(tab, opt){
   S.tab = tab;
   if (tab === "pool" && !S.credits) loadCredits(false);
-  if (tab === "stats" && !S.stats) loadStats();
-  if (tab === "runtime" && !S.schedule) loadRuntime();
+  // 切到统计页时先画骨架、数据回来再重画：少了这个 then，用户会一直停在「读取中」
+  // 直到后台 30s 轮询把数据填上（踩过——`if (!S.stats) loadStats();` 之后没人 render）。
+  if (tab === "stats" && !S.stats){
+    loadStats().then(function(){ if (S.tab === "stats") render(); });
+  }
+  if (tab === "runtime" && !S.schedule){
+    loadRuntime().then(function(){ if (S.tab === "runtime") render(); });
+  }
   if (opt && opt.srcTab) S.srcTab = opt.srcTab;
   if (tab !== "sources"){ S.cand = null; }
   if (tab !== "output"){ S.chanDraft = null; }
@@ -1996,20 +2019,81 @@ function fmtPct(x){
   return (Number(x) * 100).toFixed(1) + "%";
 }
 /* statRow 统计页用的一行：把 snapshot 的字段映射成中文标签。 */
+/* 统计页区间：默认「近 7 天」（比「本进程」更有意义，又不至于一屏塞满）。
+   选择存内存即可——这是查看偏好，不是配置，刷新回默认不算损失。 */
+const STATS_RANGES = [
+  { id: "today", name: "今天" },
+  { id: "7d", name: "近 7 天" },
+  { id: "30d", name: "近 30 天" },
+  { id: "all", name: "全部" }
+];
+function statsRangeName(id){
+  for (var i = 0; i < STATS_RANGES.length; i++){ if (STATS_RANGES[i].id === id) return STATS_RANGES[i].name; }
+  return id || "全部";
+}
+/* statsRangeSeg 区间切换：与「获取源」的 .seg 同一套控件，放页面最上面。 */
+function statsRangeSeg(){
+  var cur = S.statsRange || "7d";
+  return '<div class="seg">' + STATS_RANGES.map(function(r){
+    return '<button data-range="' + r.id + '" class="' + (cur === r.id ? "on" : "") + '">' + esc(r.name) + '</button>';
+  }).join("") + '</div>';
+}
+/* heatCell 热力图一格：颜色深浅按请求数相对全局峰值，0 用最淡的底。 */
+function heatCell(n, peak){
+  var a = peak > 0 ? n / peak : 0;
+  if (n <= 0) a = 0;
+  var bg = a <= 0 ? "var(--hover)" : "rgba(16,185,129," + (0.16 + a * 0.76).toFixed(3) + ")";
+  var fg = a > 0.55 ? "#fff" : "var(--fg3)";
+  return '<div class="hc" style="background:' + bg + ';color:' + fg + '" title="' + n + ' 次">' +
+    (n > 0 ? n : "") + '</div>';
+}
+/* heatmapCard 周几 × 小时的热力图。24 列在窄屏会挤，用横向滚动兜住。 */
+function heatmapCard(heat){
+  var peak = 0, total = 0;
+  for (var d = 0; d < 7; d++){
+    for (var h = 0; h < 24; h++){
+      var v = (heat[d] && heat[d][h]) || 0;
+      if (v > peak) peak = v;
+      total += v;
+    }
+  }
+  var names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  var head = '<div class="hrow"><div class="hlabel">时</div>' + (function(){
+    var s = "";
+    for (var h = 0; h < 24; h++) s += '<div class="hlab">' + (h % 3 === 0 ? h : "") + '</div>';
+    return s;
+  })() + '</div>';
+  var body = names.map(function(nm, d){
+    return '<div class="hrow"><div class="hlabel">' + nm + '</div>' +
+      (function(){
+        var s = "";
+        for (var h = 0; h < 24; h++) s += heatCell((heat[d] && heat[d][h]) || 0, peak);
+        return s;
+      })() + '</div>';
+  }).join("");
+  return card("活跃热力图", "按「周几 × 小时」累计请求数（本地时区）。颜色越深越忙；空格 = 该时段没有请求。",
+    '<div class="heatwrap">' + head + body + '</div>' +
+    '<div class="hint" style="margin-top:10px">本区间合计 ' + fmtInt(total) + ' 次请求，峰值 ' + fmtInt(peak) + ' 次/格。</div>');
+}
+/* viewStats 请求统计：区间切换 → 总量 → 趋势/热力图 → 按来源 → 按模型 → token。
+   数据源 GET /v1/stats?range=…（逐日聚合落 data/stats.json，跨重启保留）。 */
 function viewStats(){
-  var html = head("请求统计", "本进程启动以来按模型累计的请求观测（重启清零）。数据源 /v1/stats。");
+  var cur = S.statsRange || "7d";
+  var html = head("请求统计", "按「今天 / 近 7 天 / 近 30 天 / 全部」看请求量、来源、模型、延迟与 token。" +
+    "历史按天落盘（data/stats.json），跨重启保留。数据源 /v1/stats。") +
+    '<div class="row" style="margin-bottom:14px">' + statsRangeSeg() + '</div>';
   var st = S.stats;
   if (!st) return html + card("正在读取", "", '<div class="empty">读取中…</div>');
   var t = st.total || {};
-  var up = Number(st.uptime_sec) || 0;
-  var upText = up >= 86400 ? (up/86400).toFixed(1) + " 天"
-    : up >= 3600 ? (up/3600).toFixed(1) + " 小时"
-    : up >= 60 ? Math.round(up/60) + " 分钟" : up + " 秒";
+  var span = Number(st.uptime_sec) || 0;
+  var spanText = span >= 86400 ? (span/86400).toFixed(1) + " 天"
+    : span >= 3600 ? (span/3600).toFixed(1) + " 小时"
+    : span >= 60 ? Math.round(span/60) + " 分钟" : span + " 秒";
   html += '<div class="grid4">' +
     statBox("请求总数", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed)) +
     statBox("成功率", (t.requests ? fmtPct(t.success / t.requests) : "—"), "失败 " + fmtInt(t.failed) + " 次") +
     statBox("流式占比", (t.requests ? fmtPct(t.streaming / t.requests) : "—"), "流式 " + fmtInt(t.streaming) + " 次") +
-    statBox("运行时长", upText, "统计起始 " + esc(fmtTime(st.since))) +
+    statBox("区间跨度", spanText, "起始 " + esc(fmtTime(st.since)) + " · " + esc(statsRangeName(st.range || cur))) +
     '</div>';
   html += '<div class="grid4">' +
     statBox("首字延迟", fmtDur(t.avg_ttfb_ms), "平均 TTFB（流式首帧）") +
@@ -2017,9 +2101,37 @@ function viewStats(){
     statBox("生成速度", (t.tokens_per_sec ? Number(t.tokens_per_sec).toFixed(1) + " tok/s" : "—"), "纯生成阶段吞吐") +
     statBox("缓存命中率", fmtPct(t.cache_hit_rate), "命中 " + fmtInt(t.cache_hit_tokens) + " / 未命中 " + fmtInt(t.cache_miss_tokens)) +
     '</div>';
+  if (!t.requests){
+    html += card("这个区间还没有请求", "", '<div class="empty">换个区间看看，或先跑一次对话再回来刷新。</div>');
+  }
+  // 热力图：有数据才画（全 0 时画出来只是一片空白，没信息量）。
+  if (t.requests && st.heatmap) html += heatmapCard(st.heatmap);
+  // 按来源：与「按模型」正交。模型名里带 producer 前缀时，两者会互相印证。
+  var producers = (st.producers || []).slice();
+  if (producers.length){
+    var ptot = producers.reduce(function(a, x){ return a + (x.requests || 0); }, 0) || 1;
+    var prows = producers.map(function(p){
+      var share = (p.requests || 0) / ptot;
+      return '<tr>' +
+        '<td>' + producerTag({ producer: p.producer }) + '</td>' +
+        '<td class="num">' + fmtInt(p.requests) + '</td>' +
+        '<td class="num">' + fmtInt(p.success) + '</td>' +
+        '<td class="num">' + (p.failed ? '<span style="color:var(--danger)">' + fmtInt(p.failed) + '</span>' : "0") + '</td>' +
+        '<td class="num">' + fmtPct(p.requests ? p.success / p.requests : 0) + '</td>' +
+        '<td class="num">' + fmtInt(p.total_tokens) + '</td>' +
+        '<td style="width:160px"><div class="bar-track" style="margin:0"><div class="bar-fill" style="width:' +
+          (share * 100).toFixed(1) + '%"></div></div></td>' +
+        '<td class="num hint">' + fmtPct(share) + '</td></tr>';
+    }).join("");
+    html += card("按来源（" + producers.length + " 家）", "请求实际落到哪个 AI 客户端的号上。模型名带来源前缀时与此表同源。",
+      '<div class="tablewrap"><table><thead><tr>' +
+      '<th>来源</th><th class="num">请求</th><th class="num">成功</th><th class="num">失败</th>' +
+      '<th class="num">成功率</th><th class="num">Tokens</th><th>占比</th><th class="num">份额</th>' +
+      '</tr></thead><tbody>' + prows + '</tbody></table></div>');
+  }
   var models = (st.models || []).slice();
   if (!models.length){
-    html += card("按模型", "", '<div class="empty">还没有请求观测。跑一次对话后回来刷新。</div>');
+    html += card("按模型", "", '<div class="empty">这个区间还没有请求观测。跑一次对话后回来刷新。</div>');
   } else {
     models.sort(function(a, b){ return (b.requests || 0) - (a.requests || 0); });
     var rows = models.map(function(m){
@@ -2050,7 +2162,7 @@ function viewStats(){
       ["缓存写入 tokens", fmtInt(t.cache_write_tokens)]
     ]));
   html += '<div class="row"><button class="tiny" data-action="stats-reset" ' +
-    'title="清空本进程的累计统计，便于观察增量。不影响账号池与请求处理。">重置统计</button>' +
+    'title="清空累计统计（含逐日历史），便于观察增量。不影响账号池与请求处理。">重置统计</button>' +
     '<span class="hint" style="margin:0">重置只清这份观测，网关照常跑。</span></div>';
   return html;
 }
@@ -2155,7 +2267,7 @@ function viewHelp(){
   html += card("看清网关在干什么", "",
     '<div class="note">' +
     '<b><span class="link" data-goto="overview">概览</span></b>：一眼看总量、可用、来源分布、按客户端分组。<br>' +
-    '<b><span class="link" data-goto="stats">请求统计</span></b>：本进程累计的请求量、成功率、延迟、token、缓存命中，按模型拆开。重启清零。<br>' +
+    '<b><span class="link" data-goto="stats">请求统计</span></b>：按「今天 / 近 7 天 / 近 30 天 / 全部」看请求量、成功率、延迟、token、缓存命中，并给出活跃热力图、按来源、按模型三张表。逐日历史落 data/stats.json，跨重启保留。<br>' +
     '<b><span class="link" data-goto="runtime">运行态</span></b>：粘性会话、在飞并发、熔断/连败计数、定时任务开关、模型死信台账。' +
     '定时任务的开关在这里一键切换（写回 config.json，重启生效）。' +
     '</div>');
@@ -2239,7 +2351,8 @@ async function loadModels(){
   catch (e) { S.models = []; }
 }
 async function loadStats(){
-  try { S.stats = await api("/v1/stats"); } catch (e) { S.stats = null; }
+  var r = S.statsRange || "7d";
+  try { S.stats = await api("/v1/stats?range=" + encodeURIComponent(r)); } catch (e) { S.stats = null; }
 }
 async function runSelfTest(){
   if (S.selftest && S.selftest.running) return;
@@ -2753,7 +2866,15 @@ async function chanSave(){
     await refreshAll(true);
   } catch (e) { toast("err", e.message, 9000); }
 }
-/* statsReset 清空本进程累计统计（观测，不影响路由）。 */
+/* statsRangeSet 切换统计页区间并重拉（只影响这一页的观测口径）。 */
+function statsRangeSet(r){
+  if (!r || r === S.statsRange) return;
+  S.statsRange = r;
+  S.stats = null; // 先清掉旧区间的数字，避免新数据回来前显示错口径的统计
+  render();
+  loadStats().then(function(){ if (S.tab === "stats") render(); });
+}
+/* statsReset 清空累计统计（含逐日历史；观测，不影响路由）。 */
 async function statsReset(){
   try {
     await api("/v1/stats/reset", { method: "POST", body: {} });
@@ -2824,6 +2945,7 @@ function copyText(t){
 /* ---------- 事件 ---------- */
 async function actOn(t){
   if (t.hasAttribute("data-copy") && !t.hasAttribute("data-action")){ copyText(t.getAttribute("data-copy")); return; }
+  if (t.hasAttribute("data-range") && !t.hasAttribute("data-action")){ return statsRangeSet(t.getAttribute("data-range")); }
   var act = t.getAttribute("data-action");
   if (act){
     if (act === "gw-start") return deskCtl("start");
@@ -2886,6 +3008,7 @@ async function actOn(t){
     if (act === "credits-refresh") return loadCredits(true);
     if (act === "reset-cooldowns") return resetCooldowns();
     if (act === "stats-reset") return statsReset();
+    if (act === "stats-range") return statsRangeSet(t.getAttribute("data-range"));
     if (act === "sched-toggle") return schedToggle(t.getAttribute("data-key"), t.getAttribute("data-next") === "1");
     if (act === "modeldead-clear") return modeldeadClear();
     if (act === "codex-detach-preview") return codexDetachPreview();
@@ -2928,7 +3051,7 @@ document.addEventListener("toggle", function(ev){
 }, true);
 document.addEventListener("click", function(ev){
     var e = ev.target;
-    var t = (e && e.closest) ? e.closest("[data-goto],[data-srctab],[data-filter],[data-pclient],[data-prealm],[data-action],[data-copy]") : null;
+    var t = (e && e.closest) ? e.closest("[data-goto],[data-srctab],[data-filter],[data-pclient],[data-prealm],[data-action],[data-copy],[data-range]") : null;
     if (t) actOn(t);
   });
   $("#view").addEventListener("input", function(ev){

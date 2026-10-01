@@ -25,8 +25,11 @@ var chatLogEnabled = true
 type chatStat struct {
 	start  time.Time
 	model  string
-	mode   string // "stream" | "sync"
-	uid    string // 完整 uid，展示时只取前 8 位
+	// producer 本次请求路由到的来源（workbuddy / zcode / …）。/v1/stats 的「按来源」
+	// 维度就靠它；空串在聚合侧归一为 workbuddy（与路由层同口径）。
+	producer string
+	mode     string // "stream" | "sync"
+	uid      string // 完整 uid，展示时只取前 8 位
 	nick   string // 账号昵称（auth.Auth.Nickname，登录时落盘）；空则只显示 uid8
 	ttfb   time.Duration
 	toks   int // <0 表示 usage 缺失 → 显示 "-"
