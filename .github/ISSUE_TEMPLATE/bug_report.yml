@@ -10,7 +10,7 @@ body:
         > [!IMPORTANT]
         > **提交前请先确认这三件事，否则 issue 会被要求补充信息或按「无法复现」关闭：**
         >
-        > 1. 已阅读 README 的 [快速开始](https://github.com/Sliverkiss/free2api#快速开始)、[配置说明](https://github.com/Sliverkiss/free2api#配置说明) 与 [常见问题](https://github.com/Sliverkiss/free2api#常见问题)；
+        > 1. 已阅读 README 的 [快速开始](https://github.com/ikunops/free2api#快速开始)、[配置说明](https://github.com/ikunops/free2api#配置说明) 与 [常见问题](https://github.com/ikunops/free2api#常见问题)；
         > 2. 已排除客户端自身配置问题（用下方「最小化复现」中的 curl 直调网关验证）；
         > 3. **已剔除所有凭据与隐私信息**：`api_key`、`auths/` 中的 token、账号 uid / 手机号 / 邮箱、上游 Cookie 头。
         >

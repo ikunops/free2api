@@ -17,7 +17,7 @@ body:
         >
         > **请按下表逐项填写。不适用的写「不适用」，无法提供的写「无法提供」并说明原因 —— 不要留空。** 缺关键项将按「无法复现」关闭。
         >
-        > 另：接入前请先读 README [API 端点](https://github.com/Sliverkiss/free2api#api-端点) 与 [流式行为细节](https://github.com/Sliverkiss/free2api#流式行为细节)，确认客户端所需能力在当前实现中是否已声明支持。
+        > 另：接入前请先读 README [API 端点](https://github.com/ikunops/free2api#api-端点) 与 [流式行为细节](https://github.com/ikunops/free2api#流式行为细节)，确认客户端所需能力在当前实现中是否已声明支持。
 
   - type: checkboxes
     id: preflight

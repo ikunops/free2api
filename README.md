@@ -14,7 +14,6 @@
   <img alt="API" src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square">
   <img alt="Deploy" src="https://img.shields.io/badge/Deploy-Docker_Compose-2496ED?logo=docker&logoColor=white&style=flat-square">
   <img alt="Transport" src="https://img.shields.io/badge/Transport-SSE%20%2F%20Streaming-0DBD8B?style=flat-square">
-  <a href="https://t.me/sliverkiss_blog"><img alt="Telegram" src="https://img.shields.io/badge/Telegram-%E9%A2%91%E9%81%93-blue?logo=telegram&logoColor=white&style=flat-square"></a>
   <a href="https://github.com/ikunops/free2api/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/ikunops/free2api?style=flat-square"></a>
 </p>
 
@@ -55,9 +54,6 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 > - 内置 WorkBuddy 桌面端登录态读取：WorkBuddy 5.6.2 起把登录态做了字段级加密，本网关直接解 `$wbEncrypted` 信封，把本机客户端登录过的号一次读出来（含 accessToken / refreshToken / 到期时间 / 域），不再需要先装 wb-switch 之类的第三方账本工具。解密钥默认**现场问客户端要**（版本换了自动跟随），另有两档兜底，见《取源》。
 > - 多出口：同一进程内按来源开多个端口，每个口一套协议 / 前缀 / 费率 / 模型白名单。
 > - 控制台「输出 API」页可视化配置协议 / 端口 / 模型前缀 / 费率后缀 / 发布清单。
-
-### 交流群组
-- [@checkinHome](https://t.me/checkinHome)
 
 ### 本项目做什么
 
@@ -306,7 +302,7 @@ flowchart LR
 ### Docker Compose 一键部署
 
 ```bash
-git clone https://github.com/Sliverkiss/free2api.git
+git clone https://github.com/ikunops/free2api.git
 cd free2api
 cp config.example.json config.json
 ```
@@ -561,33 +557,21 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 **7. 条款变更。** 本项目保留随时修改、补充本声明的权利。修改后的声明自发布之日起生效，继续使用本项目即视为接受修订后的声明。本项目所有内容仅供学习和研究使用，请于学习研究完成后及时删除。
 
-## ☕ Coffee
+## ☕ 请我喝杯咖啡
 
-如果这个项目对你有帮助，欢迎请我喝杯咖啡～
+如果这个项目对你有帮助，欢迎请作者喝杯咖啡～
 
-<table>
-  <tr>
-    <td align="center"><b>💰 Solana</b></td>
-    <td><code>AZAKF74rTu7UFVSNRzsKV4HHpTwarax6cG8KAh4fP5rQ</code></td>
-  </tr>
-  <tr>
-    <td align="center"><b>💎 Ethereum</b></td>
-    <td><code>0x1d418627aD6B043900CBE11fe439759bDF2b5170</code></td>
-  </tr>
-  <tr>
-    <td align="center"><b>₿ Bitcoin</b></td>
-    <td><code>bc1q9w7h4j9msyd9q6lhl0398n4s3g8h4vchpqvc2k</code></td>
-  </tr>
-</table>
-
-## 特别感谢
-- [@YuJunZhiXue](https://github.com/YuJunZhiXue)
+<p align="center">
+  <img src="assets/donate-wechat.png" alt="微信赞赏码" width="300">
+</p>
 
 ## License
 
 本项目采用 [MIT License](LICENSE) 开源协议。
 
 - 在遵守 MIT License 前提下，允许使用、复制、修改、合并本项目源代码
-- 再分发（源码或二进制形式）时，须保留原仓库的 MIT 版权声明与许可声明，并在 NOTICE 或 README 中注明原始出处 `https://github.com/Sliverkiss/free2api`
+- 本项目 fork 自 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)（MIT）。
+  再分发（源码或二进制形式）时，须保留上游的 MIT 版权声明与许可声明，并注明原始出处
+  `https://github.com/Sliverkiss/workbuddy2api`
 - 本项目不授予任何上游（CodeBuddy）接口或服务的权利；使用者仍需自行遵守上游服务条款
 - 本项目的使用同时受上方**免责声明**约束；如免责声明与 MIT License 存在不一致，以免责声明为准

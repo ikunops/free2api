@@ -527,7 +527,7 @@ func (s *Scheduler) claimGrowthRewards(a *auth.Auth) {
 	}
 	// global 门控：连登奖励/抽奖链只服务 CN。国际版 /activity/growth/* 端点虽同构存在
 	// （/tmp/analysis-global-credit.md §1.1：lottery/streak/redeem 在国际版上线），但真实
-	// global 新账号 GET /activity/growth/streak 返回 500（实测 sliverkiss）——链上第一步就
+	// global 新账号 GET /activity/growth/streak 返回 500（实测）——链上第一步就
 	// 拿不到 days，无法挑档；且 streak 500 会每趟刷 WARN 污染日志。结论：证据不足，跳过
 	// global（不发起任何领取类调用）。CN 账号无此问题（CN streak 200 days=N）。
 	if a.IsGlobal() {
