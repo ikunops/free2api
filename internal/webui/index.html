@@ -30,8 +30,9 @@ a{color:inherit}
 .brand{display:flex;gap:10px;align-items:center;padding:16px 16px 14px}
 .logo{width:34px;height:34px;border-radius:9px;flex:0 0 34px;
   background:linear-gradient(140deg,#34d399,#0ea5e9);color:#fff;
-  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;
+  display:flex;align-items:center;justify-content:center;
   box-shadow:0 1px 3px rgba(16,185,129,.28)}
+.logo svg{width:20px;height:20px;stroke-width:2.2}
 .brand b{display:block;font-size:14px;letter-spacing:.2px}
 .brand span{display:block;font-size:11px;color:var(--fg3);margin-top:1px}
 nav{padding:6px 8px;overflow:auto;flex:1}
@@ -267,7 +268,7 @@ ol.steps code{background:#f5f5f3;padding:1px 5px;border-radius:4px;font-size:12p
 <div class="app">
   <aside class="side">
     <div class="brand">
-      <div class="logo">Wb</div>
+      <div class="logo" id="brandLogo" aria-hidden="true"></div>
       <div><b>Free2API</b><span>网关控制台</span></div>
     </div>
     <nav id="nav"></nav>
@@ -324,7 +325,9 @@ const ICON = {
   warn: "M12 3l9.5 17H2.5zM12 10v4M12 17h.01",
   eye: "M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z",
   check: "M4 12.5l5 5L20 6.5",
-  undo: "M4 10h9a5 5 0 010 10h-6M4 10l4-4M4 10l4 4"
+  undo: "M4 10h9a5 5 0 010 10h-6M4 10l4-4M4 10l4 4",
+  /* swap：上行向右、下行向左的双向箭头（品牌图标，与 exe 图标同形） */
+  swap: "M3.5 8.5h13M13 5.5l3.5 3-3.5 3M20.5 15.5h-13M11 12.5l-3.5 3 3.5 3"
 };
 function svg(k, cls){
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
@@ -2702,6 +2705,8 @@ document.addEventListener("click", function(ev){
 }
 /* ---------- 启动 ---------- */
 (async function boot(){
+  var logo = $("#brandLogo");
+  if (logo) logo.innerHTML = svg("swap");
   $("#btnKey").innerHTML = svg("key");
   $("#btnRefresh").innerHTML = svg("refresh");
   bind();

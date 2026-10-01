@@ -39,6 +39,15 @@ import (
 	"free2api/internal/webui"
 )
 
+// iconResourceID cmd/desktop/rsrc_windows_*.syso 里「图标组」（RT_GROUP_ICON）的资源号。
+//
+// 为什么不是 1：同一个 .syso 里还嵌了应用清单（RT_MANIFEST，ID 固定为 1），rsrc 给
+// 图标组分配的是下一个可用号，实测是 2。写死成 1 的话 LoadImageW 返回 0，窗口拿到
+// HICON=NULL，任务栏与标题栏就没有图标（已踩过）。desktop_test.go 的
+// TestIconResourceMatchesConstant 会枚举真实资源号盯着这个常量：哪天 rsrc 换了分配
+// 策略，测试先炸，而不是悄悄退化成没图标。
+const iconResourceID = 2
+
 // desktop 桌面控制台的全部可变状态。
 //
 // 锁只保护字段读写；Start/Stop 这类慢动作都在锁外做（见 startGateway / stopGateway），
@@ -124,9 +133,8 @@ func main() {
 		DataPath:  filepath.Join(exeDir, "data", "webview2"),
 		WindowOptions: webview.WindowOptions{
 			Title: "Free2API · 网关控制台",
-			// IconId=1：cmd/desktop/rsrc_windows_*.syso 里嵌入的图标组资源号
-			// （由 rsrc 从 app.ico 生成）。不传的话窗口与任务栏是系统默认图标。
-			IconId: 1,
+			// 窗口与任务栏用嵌入的图标组；不传的话是系统默认图标。
+			IconId: iconResourceID,
 			Width:  1280,
 			Height: 860,
 			Center: true,

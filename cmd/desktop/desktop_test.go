@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"free2api/internal/gateway"
 )
 
@@ -145,6 +147,44 @@ func TestEnsureConfigCreatesMinimalFile(t *testing.T) {
 	}
 	if got := resolveListen(cfgPath); got != "127.0.0.1:9999" {
 		t.Fatalf("ensureConfig 覆盖了已有配置：listen = %q", got)
+	}
+}
+
+// TestIconResourceMatchesConstant 盯住 iconResourceID 与 exe 里真实的图标组资源号一致。
+//
+// 为什么值得单独测：图标组资源号由 rsrc 分配（清单占 1，图标组拿 2），写错了不会
+// 报任何错——只是窗口 HICON 变成 NULL，任务栏悄悄用系统默认图标。这种「静默退化」
+// 靠肉眼很难第一时间发现，所以让测试来盯。
+func TestIconResourceMatchesConstant(t *testing.T) {
+	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
+	enumNames := kernel32.NewProc("EnumResourceNamesW")
+
+	var hInst windows.Handle
+	if err := windows.GetModuleHandleEx(0, nil, &hInst); err != nil {
+		t.Fatal(err)
+	}
+
+	const rtGroupIcon = 14
+	var ids []int64
+	cb := windows.NewCallback(func(_ uintptr, _ uintptr, lpName uintptr, _ uintptr) uintptr {
+		ids = append(ids, int64(lpName))
+		return 1
+	})
+	r, _, err := enumNames.Call(uintptr(hInst), rtGroupIcon, cb, 0)
+	if r == 0 {
+		t.Fatalf("枚举图标组资源失败（图标资源没被链接进测试二进制？）: %v", err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("exe 里没有任何图标组资源（rsrc_windows_*.syso 是不是没进版本库？）")
+	}
+	found := false
+	for _, id := range ids {
+		if id == iconResourceID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("iconResourceID=%d 在真实资源 %v 里不存在——LoadImageW 会失败，窗口没图标", iconResourceID, ids)
 	}
 }
 
