@@ -423,8 +423,21 @@ Task Scheduler 会直接拒收 GroupId 那种写法（报 `the task XML contains
 不想开浏览器、也不想碰命令行时，用桌面程序：一个 exe，窗口里直接管网关。
 
 ```powershell
-go build -trimpath -ldflags="-s -w" -o free2api-desktop.exe ./cmd/desktop
+go build -trimpath -ldflags="-s -w -H=windowsgui" -o free2api-desktop.exe ./cmd/desktop
 ```
+
+`-H=windowsgui` 让它是 GUI 子系统程序：双击不弹控制台黑窗，出错改为弹对话框
+（日志仍然写在 `data\desktop.log`）。图标与 DPI 清单来自 `cmd\desktop\rsrc_windows_*.syso`
+（由 `app.ico` + `app.manifest` 生成，随源码入库，`go build` 自动链接）。改了图标或清单后重新生成：
+
+```powershell
+go install github.com/akavel/rsrc@latest
+rsrc -arch amd64 -ico cmd\desktop\app.ico -manifest cmd\desktop\app.manifest -o cmd\desktop\rsrc_windows_amd64.syso
+rsrc -arch arm64 -ico cmd\desktop\app.ico -manifest cmd\desktop\app.manifest -o cmd\desktop\rsrc_windows_arm64.syso
+```
+
+> 注意：`-H=windowsgui` 只在 Windows 目标上有意义，所以它不写进 CI/Docker 的构建命令；
+> 容器里编的是 `./cmd/server`，与桌面程序互不影响。
 
 把 `free2api-desktop.exe` 和 `config.json`、`auths\`、`data\` 放同一个目录，双击即可。
 程序的工作目录会切到 `config.json` 所在目录，所以相对路径的 `auth_dir` / `state_file`

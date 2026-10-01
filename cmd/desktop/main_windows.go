@@ -123,7 +123,10 @@ func main() {
 		AutoFocus: true,
 		DataPath:  filepath.Join(exeDir, "data", "webview2"),
 		WindowOptions: webview.WindowOptions{
-			Title:  "Free2API · 网关控制台",
+			Title: "Free2API · 网关控制台",
+			// IconId=1：cmd/desktop/rsrc_windows_*.syso 里嵌入的图标组资源号
+			// （由 rsrc 从 app.ico 生成）。不传的话窗口与任务栏是系统默认图标。
+			IconId: 1,
 			Width:  1280,
 			Height: 860,
 			Center: true,
