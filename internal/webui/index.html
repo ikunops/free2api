@@ -91,17 +91,22 @@ nav{padding:6px 8px;overflow:auto;flex:1}
 .mini-spin{width:14px;height:14px;border:2px solid var(--line3);border-top-color:var(--acc);
   border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
 .scanbox{border:1px solid var(--line2);border-radius:var(--r2);overflow:hidden;background:var(--panel)}
-.scanrow{display:flex;align-items:center;gap:10px;padding:10px 14px;
+.scanbox .scanrow{display:flex;align-items:center;gap:10px;padding:10px 14px;
   border-bottom:1px solid var(--line2);font-size:13px;transition:opacity .2s}
-.scanrow:last-child{border-bottom:0}
-.scanrow .st{width:18px;height:18px;flex:0 0 18px;display:flex;align-items:center;justify-content:center}
-.scanrow .st svg{width:15px;height:15px}
-.scanrow.done{color:var(--fg)}
-.scanrow.done .st{color:var(--acc)}
-.scanrow.cur{color:var(--fg);background:var(--soft2)}
-.scanrow.todo{opacity:.42}
-.scanrow .pname{font-weight:600}
-.scanrow .pmeta{color:var(--fg3);font-size:12px;margin-left:auto}
+.scanbox .scanrow:last-child{border-bottom:0}
+.scanbox .scanrow .st{width:18px;height:18px;flex:0 0 18px;display:flex;align-items:center;justify-content:center}
+.scanbox .scanrow .st svg{width:15px;height:15px}
+.scanbox .scanrow.done{color:var(--fg)}
+.scanbox .scanrow.done .st{color:var(--acc)}
+.scanbox .scanrow.cur{color:var(--fg);background:var(--soft2)}
+.scanbox .scanrow.todo{opacity:.42}
+.scanbox .scanrow .pname{font-weight:600}
+.scanbox .scanrow .pmeta{color:var(--fg3);font-size:12px;margin-left:auto}
+/* 扫描中的表格行（tr.scanrow）：不能套上面的 flex 布局，只借状态色。 */
+tr.scanrow.done{color:var(--fg)}
+tr.scanrow.cur{background:var(--soft2)}
+tr.scanrow.todo{opacity:.5}
+tr.scanrow td{transition:opacity .2s}
 .mfilter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:9px}
 .mfilter input{width:240px}
 .mfilter select{width:auto;min-width:150px}
@@ -784,7 +789,6 @@ function viewSources(){
   else if (S.srcTab === "switch") panel = panelSwitch(d);
   else panel = panelFile(d);
   return head("获取源", "三种来源都从本机真实路径读：应用内登录态只探查、switch 账本直接读、外部文件由你指定归属。") +
-    scanCard() +
     '<div class="seg">' + seg + '</div>' + panel;
 }
 function kindTag(k){
@@ -799,19 +803,50 @@ function kindTag(k){
   var v = map[k] || ["mut", k || "未知"];
   return '<span class="tag ' + v[0] + '">' + esc(v[1]) + '</span>';
 }
+/* probeRowHtml 探查表的一行（真实数据）。扫描动画完成后用的就是它，保证终态与以前一模一样。
+   第二个参数只在扫描动画期间用：给刚检查完的行加一个勾（收尾后自然消失）。 */
+function probeRowHtml(p, checked){
+  var tick = checked ? '<span class="tick" style="color:var(--acc-fg);margin-right:6px;display:inline-flex;vertical-align:-2px">' + svg("check") + '</span>' : '';
+  return '<tr class="' + (p.exists ? "" : "dim") + '">' +
+    '<td>' + tick + '<b>' + esc(p.name) + '</b><div class="hint" style="margin:2px 0 0">' + esc(p.producer) + '</div></td>' +
+    '<td class="mono" style="word-break:break-all">' + esc(p.path) + '</td>' +
+    '<td>' + kindTag(p.kind) + '</td>' +
+    '<td class="num">' + (p.readable ? p.accounts : "—") + '</td>' +
+    '<td style="color:var(--fg3);font-size:12px">' + esc(p.note) + '</td></tr>';
+}
+/* scanProbeRowsHtml 扫描进行中的表格内容：逐行「等待 → 检查中 → 已检查」。
+   刷新瞬间先把旧内容换成待检查行（只留名字），新数据一到就以新数据为准：已经检查完的
+   行直接换成真实行并带一个勾——每出来一个就留住，全部点亮后就是刷新前的完整表格。 */
+function scanProbeRowsHtml(){
+  var sc = S.scan || { rows: [], at: 0, data: null };
+  var hasData = !!(sc.data && sc.data.length);
+  var rows = hasData ? sc.data : (sc.rows || []);
+  var at = Math.min(sc.at, rows.length);
+  var out = [];
+  for (var i = 0; i < rows.length; i++){
+    var it = rows[i] || {};
+    if (hasData && i < at){ out.push(probeRowHtml(it, true)); continue; }
+    var cur = (i === at);
+    var ico = (i < at) ? '<span style="color:var(--acc-fg)">' + svg("check") + '</span>'
+      : (cur ? '<span class="mini-spin"></span>' : '<span class="dot" style="background:var(--line3)"></span>');
+    out.push('<tr class="scanrow ' + (i < at ? "done" : (cur ? "cur" : "todo")) + '">' +
+      '<td><b>' + esc(it.name || "") + '</b>' +
+        (it.producer ? '<div class="hint" style="margin:2px 0 0">' + esc(it.producer) + '</div>' : "") + '</td>' +
+      '<td class="mono" style="color:var(--fg4)">—</td>' +
+      '<td><span class="hint">—</span></td>' +
+      '<td class="num">—</td>' +
+      '<td style="color:var(--fg3);font-size:12px">' +
+        '<span class="row" style="gap:7px;align-items:center">' + ico +
+        esc(i < at ? "已检查" : (cur ? "检查中…" : "等待")) + '</span></td></tr>');
+  }
+  return out.join("");
+}
 function panelApp(d){
   var probes = d.probes || [];
   // 应用内登录态这一路，除「只读探查」外还有**可取用**的源（OpenCode：auth.json 是明文，
   // 抽出来即可进号池）。它们 method=app，所以卡片挂在这个 tab 下，与探查表并列。
   var usableKinds = (d.kinds || []).filter(function(k){ return k.method === "app" && k.id !== "app"; });
-  var rows = probes.map(function(p){
-    return '<tr class="' + (p.exists ? "" : "dim") + '">' +
-      '<td><b>' + esc(p.name) + '</b><div class="hint" style="margin:2px 0 0">' + esc(p.producer) + '</div></td>' +
-      '<td class="mono" style="word-break:break-all">' + esc(p.path) + '</td>' +
-      '<td>' + kindTag(p.kind) + '</td>' +
-      '<td class="num">' + (p.readable ? p.accounts : "—") + '</td>' +
-      '<td style="color:var(--fg3);font-size:12px">' + esc(p.note) + '</td></tr>';
-  }).join("");
+  var rows = probes.map(function(p){ return probeRowHtml(p); }).join("");
   var kind = (d.kinds || []).filter(function(k){ return k.id === "app"; })[0] || {};
   var usable = usableKinds.map(function(k){
     var btn = '<button class="pri tiny" data-action="cands" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>看候选</button> ' +
@@ -826,10 +861,12 @@ function panelApp(d){
     ? '<div class="sep"></div><h2 style="font-size:14px;margin-bottom:8px">可直接取用</h2>' +
       '<div class="grid2">' + usable + '</div>'
     : "";
+  var scanning = !!(S.scan && S.scan.tab === "app");
+  var body = scanning ? scanProbeRowsHtml() : (rows || '<tr><td colspan="5"><div class="empty">没有探查结果</div></td></tr>');
   return card("应用内登录态探查", esc(kind.note || ""),
     '<table><thead><tr><th style="width:200px">工具</th><th>路径</th><th style="width:92px">形态</th>' +
-    '<th class="num" style="width:56px">账号</th><th style="width:36%">结论</th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="5"><div class="empty">没有探查结果</div></td></tr>') + '</tbody></table>' +
+    '<th class="num" style="width:56px">账号</th><th style="width:36%">结论</th></tr></thead><tbody id="probeBody">' +
+    body + '</tbody></table>' +
     '<div class="hint">这一路是「只读探查，不猜解析」：读不了的形态（enc:v1 字段加密、Electron leveldb、SQLite）明确标出原因——' +
     '拿错凭证去打上游会直接触发风控。<br>' +
     'WorkBuddy 桌面端自 5.6.2 起把登录态做了字段级加密，本网关已实现解密，所以它的号能直接在这里取到（' +
@@ -2277,67 +2314,87 @@ async function loadRuntime(){
 async function srcRefresh(){
   if (S.busy){ toast("info", "上一个操作还在进行", 2200); return; }
   S.busy = true;
-  // 扫描动画：先摆出「待检查」的骨架行，逐行点亮，做出「一个个被检查出来」的过程感。
-  // 真正的数据仍由后端一次返回；这里只把揭示节奏摊开，不额外发请求、不伪造结果。
-  startScan();
+  var req = beginScan();
   try {
     await Promise.all([loadSources(), loadOrigins()]);
     if (S.candKind){ await reloadCands(false, false, true); }
-    finishScan();
+    finishScan(req);
     var d = S.src || {};
     var n = (d.kinds || []).filter(function(k){ return k.available; }).length;
     toast("ok", "已重新扫描本机来源（可用 " + n + " 个）", 2600);
   } catch (e) { cancelScan(); toast("err", e.message || String(e), 9000); }
   finally { S.busy = false; }
 }
-/* startScan 渲染扫描进度卡并启动逐行点亮。列表来自上一次已知的 probes（有就显示名字），
-   没有就先用「本机来源」占位；每一步的节奏 260ms，数据回来后立刻收尾。 */
+/* ---- 「获取源」刷新动画 ------------------------------------------------------------
+   用户点的预期是「本机有哪些来源」被一个个重新查一遍。后端仍是一次返回（本机读盘很快），
+   这里只把揭示节奏摊开：先把表格清空成待检查行，再逐行 等待 → 检查中 → 已检查，
+   每个亮过的行保留在表里；新数据到了就直接换成真实行。不额外发请求、不伪造结果。 */
+var SCAN_STEP = 240;   // 每行点亮的间隔
+var SCAN_HOLD = 560;   // 全部点亮后再停留一下，让用户看清「已检查」再收尾
+
+/* scanRows 拿上一次已知的 probes 当骨架：行名、顺序、来源都与终态一致，动画不会跳名字。
+   首次打开还没有 probes 时，用三条来源兜底。 */
 function scanRows(){
   var d = S.src || {};
-  var probes = d.probes || [];
-  if (probes.length) return probes.map(function(p){ return p.name || p.producer || "来源"; });
-  return ["应用内登录态", "switch 账本", "导入文件"];
+  var probes = (d.probes || []).slice();
+  if (probes.length) return probes;
+  return [{ id: "app", name: "应用内登录态", producer: "" },
+          { id: "switch", name: "switch 账本", producer: "" },
+          { id: "file", name: "导入文件", producer: "" }];
 }
-function startScan(){
+/* beginScan 清空表格、摆出待检查行并开始逐行点亮；返回本次扫描的序号（用于作废旧一轮）。 */
+function beginScan(){
   var rows = scanRows();
-  S.scan = { rows: rows, at: 0, done: false };
+  var seq = (S.scanSeq = (S.scanSeq || 0) + 1);
+  S.scan = { tab: "app", rows: rows, at: 0, data: null, seq: seq, timer: null, hold: null };
   render();
-  if (S.scanTimer) clearInterval(S.scanTimer);
-  S.scanTimer = setInterval(function(){
-    if (!S.scan) { clearInterval(S.scanTimer); S.scanTimer = null; return; }
-    S.scan.at += 1;
-    paintScan();
-    if (S.scan.at >= S.scan.rows.length){ clearInterval(S.scanTimer); S.scanTimer = null; }
-  }, 260);
+  S.scan.timer = setTimeout(function(){ scanStep(seq); }, SCAN_STEP);
+  return seq;
 }
-function paintScan(){
-  var box = $("#scanBox");
-  if (!box || !S.scan) return;
-  var at = S.scan.at;
-  box.innerHTML = S.scan.rows.map(function(nm, i){
-    var cls = S.scan.done ? "done" : (i < at ? "done" : (i === at ? "cur" : "todo"));
-    var ico = (S.scan.done || i < at) ? svg("check") : (i === at ? '<span class="mini-spin"></span>' : '<span class="dot" style="background:var(--line3)"></span>');
-    return '<div class="scanrow ' + cls + '"><span class="st">' + ico + '</span>' +
-      '<span class="pname">' + esc(nm) + '</span>' +
-      '<span class="pmeta">' + (S.scan.done || i < at ? "已检查" : (i === at ? "检查中…" : "等待")) + '</span></div>';
-  }).join("");
+/* scanStep 点亮下一行；全部点亮且新数据已到就进入收尾，否则继续等下一拍 / 等数据。 */
+function scanStep(seq){
+  var sc = S.scan;
+  if (!sc || sc.seq !== seq) return;
+  sc.timer = null;
+  if (sc.at < sc.rows.length){
+    sc.at += 1;
+    render();
+  }
+  if (sc.at >= sc.rows.length && sc.data){
+    if (!sc.hold) sc.hold = setTimeout(function(){ endScan(seq); }, SCAN_HOLD);
+    return;
+  }
+  if (sc.at < sc.rows.length) sc.timer = setTimeout(function(){ scanStep(seq); }, SCAN_STEP);
 }
-function finishScan(){
-  if (!S.scan) return;
-  if (S.scanTimer){ clearInterval(S.scanTimer); S.scanTimer = null; }
-  S.scan.done = true; S.scan.at = S.scan.rows.length;
+/* finishScan 新数据到手：填进本轮，已经点亮的行立刻换成真实行；动画走完就直接收尾。 */
+function finishScan(seq){
+  var sc = S.scan;
+  if (!sc || sc.seq !== seq) return;
+  var d = S.src || {};
+  sc.data = (d.probes || []).slice();
+  if (sc.timer){ clearTimeout(sc.timer); sc.timer = null; }
+  if (sc.at >= sc.rows.length){
+    if (!sc.hold) sc.hold = setTimeout(function(){ endScan(seq); }, SCAN_HOLD);
+  } else {
+    sc.timer = setTimeout(function(){ scanStep(seq); }, SCAN_STEP);
+  }
   render();
-  setTimeout(function(){ S.scan = null; if (S.tab === "sources") render(); }, 900);
+}
+/* endScan 收尾：撤掉扫描态，表格回到真实数据（与刷新前完全同构）。 */
+function endScan(seq){
+  var sc = S.scan;
+  if (!sc || sc.seq !== seq) return;
+  S.scan = null;
+  if (S.tab === "sources") render();
 }
 function cancelScan(){
-  if (S.scanTimer){ clearInterval(S.scanTimer); S.scanTimer = null; }
-  S.scan = null; render();
-}
-/* scanCard 扫描进度卡：渲染在「获取源」页顶部，动画期间占位。 */
-function scanCard(){
-  if (!S.scan) return "";
-  return card("正在重新扫描本机来源", "逐个检查应用内登录态、switch 账本与导入目录，稍等片刻。",
-    '<div class="scanbox" id="scanBox"></div>');
+  var sc = S.scan;
+  if (sc){
+    if (sc.timer) clearTimeout(sc.timer);
+    if (sc.hold) clearTimeout(sc.hold);
+  }
+  S.scan = null;
+  render();
 }
 async function refreshAll(silent){
   var first = !S.status;
