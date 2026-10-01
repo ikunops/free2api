@@ -1,0 +1,96 @@
+# release.yml 打 tag（v*）时构建各平台二进制并发布到 GitHub Releases。
+#
+# 为什么单独一个 workflow：build.yml 只出 Docker 镜像 + 离线 tar，面向 NAS/服务器；
+# 这里出的是**直接下载就能跑**的单文件 exe/二进制，面向 Windows 桌面用户。
+# 两者共用同一份源码，互不影响。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # 手动补发：填一个已存在的 tag，重新构建并覆盖该 release 的产物。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v1.0.0），必须已存在'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch 时 checkout 指定 tag，而不是默认分支。
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          mkdir -p dist
+          # 服务端：linux/darwin/windows 三平台（桌面端只有 Windows 有）
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%%/*}"; arch="${target##*/}"
+            ext=""
+            if [ "$os" = "windows" ]; then ext=".exe"; fi
+            out="dist/free2api-${os}-${arch}${ext}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/server
+            echo "built $out"
+          done
+          # Windows 桌面控制台（GUI 子系统，双击不弹黑窗）
+          for arch in amd64 arm64; do
+            out="dist/free2api-desktop-windows-${arch}.exe"
+            CGO_ENABLED=0 GOOS=windows GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w -H=windowsgui" -o "$out" ./cmd/desktop
+            echo "built $out"
+          done
+          ls -la dist
+
+      - name: Package (zip for Windows, tar.gz for others)
+        run: |
+          set -euo pipefail
+          cd dist
+          mkdir -p ../pkg
+          # 裸二进制只用来打包，不直接发布（避免用户下到没有扩展名的可执行文件）。
+          # 打包完删的是「裸文件」，绝不能用 free2api-linux-* 这类通配 —— 它会把
+          # 刚生成的 .tar.gz 一起匹配掉。
+          for f in free2api-windows-amd64.exe free2api-windows-arm64.exe \
+                   free2api-desktop-windows-amd64.exe free2api-desktop-windows-arm64.exe; do
+            [ -e "$f" ] || continue
+            zip -q "../pkg/${f%.exe}.zip" "$f"
+          done
+          for f in free2api-linux-amd64 free2api-linux-arm64 \
+                   free2api-darwin-amd64 free2api-darwin-arm64; do
+            [ -e "$f" ] || continue
+            tar -czf "../pkg/${f}.tar.gz" "$f"
+          done
+          ls -la ../pkg
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            pkg/*.zip
+            pkg/*.tar.gz

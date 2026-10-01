@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="Free2API" width="120">
+  <img src="assets/icon.png" alt="Free2API" width="120">
 </p>
 
 <h1 align="center">Free2API</h1>
@@ -15,9 +15,32 @@
   <img alt="Deploy" src="https://img.shields.io/badge/Deploy-Docker_Compose-2496ED?logo=docker&logoColor=white&style=flat-square">
   <img alt="Transport" src="https://img.shields.io/badge/Transport-SSE%20%2F%20Streaming-0DBD8B?style=flat-square">
   <a href="https://t.me/sliverkiss_blog"><img alt="Telegram" src="https://img.shields.io/badge/Telegram-%E9%A2%91%E9%81%93-blue?logo=telegram&logoColor=white&style=flat-square"></a>
+  <a href="https://github.com/ikunops/free2api/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/ikunops/free2api?style=flat-square"></a>
 </p>
 
 ---
+
+## 下载（不想自己编译的看这里）
+
+到 [Releases](https://github.com/ikunops/free2api/releases/latest) 下载现成二进制，**单文件、免安装**：
+
+| 我要干什么 | 下载哪个 | 说明 |
+| --- | --- | --- |
+| **Windows 桌面控制台**（推荐） | `free2api-desktop-windows-amd64.zip` | 双击出窗口，窗口里点「启动网关」，不用开浏览器 |
+| Windows 网关（无界面） | `free2api-windows-amd64.zip` | 命令行 / 计划任务后台跑，管理页用浏览器开 |
+| Windows ARM64 | `*-windows-arm64.zip` | 同上，换成 ARM 机器 |
+| Linux / macOS | `free2api-linux-*.tar.gz` / `free2api-darwin-*.tar.gz` | 服务器 / NAS / Mac，命令行运行 |
+
+> 桌面控制台只有 Windows 版（依赖系统自带的 WebView2）；其他平台用 `free2api` 那个二进制。
+> 两个都是同一份源码编出来的，行为一致。
+
+**跑起来只要三步**：
+
+1. 解压到一个文件夹；
+2. 把 `config.example.json` 复制成 `config.json`，至少设一个 `api_key`（空 = 不鉴权）；
+3. 双击 `free2api-desktop.exe`（或运行 `free2api.exe -config config.json`）。
+
+账号从哪来不用操心：程序会自己扫本机客户端 / switch 账本里的登录态，详见[取源](#取源账号从哪来)。
 
 ## 项目简介
 
@@ -46,9 +69,13 @@ Free2API 是一个自托管的 **OpenAI 兼容上游网关**，将 ```CodeBuddy`
 
 - **只做上游网关，不做下游协议转换** — 本项目仅负责对接上游 ```CodeBuddy``` 并暴露 OpenAI Chat 协议；Anthropic Messages、Gemini 等其他协议的适配应由下游网关负责；
 
-### 社区前端面板
+### 管理面板
 
-需要 Web 管理面板的用户，可部署以下符合本理念的社区项目（独立维护，与网关解耦）：
+**本项目自带控制台，不需要另装面板**：管理页用 `go:embed` 编进二进制，
+浏览器开 `http://127.0.0.1:<端口>/management.html` 即可（桌面控制台则在窗口里直接显示）。
+页面里能做取源、看号池余额 / 积分 / 到期、配输出协议 / 端口 / 模型前缀 / 费率后缀、一键接入 Codex。
+
+也欢迎社区面板（独立维护，与网关解耦）：
 
 - [free2api-gui](https://github.com/287775856/free2api-gui) — 账号池状态可视化面板
 - [workbuddy-manager](https://github.com/ithtelab/workbuddy-manager) — 账号管理工具
