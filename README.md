@@ -25,21 +25,33 @@
 
 | 我要干什么 | 下载哪个 | 说明 |
 | --- | --- | --- |
-| **Windows 桌面控制台**（推荐） | `free2api-desktop-windows-amd64.zip` | 双击出窗口，窗口里点「启动网关」，不用开浏览器 |
-| Windows 网关（无界面） | `free2api-windows-amd64.zip` | 命令行 / 计划任务后台跑，管理页用浏览器开 |
-| Windows ARM64 | `*-windows-arm64.zip` | 同上，换成 ARM 机器 |
+| **Windows 桌面控制台**（推荐） | `free2api-desktop-windows-amd64.exe` | 双击就出窗口，窗口里点「启动网关」，不用开浏览器 |
+| Windows 网关（无界面） | `free2api-windows-amd64.exe` | 命令行 / 计划任务后台跑，管理页用浏览器开 |
+| Windows ARM64 | `*-windows-arm64.exe` | 同上，换成 ARM 机器 |
 | Linux / macOS | `free2api-linux-*.tar.gz` / `free2api-darwin-*.tar.gz` | 服务器 / NAS / Mac，命令行运行 |
 
-> 桌面控制台只有 Windows 版（依赖系统自带的 WebView2）；其他平台用 `free2api` 那个二进制。
-> 两个都是同一份源码编出来的，行为一致。
+> Windows 版直接下 `.exe`，不用解压。桌面控制台依赖系统自带的 WebView2；
+> 其他平台用 `free2api` 那个二进制。两个都是同一份源码编出来的，行为一致。
 
 **跑起来只要三步**：
 
-1. 解压到一个文件夹；
+1. 把下载的 exe 放到一个文件夹；
 2. 把 `config.example.json` 复制成 `config.json`，至少设一个 `api_key`（空 = 不鉴权）；
 3. 双击 `free2api-desktop.exe`（或运行 `free2api.exe -config config.json`）。
 
 账号从哪来不用操心：程序会自己扫本机客户端 / switch 账本里的登录态，详见[取源](#取源账号从哪来)。
+
+## 运行环境
+
+| 项 | 要求 |
+| --- | --- |
+| 操作系统 | **Windows 10 / 11**（桌面控制台）；Linux / macOS 用命令行版 |
+| 架构 | Windows 发 `amd64`（x64，Win11 绝大多数机器）与 `arm64` 两种 |
+| 桌面控制台依赖 | Microsoft Edge **WebView2 Runtime**（Win11 系统自带；Win10 旧版可能需要单独装） |
+| 网关主体 | 单文件、免安装，无运行时依赖 |
+
+> 桌面程序只是一层壳，真正跑的是同目录的 `free2api.exe`。
+> 不想依赖 WebView2 时，直接用命令行版 + 浏览器打开 `/management.html` 即可，功能完全一样。
 
 ## 项目简介
 

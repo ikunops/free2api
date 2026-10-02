@@ -65,19 +65,13 @@ jobs:
           done
           ls -la dist
 
-      - name: Package (zip for Windows, tar.gz for others)
+      - name: Package (tar.gz for Linux/macOS only)
         run: |
           set -euo pipefail
           cd dist
           mkdir -p ../pkg
-          # 裸二进制只用来打包，不直接发布（避免用户下到没有扩展名的可执行文件）。
-          # 打包完删的是「裸文件」，绝不能用 free2api-linux-* 这类通配 —— 它会把
-          # 刚生成的 .tar.gz 一起匹配掉。
-          for f in free2api-windows-amd64.exe free2api-windows-arm64.exe \
-                   free2api-desktop-windows-amd64.exe free2api-desktop-windows-arm64.exe; do
-            [ -e "$f" ] || continue
-            zip -q "../pkg/${f%.exe}.zip" "$f"
-          done
+          # Windows 直接发裸 .exe：本来就有扩展名，再套一层 zip 只会让用户多一步解压。
+          # 只有 Linux/macOS 的裸二进制没有扩展名，才需要 tar.gz 包一下。
           for f in free2api-linux-amd64 free2api-linux-arm64 \
                    free2api-darwin-amd64 free2api-darwin-arm64; do
             [ -e "$f" ] || continue
@@ -92,5 +86,8 @@ jobs:
           name: ${{ steps.ver.outputs.tag }}
           generate_release_notes: true
           files: |
-            pkg/*.zip
+            dist/free2api-windows-amd64.exe
+            dist/free2api-windows-arm64.exe
+            dist/free2api-desktop-windows-amd64.exe
+            dist/free2api-desktop-windows-arm64.exe
             pkg/*.tar.gz
