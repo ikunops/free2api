@@ -322,6 +322,10 @@ func Start(opts Options) (*Instance, error) {
 	// 请求统计的逐日历史（今天 / 近 7 天 / 近 30 天视图的数据源）：落 state.json 同级的
 	// data/stats.json，启动载入、停机强刷。不挂这里的话区间视图会被进程重启清空。
 	server.InitMetricsPersist(metricsJSONPath(cfg.StateFile))
+	// 逐日统计是后加的特性：启用之前跑过的请求只留在网关流水日志里（stdout.log 及
+	// 其轮转备份）。启动时扫一遍把可解析的行补进 stats.json，否则「近 7 天 / 全部」
+	// 只剩启用之后的那几天，用户会以为历史丢了。只补还没有的日，幂等。
+	go server.BackfillFromLogs(metricsLogDirs(cfg.StateFile)...)
 	cleanups.add(server.FlushMetrics)
 	// 启动就把额度缓存热一遍（后台，不阻塞起服务）：zcode 的对外模型表按套餐额度收敛，
 	// 读的就是这份缓存——见 server.Handler.WarmCredits。
@@ -376,6 +380,27 @@ func Start(opts Options) (*Instance, error) {
 	}()
 	ok = true
 	return inst, nil
+}
+
+// metricsLogDirs 网关流水日志可能落在哪几个目录。两种形态都要覆盖：
+//   - 数据目录（state.json 同级）：命令行把 stdout 重定向成 ./data/server.out.log，
+//     桌面程序写 ./data/desktop.log；
+//   - 应用根目录（数据目录的上一级）：宿主控制台的 stdout 落在 ./stdout.log。
+//
+// 回填只看文件在不在，多给一个目录没有代价；少了就会漏掉历史。
+func metricsLogDirs(stateFile string) []string {
+	data := "data"
+	if stateFile != "" {
+		data = filepath.Dir(stateFile)
+	}
+	dirs := []string{data}
+	// 上一级也要扫：默认 stateFile 是 "./data/state.json" 时，filepath.Dir 给出 "."
+	// 即应用根目录，而宿主控制台的 stdout.log 正是落在那里。"." 是合法目录，
+	// 不能像空串那样跳过；只有「父目录等于自身」（data 本身就是 "."）才不必重复加。
+	if parent := filepath.Dir(data); parent != "" && parent != data {
+		dirs = append(dirs, parent)
+	}
+	return dirs
 }
 
 // metricsJSONPath 请求统计逐日历史的落盘路径：**与 state.json 同目录**的 stats.json。

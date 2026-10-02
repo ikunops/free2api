@@ -227,9 +227,12 @@ func uidPrefix(uid string) string {
 // 是为了让 stdout 里成百上千行能竖着扫——否则模型名长短不一、中文昵称按字节补空格
 // 错位，根本没法用肉眼对齐着一列列看（这正是上一版 11 字节硬截断要解决的问题）。
 const (
-	// chatModelWidth 覆盖 realm 前缀 + 最长模型名："global:" (7) + "deepseek-v4.1-flash" (19) = 26。
-	// 旧的 11 字节截断会把 "cn:deepseek-v4-flash" 切成 "cn:deepseek"，让人误以为是另一个模型。
-	chatModelWidth = 26
+	// chatModelWidth 覆盖 realm 前缀 + 最长模型名。取 40 是给「realm: (7) + 上游最长
+	// 模型名 (31) = 38」留出余量：目录里 muse-spark-1.2-contributor-free 这类 31 字符
+	// 的裸名，加前缀后正好 38。旧的 11 字节截断会把 "cn:deepseek-v4-flash" 切成
+	// "cn:deepseek"；26 列也仍会截掉上面那种长名（两个不同的 muse-spark 会合并成
+	// 同一行），所以放宽到 40。
+	chatModelWidth = 40
 	// chatAcctWidth 容纳 "昵称(uid8)"：中文昵称按 2 列/字算，5 字中文 + "(xxxxxxxx)" = 20 列。
 	chatAcctWidth = 22
 	chatTTFBWidth = 8
@@ -240,7 +243,8 @@ const (
 // logChatRow 打印一行请求级表格日志（直接输出 stdout，无 log 时间戳前缀）。
 //
 // 参数：
-//   - model：模型名（含 realm 前缀），超 chatModelWidth 截断（模型名是 ASCII，字节截即列宽）；
+//   - model：模型名（含 realm 前缀），超 chatModelWidth 截断（模型名是 ASCII，字节截即列宽）。
+//     截断会合并不同模型（回填统计时尤其致命），故宽度按「realm 前缀 + 最长目录名」取足；
 //   - uid/nick：完整 uid 与账号昵称，经 logfmt.Label 拼成 "昵称(uid8)" 展示——只有
 //     uid8 时人眼无法判断是哪个号，要辨认必须再查 auths/，排障多一跳；
 //   - toks<0 表示 usage 缺失，显示 "-"。

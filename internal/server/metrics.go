@@ -10,17 +10,25 @@
 //   - **逐日持久化**：按天聚合落 data/stats.json（保留 statsRetainDays 天），跨重启
 //     保留——否则区间视图会被进程重启清空，等于没有。写盘有节流（最多 1 次/分），
 //     停机再强刷一次；崩溃最多丢最近一分钟的观测。
+//   - **从历史日志回填**：stats.json 是随本特性一起引入的，之前的请求只留在网关
+//     自己的流水日志里（stdout.log / server.out.log，含轮转的 .prevN）。启动时扫一遍
+//     这些日志把可解析的行补进逐日桶（BackfillFromLogs），否则「近 7 天 / 全部」只剩
+//     启用之后的那几天。回填只补 stats.json 里没有的日子，幂等，不会重复计数。
 //   - **有界内存**：模型键数量受上游目录限制；另设容量上限兜底，超限时丢弃新键并
 //     记一次 WARN，避免异常模型名刷爆内存。
 package server
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -264,6 +272,278 @@ func (m *metricsStore) pruneLocked(todayKey string) {
 			m.dirty = true
 		}
 	}
+}
+
+// ---------- 历史日志回填 ----------
+//
+// 背景：/v1/stats 的逐日桶是后加的，上线之前的请求只存在于网关自己的流水日志里
+// （logChatRow 输出的 "| #NNN | HH:MM:SS | model | mode | status | acct | TTFB=… |
+// tok=… | …tok/s | total=…s |"）。这些行含日期以外的全部所需字段，足以重建「每天
+// 每模型多少请求、成功/失败、token、耗时」。不读它们的话，用户会看到「明明跑了
+// 好几天，近 7 天/全部却只有今天」。
+//
+// 纪律：
+//   - 只补 stats.json 里**还没有的日桶**（已有那天不碰），所以幂等，重启多少次都一样；
+//   - 日志只有时间没有日期：按文件 mtime 反推日期，逐行往前遇到「时间倒退」就跨天；
+//   - 只解析得出请求数 / 成功失败 / 流式 / 耗时 / token；缓存与积分日志里没有，留空
+//     （缺失≠0，不编造）；
+//   - 上限 backfillMaxLines 行，避免超大日志拖慢启动；解析失败的行静默跳过。
+const (
+	// backfillMaxLines 单次回填最多读多少行（含所有候选文件），兜底异常大日志。
+	backfillMaxLines = 200000
+	// backfillMaxFiles 单目录最多扫多少个候选日志文件。
+	backfillMaxFiles = 32
+)
+
+// chatRowRe 匹配 logChatRow 的输出行。列宽是显示宽度补齐的，故一律 \s* 宽松匹配；
+// 模型名不含 '|'，账号标签不含 '|'，用它做分隔安全。
+var chatRowRe = regexp.MustCompile(
+	`^\|\s*#\d+\s*\|\s*(\d{1,2}):(\d{2}):(\d{2})\s*\|\s*([^|]*?)\s*\|\s*(stream|sync)\s*\|\s*(\d{3})\s*\|\s*[^|]*\|\s*TTFB=([^|]*?)\s*\|\s*tok=([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*total=([0-9.]+)s\s*\|`)
+
+// backfillLogNames 候选日志文件名（按此顺序扫）。stdout.log 是主流水，
+// server.out.log 是重定向形态；.prevN 是轮转备份。
+//
+// dir 可以是多个目录：流水日志的落点在不同形态下不一样——命令行形态重定向到
+// ./data/server.out.log，桌面程序则写 ./data/desktop.log，而宿主控制台的 stdout
+// 落在应用根目录的 stdout.log。都扫一遍才不会漏。重复路径由调用方去重。
+func backfillLogNames(dirs []string) []string {
+	base := []string{"stdout.log", "server.out.log", "desktop.log"}
+	out := make([]string, 0, len(base)*4*len(dirs))
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		for _, b := range base {
+			out = append(out, filepath.Join(dir, b))
+			out = append(out, filepath.Join(dir, b+".prev"))
+			for i := 1; i <= 3; i++ {
+				out = append(out, filepath.Join(dir, fmt.Sprintf("%s.prev%d", b, i)))
+			}
+		}
+	}
+	return out
+}
+
+// parseChatRow 解析一行流水日志。ok=false 表示这行不是请求行 / 解析失败。
+// 返回值：当天内的时刻、模型、模式、状态码、TTFB、token 数（<0 = 缺失）、总耗时。
+func parseChatRow(line string) (clock time.Time, model, mode string, status, toks int, ttfb, total time.Duration, ok bool) {
+	m := chatRowRe.FindStringSubmatch(line)
+	if m == nil {
+		return
+	}
+	h, err1 := strconv.Atoi(m[1])
+	mi, err2 := strconv.Atoi(m[2])
+	se, err3 := strconv.Atoi(m[3])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return
+	}
+	if h > 23 || mi > 59 || se > 59 {
+		return
+	}
+	st, err := strconv.Atoi(m[6])
+	if err != nil {
+		return
+	}
+	tk := -1
+	if v, err := strconv.Atoi(strings.TrimSpace(m[8])); err == nil {
+		tk = v
+	}
+	var ttfbD time.Duration
+	if s := strings.TrimSpace(m[7]); s != "" && s != "-" {
+		if d, err := time.ParseDuration(s); err == nil {
+			ttfbD = d
+		}
+	}
+	fs, err := strconv.ParseFloat(m[10], 64)
+	if err != nil {
+		return
+	}
+	clock = time.Date(2000, 1, 1, h, mi, se, 0, time.Local)
+	model = strings.TrimSpace(m[4])
+	mode = m[5]
+	status = st
+	toks = tk
+	ttfb = ttfbD
+	total = time.Duration(fs * float64(time.Second))
+	ok = true
+	return
+}
+
+// modelProducerFromName 从模型名推断 producer（回填日志里没记来源，只有模型名）。
+// 显式前缀优先（zcode:… / opencode:… 等）；裸名回落到 workbuddy（历史日志绝大多数是
+// 它，且这是网关的默认来源口径）。
+func modelProducerFromName(model string) string {
+	_, producer, _ := resolveModelRoute(model)
+	if producer != "" {
+		return producer
+	}
+	return "workbuddy"
+}
+
+// logTimeToDay 把「文件 mtime 的日期 + 行内时刻」折成该行所属日期。
+// 逐行调用时用 prev 时刻检测跨天：行内时刻比上一行（更晚的行）还大 → 往前退一天。
+func logTimeToDay(day time.Time, clock time.Time) time.Time {
+	return time.Date(day.Year(), day.Month(), day.Day(), clock.Hour(), clock.Minute(), clock.Second(), 0, time.Local)
+}
+
+// BackfillFromLogs 扫 dirs 下的网关流水日志，把 stats.json 里**还没有的日桶**补上。
+// 返回补进去的天数与解析到的行数。幂等：同一天只要已有桶就整日跳过。
+//
+// 为什么整日跳过而不是逐条去重：日志行没有唯一 id 可与 stats.json 对齐，逐条比对
+// 不可行；而「这天已经统计过」是可靠信号（那天的请求在发生时就已经记账了）。
+func BackfillFromLogs(dirs ...string) (days, rows int) {
+	if len(dirs) == 0 {
+		return 0, 0
+	}
+	type dayAgg struct {
+		byModel    map[string]*modelMetrics
+		byProducer map[string]*modelMetrics
+		hours      [24]int64
+	}
+	found := map[string]*dayAgg{}
+
+	seen := map[string]bool{}
+	files := 0
+	for _, p := range backfillLogNames(dirs) {
+		if files >= backfillMaxFiles || rows >= backfillMaxLines {
+			break
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		fi, err := os.Stat(p)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		files++
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		var lines []string
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			l := sc.Text()
+			if len(l) > 0 && l[0] == '|' {
+				lines = append(lines, l)
+			}
+		}
+		f.Close()
+		if len(lines) == 0 {
+			continue
+		}
+		// 反推日期：最后一行落在文件 mtime 那天，逐行往前，时刻变大即跨天。
+		day := fi.ModTime()
+		type stamped struct {
+			at    time.Time
+			model string
+			mode  string
+			stat  int
+			toks  int
+			ttfb  time.Duration
+			total time.Duration
+		}
+		stampedRows := make([]stamped, 0, len(lines))
+		var prevClock time.Time
+		first := true
+		for i := len(lines) - 1; i >= 0; i-- {
+			clock, model, mode, st, tk, ttfb, total, ok := parseChatRow(lines[i])
+			if !ok {
+				continue
+			}
+			if !first && clock.After(prevClock) {
+				day = day.AddDate(0, 0, -1)
+			}
+			first = false
+			prevClock = clock
+			stampedRows = append(stampedRows, stamped{
+				at: logTimeToDay(day, clock), model: model, mode: mode,
+				stat: st, toks: tk, ttfb: ttfb, total: total,
+			})
+			rows++
+			if rows >= backfillMaxLines {
+				break
+			}
+		}
+		// stampedRows 是从后往前收集的，累加顺序无所谓（纯求和），直接遍历。
+		for _, r := range stampedRows {
+			k := r.at.Format(dayKeyFmt)
+			a := found[k]
+			if a == nil {
+				a = &dayAgg{byModel: map[string]*modelMetrics{}, byProducer: map[string]*modelMetrics{}}
+				found[k] = a
+			}
+			mm := r.model
+			if mm == "" {
+				mm = "-"
+			}
+			d := &modelMetrics{Requests: 1, LatSumMS: float64(r.total.Milliseconds()),
+				LastSeen: metricsTime{r.at}}
+			if r.stat == 200 {
+				d.Success = 1
+			} else {
+				d.Failed = 1
+			}
+			if r.mode == "stream" {
+				d.Streaming = 1
+			}
+			if r.ttfb > 0 {
+				d.TTFBSumMS = float64(r.ttfb.Milliseconds())
+				d.TTFBCount = 1
+			}
+			if r.toks >= 0 {
+				// 日志的 tok= 是完成 token（不含 prompt），按同一口径记入 CompTok；
+				// 生成秒数用「总耗时 - TTFB」近似，好让 tokens/s 有个分母。
+				d.CompTok = int64(r.toks)
+				gen := r.total
+				if r.ttfb > 0 {
+					gen = r.total - r.ttfb
+				}
+				if gen > 0 {
+					d.GenSecSum = gen.Seconds()
+				}
+			}
+			addMetrics(getOrNew(a.byModel, mm), d)
+			addMetrics(getOrNew(a.byProducer, modelProducerFromName(r.model)), d)
+			a.hours[r.at.Hour()]++
+		}
+	}
+
+	if len(found) == 0 {
+		return 0, rows
+	}
+
+	m := globalMetrics
+	m.mu.Lock()
+	// 只补还没有的日：已有那天说明统计已经覆盖，不重复计。
+	added := 0
+	for k, a := range found {
+		if _, exists := m.days[k]; exists {
+			continue
+		}
+		b := newDayBucket()
+		for mk, mm := range a.byModel {
+			b.ByModel[mk] = mm
+		}
+		for pk, pm := range a.byProducer {
+			b.ByProducer[pk] = pm
+		}
+		b.Hours = a.hours
+		m.days[k] = b
+		added++
+	}
+	if added > 0 {
+		m.pruneLocked(time.Now().Format(dayKeyFmt))
+		m.dirty = true
+	}
+	path, raw, flush := m.flushLocked()
+	m.mu.Unlock()
+	if flush {
+		_ = writeFileAtomic(path, raw)
+	}
+	return added, rows
 }
 
 // ---------- 逐日持久化 ----------
