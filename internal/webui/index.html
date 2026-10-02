@@ -2456,6 +2456,7 @@ function viewStats(){
         '<td class="num">' + fmtInt(m.requests) + '</td>' +
         '<td class="num">' + fmtInt(m.success) + '</td>' +
         '<td class="num">' + (m.failed ? '<span style="color:var(--danger)">' + fmtInt(m.failed) + '</span>' : "0") + '</td>' +
+        '<td class="num">' + ((Number(m.requests) || 0) ? fmtPct((Number(m.success) || 0) / Number(m.requests)) : "—") + '</td>' +
         '<td class="num">' + fmtDur(m.avg_ttfb_ms) + '</td>' +
         '<td class="num">' + fmtDur(m.avg_latency_ms) + '</td>' +
         '<td class="num">' + fmtInt(m.total_tokens) + '</td>' +
@@ -2468,7 +2469,8 @@ function viewStats(){
         (partialNote() ? (" " + partialNote()) : ""),
       '<div class="tablewrap"><table><thead><tr>' +
       statsTh("模型", "model", false) + statsTh("请求", "requests", true) +
-      statsTh("成功率", "success_rate", true) + '<th class="num">失败</th>' +
+      statsTh("成功", "success", true) + '<th class="num">失败</th>' +
+      statsTh("成功率", "success_rate", true) +
       statsTh("TTFB", "avg_ttfb_ms", true) + statsTh("延迟", "avg_latency_ms", true) +
       statsTh("Tokens", "total_tokens", true) + statsTh("缓存命中", "cache_hit_rate", true) +
       '<th>费率</th><th>最近</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
