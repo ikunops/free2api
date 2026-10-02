@@ -67,7 +67,13 @@ func (s *chatStat) done() {
 	}
 	s.logged = true
 	total := time.Since(s.start)
-	logChatRow(s.ttfb, total, s.model, s.mode, s.uid, s.nick, s.status, s.toks)
+	// prompt 侧只在有 usage 观测时落盘；缺失写 -1（哨兵），
+	// 回填时才能区分「显式 0」与「没观测到」。
+	prompt := -1
+	if s.hasUsage {
+		prompt = s.prompt
+	}
+	logChatRow(s.ttfb, total, s.model, s.mode, s.uid, s.nick, s.status, s.toks, prompt)
 	recordChatMetric(s, total)
 }
 
@@ -237,7 +243,9 @@ const (
 	chatAcctWidth = 22
 	chatTTFBWidth = 8
 	chatTokWidth  = 6
-	chatRateWidth = 11 // 形如 "183.6tok/s"
+	// chatPromptWidth 输入 token 列：最长见过 8 位（30538665），留 9 列余量。
+	chatPromptWidth = 9
+	chatRateWidth   = 11 // 形如 "183.6tok/s"
 )
 
 // logChatRow 打印一行请求级表格日志（直接输出 stdout，无 log 时间戳前缀）。
@@ -248,7 +256,8 @@ const (
 //   - uid/nick：完整 uid 与账号昵称，经 logfmt.Label 拼成 "昵称(uid8)" 展示——只有
 //     uid8 时人眼无法判断是哪个号，要辨认必须再查 auths/，排障多一跳；
 //   - toks<0 表示 usage 缺失，显示 "-"。
-func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int) {
+//   - prompt<0 表示这行没有输入 token 观测（旧格式流水行），显示 "-"。
+func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks, prompt int) {
 	if !chatLogEnabled {
 		return
 	}
@@ -266,11 +275,16 @@ func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status
 			tokpsField = "0.0tok/s"
 		}
 	}
+	// prompt 侧：<0 是「没观测到 usage」的哨兵，回填时靠它区分缺失与显式 0。
+	promptField := "-"
+	if prompt >= 0 {
+		promptField = fmt.Sprintf("%d", prompt)
+	}
 	ttfbMS := "-"
 	if ttfb > 0 {
 		ttfbMS = fmt.Sprintf("%dms", ttfb.Milliseconds())
 	}
-	fmt.Fprintf(os.Stdout, "| #%03d | %s | %s | %s | %d | %s | TTFB=%s | tok=%s | %s | total=%.1fs |\n",
+	fmt.Fprintf(os.Stdout, "| #%03d | %s | %s | %s | %d | %s | TTFB=%s | tok=%s | ptok=%s | %s | total=%.1fs |\n",
 		seq,
 		time.Now().Format("15:04:05"),
 		model,
@@ -279,6 +293,7 @@ func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status
 		acct,
 		logfmt.Pad(ttfbMS, chatTTFBWidth),
 		logfmt.Pad(tokField, chatTokWidth),
+		logfmt.Pad(promptField, chatPromptWidth),
 		logfmt.Pad(tokpsField, chatRateWidth),
 		total.Seconds(),
 	)

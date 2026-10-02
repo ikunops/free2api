@@ -169,6 +169,10 @@ type dayBucket struct {
 	ByModel    map[string]*modelMetrics `json:"by_model,omitempty"`
 	ByProducer map[string]*modelMetrics `json:"by_producer,omitempty"`
 	Hours      [24]int64                `json:"hours,omitempty"`
+	// Partial 标记这天的输入侧统计不完整（回填日志时该日的旧格式行
+	// 没有 ptok，输入 token 永远是 0）。前端据此把那些天的 token
+	// 标为「下限」，而不是把它当成完整口径。
+	Partial    bool                     `json:"partial,omitempty"`
 }
 
 func newDayBucket() *dayBucket {
@@ -298,7 +302,7 @@ const (
 // chatRowRe 匹配 logChatRow 的输出行。列宽是显示宽度补齐的，故一律 \s* 宽松匹配；
 // 模型名不含 '|'，账号标签不含 '|'，用它做分隔安全。
 var chatRowRe = regexp.MustCompile(
-	`^\|\s*#\d+\s*\|\s*(\d{1,2}):(\d{2}):(\d{2})\s*\|\s*([^|]*?)\s*\|\s*(stream|sync)\s*\|\s*(\d{3})\s*\|\s*[^|]*\|\s*TTFB=([^|]*?)\s*\|\s*tok=([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*total=([0-9.]+)s\s*\|`)
+	`^\|\s*#\d+\s*\|\s*(\d{1,2}):(\d{2}):(\d{2})\s*\|\s*([^|]*?)\s*\|\s*(stream|sync)\s*\|\s*(\d{3})\s*\|\s*[^|]*\|\s*TTFB=([^|]*?)\s*\|\s*tok=([^|]*?)\s*\|\s*(?:ptok=([^|]*?)\s*\|\s*)?([^|]*?)\s*\|\s*total=([0-9.]+)s\s*\|`)
 
 // backfillLogNames 候选日志文件名（按此顺序扫）。stdout.log 是主流水，
 // server.out.log 是重定向形态；.prevN 是轮转备份。
@@ -325,8 +329,9 @@ func backfillLogNames(dirs []string) []string {
 }
 
 // parseChatRow 解析一行流水日志。ok=false 表示这行不是请求行 / 解析失败。
-// 返回值：当天内的时刻、模型、模式、状态码、TTFB、token 数（<0 = 缺失）、总耗时。
-func parseChatRow(line string) (clock time.Time, model, mode string, status, toks int, ttfb, total time.Duration, ok bool) {
+// 返回值：当天内的时刻、模型、模式、状态码、输出 token（<0 = 缺失）、
+// 输入 token（<0 = 缺失；旧格式行没有 ptok 列）、TTFB、总耗时。
+func parseChatRow(line string) (clock time.Time, model, mode string, status, toks, ptoks int, ttfb, total time.Duration, ok bool) {
 	m := chatRowRe.FindStringSubmatch(line)
 	if m == nil {
 		return
@@ -348,13 +353,18 @@ func parseChatRow(line string) (clock time.Time, model, mode string, status, tok
 	if v, err := strconv.Atoi(strings.TrimSpace(m[8])); err == nil {
 		tk = v
 	}
+	// ptok 是后加列：旧格式行没有这个分组，m[9] 为空 → 保持 -1。
+	ptk := -1
+	if v, err := strconv.Atoi(strings.TrimSpace(m[9])); err == nil {
+		ptk = v
+	}
 	var ttfbD time.Duration
 	if s := strings.TrimSpace(m[7]); s != "" && s != "-" {
 		if d, err := time.ParseDuration(s); err == nil {
 			ttfbD = d
 		}
 	}
-	fs, err := strconv.ParseFloat(m[10], 64)
+	fs, err := strconv.ParseFloat(m[11], 64)
 	if err != nil {
 		return
 	}
@@ -363,6 +373,7 @@ func parseChatRow(line string) (clock time.Time, model, mode string, status, tok
 	mode = m[5]
 	status = st
 	toks = tk
+	ptoks = ptk
 	ttfb = ttfbD
 	total = time.Duration(fs * float64(time.Second))
 	ok = true
@@ -399,6 +410,7 @@ func BackfillFromLogs(dirs ...string) (days, rows int) {
 		byModel    map[string]*modelMetrics
 		byProducer map[string]*modelMetrics
 		hours      [24]int64
+		partial    bool // 至少一行缺输入 token 观测 → 这天输入侧不完整
 	}
 	found := map[string]*dayAgg{}
 
@@ -437,19 +449,20 @@ func BackfillFromLogs(dirs ...string) (days, rows int) {
 		// 反推日期：最后一行落在文件 mtime 那天，逐行往前，时刻变大即跨天。
 		day := fi.ModTime()
 		type stamped struct {
-			at    time.Time
-			model string
-			mode  string
-			stat  int
-			toks  int
-			ttfb  time.Duration
-			total time.Duration
+			at     time.Time
+			model  string
+			mode   string
+			stat   int
+			toks   int
+			ptoks  int // 输入 token；<0 = 旧格式行，无观测
+			ttfb   time.Duration
+			total  time.Duration
 		}
 		stampedRows := make([]stamped, 0, len(lines))
 		var prevClock time.Time
 		first := true
 		for i := len(lines) - 1; i >= 0; i-- {
-			clock, model, mode, st, tk, ttfb, total, ok := parseChatRow(lines[i])
+			clock, model, mode, st, tk, ptk, ttfb, total, ok := parseChatRow(lines[i])
 			if !ok {
 				continue
 			}
@@ -460,7 +473,7 @@ func BackfillFromLogs(dirs ...string) (days, rows int) {
 			prevClock = clock
 			stampedRows = append(stampedRows, stamped{
 				at: logTimeToDay(day, clock), model: model, mode: mode,
-				stat: st, toks: tk, ttfb: ttfb, total: total,
+				stat: st, toks: tk, ptoks: ptk, ttfb: ttfb, total: total,
 			})
 			rows++
 			if rows >= backfillMaxLines {
@@ -505,6 +518,12 @@ func BackfillFromLogs(dirs ...string) (days, rows int) {
 					d.GenSecSum = gen.Seconds()
 				}
 			}
+			// ptok= 后加列：有观测就记入输入侧，没有则标记这天不完整。
+			if r.ptoks >= 0 {
+				d.PromptTok = int64(r.ptoks)
+			} else {
+				a.partial = true
+			}
 			addMetrics(getOrNew(a.byModel, mm), d)
 			addMetrics(getOrNew(a.byProducer, modelProducerFromName(r.model)), d)
 			a.hours[r.at.Hour()]++
@@ -531,6 +550,7 @@ func BackfillFromLogs(dirs ...string) (days, rows int) {
 			b.ByProducer[pk] = pm
 		}
 		b.Hours = a.hours
+		b.Partial = a.partial
 		m.days[k] = b
 		added++
 	}
@@ -690,6 +710,9 @@ type MetricsSnapshot struct {
 	Series    []DayPoint            `json:"series,omitempty"`
 	// Heatmap 周几 × 小时 的请求数（[0]=周日，Go 的 time.Weekday 口径）。
 	Heatmap [7][24]int64 `json:"heatmap"`
+	// PartialDays 区间内「缺输入 token 观测」的天数：>0 时总 token
+	// 只是下限（那几天的输入侧无法回填，日志里就没记）。
+	PartialDays int `json:"partial_days"`
 }
 
 // ModelStatPayload 单模型派生统计。
@@ -743,6 +766,8 @@ type DayPoint struct {
 	Failed   int64   `json:"failed"`
 	Tokens   int64   `json:"tokens"`
 	Credit   float64 `json:"credit"`
+	// Partial 同 dayBucket.Partial：这天的 token 只含输出侧，不是完整口径。
+	Partial  bool    `json:"partial,omitempty"`
 }
 
 // rangeSpec 区间视图的时间窗。from 为零值 = 全部保留期。
@@ -806,6 +831,7 @@ func metricsSnapshotRange(spec rangeSpec) MetricsSnapshot {
 	byModel := map[string]*modelMetrics{}
 	byProducer := map[string]*modelMetrics{}
 	var heat [7][24]int64
+	partialDays := 0
 	series := []DayPoint{}
 
 	fromKey := ""
@@ -838,12 +864,23 @@ func metricsSnapshotRange(spec rangeSpec) MetricsSnapshot {
 		}
 		var dp DayPoint
 		dp.Day = k
+		var dayPrompt, dayComp int64
 		for _, mm := range b.ByModel {
 			dp.Requests += mm.Requests
 			dp.Success += mm.Success
 			dp.Failed += mm.Failed
 			dp.Tokens += mm.PromptTok + mm.CompTok
 			dp.Credit += mm.Credit
+			dayPrompt += mm.PromptTok
+			dayComp += mm.CompTok
+		}
+		// 这天标不完整的两种来源：
+		//   - b.Partial：本次回填时就发现有行缺 ptok；
+		//   - 有输出但输入为 0：旧版本已经写进 stats.json 的回填日，
+		//     没有 Partial 标记但同样缺输入侧（真实请求不可能 0 输入）。
+		dp.Partial = b.Partial || (dayComp > 0 && dayPrompt == 0)
+		if dp.Partial {
+			partialDays++
 		}
 		series = append(series, dp)
 	}
@@ -862,6 +899,9 @@ func metricsSnapshotRange(spec rangeSpec) MetricsSnapshot {
 		Producers: make([]ProducerStatPayload, 0, len(byProducer)),
 		Series:    series,
 		Heatmap:   heat,
+		// PartialDays 数出区间内输入侧缺失的天数，前端据此把
+		// 总量标为下限而不是完整口径。
+		PartialDays: partialDays,
 	}
 
 	var tot modelMetrics

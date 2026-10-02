@@ -159,7 +159,9 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .trend{display:flex;align-items:flex-end;gap:4px;height:104px;padding-top:2px}
 .trend .tb{flex:1 1 0;min-width:5px;max-width:46px;border-radius:3px 3px 0 0;background:var(--acc);opacity:.85}
 .trend .tb:hover{opacity:1}
-.trend .tb.zero{background:var(--hover);opacity:1}
+.trend .tb.zero{opacity:.18}
+/* 回填日（输入 token 缺失）：用邪纹区分于完整日，不靠颜色变化 */
+.trend .tb.part{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.35) 0 3px,transparent 3px 6px)}
 .trend-x{display:flex;gap:4px;margin-top:7px;font-size:10.5px;color:var(--fg4)}
 .trend-x .tx{flex:1 1 0;min-width:5px;max-width:46px;text-align:center;white-space:nowrap;overflow:hidden}
 /* 占比条：表格里的横向比例。 */
@@ -248,6 +250,10 @@ th{font-size:11.5px;color:var(--fg3);font-weight:500;padding-top:4px;padding-bot
 tr:last-child td{border-bottom:none}
 tr.dim td{opacity:.55}
 td.num{font-variant-numeric:tabular-nums}
+/* 可排序表头：默认不抢眼，悬停/当前排序列才上强调色 */
+th.sorth{cursor:pointer;user-select:none}
+th.sorth:hover{color:var(--fg)}
+th.sorth.on{color:var(--fg)}
 .mono{font-family:Consolas,"Cascadia Mono",monospace;font-size:12px}
 
 .tag{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:999px;
@@ -528,7 +534,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  stats: null, statsRange: "7d", schedule: null, modeldead: null, selftest: null,
+  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
   mq: "", mfProducer: "all", mfRate: "all"
@@ -713,8 +719,10 @@ function ovTrend(series){
     var r = Number(p.requests) || 0;
     var h = peak > 0 ? Math.max(r > 0 ? 5 : 1, Math.round(r * 100 / peak)) : 1;
     var title = String(p.day || "") + " · 请求 " + fmtInt(r) + " · 成功 " + fmtInt(p.success) +
-      " · 失败 " + fmtInt(p.failed) + " · Tokens " + fmtInt(p.tokens);
-    return '<div class="tb' + (r > 0 ? "" : " zero") + '" style="height:' + h + '%" title="' + esc(title) + '"></div>';
+      " · 失败 " + fmtInt(p.failed) + " · Tokens " + (p.partial ? "≥" : "") + fmtInt(p.tokens) +
+      (p.partial ? "（这天缺输入 token，为下限）" : "");
+    return '<div class="tb' + (r > 0 ? "" : " zero") + (p.partial ? " part" : "") +
+      '" style="height:' + h + '%" title="' + esc(title) + '"></div>';
   }).join("");
   var step = Math.max(1, Math.ceil(pts.length / 10));
   var xs = pts.map(function(p, i){
@@ -803,7 +811,11 @@ function ovModelsCard(){
   if (!s) return "";
   var list = (s.models || []).slice();
   if (!list.length) return "";
-  list.sort(function(a, b){ return (Number(b.requests) || 0) - (Number(a.requests) || 0); });
+  list.sort(function(a, b){
+    var d = (Number(b.requests) || 0) - (Number(a.requests) || 0);
+    if (d) return d;
+    return String(a.model || "") < String(b.model || "") ? -1 : (String(a.model || "") > String(b.model || "") ? 1 : 0);
+  });
   var tot = list.reduce(function(a, x){ return a + (Number(x.requests) || 0); }, 0) || 1;
   var maxReq = Number(list[0].requests) || 0;
   var top = list.slice(0, 8);
@@ -986,7 +998,9 @@ function viewOverview(){
       "CN " + (cn.total || 0) + " · 国际 " + (gl.total || 0) + " · 冷却 " + cooling + " · 禁用 " + disabled) +
     ovKpi("对外模型", fmtInt(m.length), m.length ? "GET /v1/models" : "需要健康账号") +
     ovKpi(rn + "请求", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed)) +
-    ovKpi(rn + " Tokens", fmtInt(t.total_tokens), "缓存命中率 " + fmtPct(t.cache_hit_rate)) +
+    ovKpi(rn + " Tokens", ((s && s.partial_days) ? "≥" : "") + fmtInt(t.total_tokens),
+      (s && s.partial_days) ? ("下限：" + s.partial_days + " 天缺输入 token · 缓存命中率 " + fmtPct(t.cache_hit_rate))
+        : ("缓存命中率 " + fmtPct(t.cache_hit_rate))) +
     ovKpi("平均延迟", fmtDur(t.avg_latency_ms), "首字 " + fmtDur(t.avg_ttfb_ms) + " · 在飞 " + fmtInt(inFlight)) +
     '</div>';
   var trend = card("请求趋势（" + rn + "）", "每天一根柱，悬停看当天请求 / 成功 / 失败 / token。", ovTrend(s && s.series));
@@ -2299,6 +2313,46 @@ function statsRangeSeg(){
     return '<button data-range="' + r.id + '" class="' + (cur === r.id ? "on" : "") + '">' + esc(r.name) + '</button>';
   }).join("") + '</div>';
 }
+/* statsSortVal 取排序值；缺观测的均值算 -1，沉在最后而不是伪造成 0。 */
+function statsSortVal(m, key){
+  if (key === "model") return String(m.model || "");
+  if (key === "success_rate") return (Number(m.requests) || 0) ? (Number(m.success) || 0) / Number(m.requests) : -1;
+  if (key === "avg_ttfb_ms" || key === "avg_latency_ms"){
+    var v = Number(m[key]);
+    return (isFinite(v) && v > 0) ? v : -1;
+  }
+  return Number(m[key]) || 0;
+}
+/* statsSortList 按当前排序键排序；同值一律用模型名做次级键，
+   否则大量「各 1 次」的行每次刷新都会换位。 */
+function statsSortList(list){
+  var so = S.statsSort || { key: "requests", dir: -1 };
+  var dir = so.dir === 1 ? 1 : -1;
+  return list.slice().sort(function(a, b){
+    var va = statsSortVal(a, so.key), vb = statsSortVal(b, so.key);
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    var na = String(a.model || ""), nb = String(b.model || "");
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+    return 0;
+  });
+}
+/* statsTh 可点排序表头：点一下切排序键，再点一下翻转方向。 */
+function statsTh(label, key, numeric){
+  var so = S.statsSort || {};
+  var on = so.key === key;
+  var arrow = on ? (so.dir === 1 ? " ▲" : " ▼") : "";
+  return '<th class="' + (numeric ? "num " : "") + 'sorth' + (on ? " on" : "") + '" ' +
+    'data-action="stats-sort" data-key="' + key + '" title="点击按此列排序（再点翻转方向）">' +
+    esc(label) + arrow + '</th>';
+}
+/* partialNote 输入侧缺失的提示文案：说清楚为什么总量只是下限。 */
+function partialNote(){
+  var n = (S.stats && Number(S.stats.partial_days)) || 0;
+  if (!n) return "";
+  return "其中 " + n + " 天是旧日志回填的（日志里没记输入 token），所以总量只能当下限看。";
+}
 /* heatCell 热力图一格：颜色深浅按请求数相对全局峰值，0 用最淡的底。 */
 function heatCell(n, peak){
   var a = peak > 0 ? n / peak : 0;
@@ -2394,7 +2448,7 @@ function viewStats(){
   if (!models.length){
     html += card("按模型", "", '<div class="empty">这个区间还没有请求观测。跑一次对话后回来刷新。</div>');
   } else {
-    models.sort(function(a, b){ return (b.requests || 0) - (a.requests || 0); });
+    models = statsSortList(models);
     var rows = models.map(function(m){
       var rate = m.credits || "";
       return '<tr>' +
@@ -2409,17 +2463,21 @@ function viewStats(){
         '<td>' + (rate ? '<span class="tag mut">' + esc(rate) + '</span>' : "—") + '</td>' +
         '<td class="hint" style="white-space:nowrap">' + esc(fmtTime(m.last_seen)) + '</td></tr>';
     }).join("");
-    html += card("按模型（" + models.length + " 个）", "token 与缓存数来自上游 usage；缺观测的请求不计入均值分母。",
+    html += card("按模型（" + models.length + " 个）",
+      "默认按请求数降序；点表头可改排序。token 与缓存数来自上游 usage；缺观测的请求不计入均值分母。" +
+        (partialNote() ? (" " + partialNote()) : ""),
       '<div class="tablewrap"><table><thead><tr>' +
-      '<th>模型</th><th class="num">请求</th><th class="num">成功</th><th class="num">失败</th>' +
-      '<th class="num">TTFB</th><th class="num">延迟</th><th class="num">Tokens</th><th class="num">缓存命中</th>' +
+      statsTh("模型", "model", false) + statsTh("请求", "requests", true) +
+      statsTh("成功率", "success_rate", true) + '<th class="num">失败</th>' +
+      statsTh("TTFB", "avg_ttfb_ms", true) + statsTh("延迟", "avg_latency_ms", true) +
+      statsTh("Tokens", "total_tokens", true) + statsTh("缓存命中", "cache_hit_rate", true) +
       '<th>费率</th><th>最近</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
   }
-  html += card("token 总量", "",
+  html += card("token 总量", partialNote(),
     kv([
-      ["提示词 tokens", fmtInt(t.prompt_tokens)],
+      ["提示词 tokens", ((st.partial_days) ? "≥ " : "") + fmtInt(t.prompt_tokens)],
       ["生成 tokens", fmtInt(t.completion_tokens)],
-      ["合计 tokens", fmtInt(t.total_tokens)],
+      ["合计 tokens", ((st.partial_days) ? "≥ " : "") + fmtInt(t.total_tokens)],
       ["缓存写入 tokens", fmtInt(t.cache_write_tokens)]
     ]));
   html += '<div class="row"><button class="tiny" data-action="stats-reset" ' +
@@ -2428,6 +2486,15 @@ function viewStats(){
   return html;
 }
 
+/* statsSortSet 切排序键：同一列再点一下就翻转方向；换列默认降序。 */
+function statsSortSet(key){
+  if (!key) return;
+  var so = S.statsSort || { key: "requests", dir: -1 };
+  if (so.key === key) so.dir = (so.dir === 1 ? -1 : 1);
+  else { so.key = key; so.dir = -1; }
+  S.statsSort = so;
+  render();
+}
 /* ---------- 运行态（/status 里未在别处展示的字段 + /admin/schedule + modeldead） ---------- */
 function viewRuntime(){
   var selfTestHtml = selfTestCard();
@@ -3282,6 +3349,7 @@ async function actOn(t){
     if (act === "reset-cooldowns") return resetCooldowns();
     if (act === "stats-reset") return statsReset();
     if (act === "stats-range") return statsRangeSet(t.getAttribute("data-range"));
+    if (act === "stats-sort") return statsSortSet(t.getAttribute("data-key"));
     if (act === "sched-toggle") return schedToggle(t.getAttribute("data-key"), t.getAttribute("data-next") === "1");
     if (act === "modeldead-clear") return modeldeadClear();
     if (act === "codex-detach-preview") return codexDetachPreview();

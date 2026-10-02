@@ -9,12 +9,19 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// backfillRow 造一行与 logChatRow 同形的流水日志（列宽用空格补齐，与生产一致）。
+// backfillRow 造一行旧格式（无 ptok）流水日志。
 func backfillRow(seq int, hhmmss, model, mode string, status int, ttfbMS, toks int, totalSec float64) string {
+	return backfillRowP(seq, hhmmss, model, mode, status, ttfbMS, toks, -1, totalSec)
+}
+
+// backfillRowP 造一行与 logChatRow 同形的流水日志（列宽用空格补齐，与生产一致）。
+// ptoks < 0 代表旧格式（没有 ptok 列），与生产旧日志同形。
+func backfillRowP(seq int, hhmmss, model, mode string, status int, ttfbMS, toks, ptoks int, totalSec float64) string {
 	ttfb := "-"
 	if ttfbMS > 0 {
 		ttfb = itoa(ttfbMS) + "ms"
@@ -23,8 +30,13 @@ func backfillRow(seq int, hhmmss, model, mode string, status int, ttfbMS, toks i
 	if toks >= 0 {
 		tok = itoa(toks)
 	}
+	// ptok 是独立一列（与生产日志同形）；旧格式就不发这一列。
+	mid := ""
+	if ptoks >= 0 {
+		mid = " | ptok=" + itoa(ptoks)
+	}
 	return "| #" + pad3(seq) + " | " + hhmmss + " | " + model + " | " + mode + " | " +
-		itoa(status) + " | acct(12345678)    | TTFB=" + ttfb + " | tok=" + tok +
+		itoa(status) + " | acct(12345678)    | TTFB=" + ttfb + " | tok=" + tok + mid +
 		" | 10.0tok/s | total=" + ftoa(totalSec) + "s |"
 }
 
@@ -64,8 +76,8 @@ func ftoa(f float64) string {
 
 // TestParseChatRow 解析一行流水日志：各字段逐个核对。
 func TestParseChatRow(t *testing.T) {
-	line := backfillRow(7, "19:29:17", "global:deepseek-v4.1-flash", "stream", 200, 4148, 529, 6.6)
-	clock, model, mode, status, toks, ttfb, total, ok := parseChatRow(line)
+	line := backfillRowP(7, "19:29:17", "global:deepseek-v4.1-flash", "stream", 200, 4148, 529, 30538, 6.6)
+	clock, model, mode, status, toks, ptoks, ttfb, total, ok := parseChatRow(line)
 	if !ok {
 		t.Fatalf("parse failed: %q", line)
 	}
@@ -81,6 +93,9 @@ func TestParseChatRow(t *testing.T) {
 	if toks != 529 {
 		t.Errorf("toks=%d", toks)
 	}
+	if ptoks != 30538 {
+		t.Errorf("ptoks=%d want 30538", ptoks)
+	}
 	if ttfb != 4148*time.Millisecond {
 		t.Errorf("ttfb=%v", ttfb)
 	}
@@ -95,7 +110,7 @@ func TestParseChatRow(t *testing.T) {
 // TestParseChatRowNoUsage 无 usage 时 tok=-，解析后 toks<0（缺失≠0）。
 func TestParseChatRowNoUsage(t *testing.T) {
 	line := backfillRow(1, "07:32:02", "cn:auto", "sync", 503, 0, -1, 16.1)
-	_, _, _, status, toks, ttfb, _, ok := parseChatRow(line)
+	_, _, _, status, toks, ptoks, ttfb, _, ok := parseChatRow(line)
 	if !ok {
 		t.Fatalf("parse failed: %q", line)
 	}
@@ -104,6 +119,9 @@ func TestParseChatRowNoUsage(t *testing.T) {
 	}
 	if toks != -1 {
 		t.Errorf("toks=%d want -1（缺失）", toks)
+	}
+	if ptoks != -1 {
+		t.Errorf("ptoks=%d want -1（旧格式行无 ptok）", ptoks)
 	}
 	if ttfb != 0 {
 		t.Errorf("ttfb=%v want 0", ttfb)
@@ -119,7 +137,7 @@ func TestParseChatRowRejectsGarbage(t *testing.T) {
 		"| #001 | 10:00:00 | m | sync | abc | a | TTFB=- | tok=1 | x | total=1.0s |",
 		"| #001 | 10:00:00 | m | sync | 200 | a | TTFB=- | tok=1 | x | total=xxxs |",
 	} {
-		if _, _, _, _, _, _, _, ok := parseChatRow(s); ok {
+		if _, _, _, _, _, _, _, _, ok := parseChatRow(s); ok {
 			t.Errorf("should not parse: %q", s)
 		}
 	}
@@ -225,5 +243,62 @@ func TestModelProducerFromName(t *testing.T) {
 		if got := modelProducerFromName(in); got != want {
 			t.Errorf("modelProducerFromName(%q)=%q want %q", in, got, want)
 		}
+	}
+}
+
+// TestParseChatRowLegacyNoPtok 旧格式行（没有 ptok 列）仍能解析，ptoks=-1。
+func TestParseChatRowLegacyNoPtok(t *testing.T) {
+	line := backfillRow(9, "12:34:56", "cn:auto", "stream", 200, 120, 77, 1.5)
+	if strings.Contains(line, "ptok=") {
+		t.Fatalf("旧格式行不应含 ptok: %q", line)
+	}
+	_, _, _, status, toks, ptoks, _, _, ok := parseChatRow(line)
+	if !ok || status != 200 || toks != 77 || ptoks != -1 {
+		t.Fatalf("ok=%v status=%d toks=%d ptoks=%d", ok, status, toks, ptoks)
+	}
+}
+
+// TestBackfillPromptTokensAndPartial 回填：有 ptok 的日子计入输入侧且不标不完整；
+// 没有 ptok 的日子记 Partial，且总量不会被伪造。
+func TestBackfillPromptTokensAndPartial(t *testing.T) {
+	resetMetricsForTest(t)
+	hardResetMetrics()
+	t.Cleanup(hardResetMetrics)
+
+	dir := t.TempDir()
+	now := time.Now()
+	// 两天：昨天旧格式（无 ptok，23:20）、今天新格式（带 ptok，00:10）。
+	// 时间必须跨过午夜：回填靠「向前遇到时刻变大就退一天」反推日期。
+	content := backfillRow(1, "23:20:00", "global:deepseek-v4.1-flash", "stream", 200, 1000, 200, 3.0) + "\n" +
+		backfillRowP(2, "00:10:00", "global:deepseek-v4.1-flash", "stream", 200, 1000, 100, 900, 2.0) + "\n"
+	p := filepath.Join(dir, "stdout.log")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(p, now, now)
+
+	if _, rows := BackfillFromLogs(dir); rows != 2 {
+		t.Fatalf("rows=%d want 2", rows)
+	}
+	snap := metricsSnapshotRange(parseRangeSpec("all"))
+	// 输出侧：100 + 200 = 300；输入侧：只有今天那条 900。
+	if snap.Total.CompletionTokens != 300 {
+		t.Errorf("comp=%d want 300", snap.Total.CompletionTokens)
+	}
+	if snap.Total.PromptTokens != 900 {
+		t.Errorf("prompt=%d want 900", snap.Total.PromptTokens)
+	}
+	if snap.PartialDays != 1 {
+		t.Errorf("partial_days=%d want 1（昨天旧格式无 ptok）", snap.PartialDays)
+	}
+	if len(snap.Series) != 2 {
+		t.Fatalf("series=%d want 2", len(snap.Series))
+	}
+	// series 按日升序：第一天无输入（Partial），第二天有。
+	if !snap.Series[0].Partial {
+		t.Errorf("series[0] 应标 Partial: %+v", snap.Series[0])
+	}
+	if snap.Series[1].Partial {
+		t.Errorf("series[1] 不应标 Partial: %+v", snap.Series[1])
 	}
 }
