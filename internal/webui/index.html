@@ -150,6 +150,32 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .bar-track{height:4px;border-radius:3px;background:var(--hover);overflow:hidden;margin-top:9px}
 .bar-fill{height:100%;background:var(--acc);border-radius:3px}
 
+/* 概览：KPI 行 5 列（宽屏一排放得下），窄屏自动降列。 */
+.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px}
+@media(max-width:1400px){.grid5{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:1000px){.grid5{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.grid5{grid-template-columns:1fr}}
+/* 迷你趋势图：每天一根柱，高度按区间峰值归一。 */
+.trend{display:flex;align-items:flex-end;gap:4px;height:104px;padding-top:2px}
+.trend .tb{flex:1 1 0;min-width:5px;max-width:46px;border-radius:3px 3px 0 0;background:var(--acc);opacity:.85}
+.trend .tb:hover{opacity:1}
+.trend .tb.zero{background:var(--hover);opacity:1}
+.trend-x{display:flex;gap:4px;margin-top:7px;font-size:10.5px;color:var(--fg4)}
+.trend-x .tx{flex:1 1 0;min-width:5px;max-width:46px;text-align:center;white-space:nowrap;overflow:hidden}
+/* 占比条：表格里的横向比例。 */
+.sharetrack{display:inline-block;width:100%;height:6px;border-radius:3px;background:var(--hover);
+  overflow:hidden;vertical-align:middle}
+.sharetrack>i{display:block;height:100%;background:var(--acc);border-radius:3px}
+/* 状态环：conic-gradient 画一圈，不引图表库。 */
+.donuts{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:720px){.donuts{grid-template-columns:repeat(2,1fr)}}
+.donut{display:flex;flex-direction:column;align-items:center;gap:7px}
+.donut .ring{width:62px;height:62px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+.donut .ring>span{width:46px;height:46px;border-radius:50%;background:var(--panel);
+  display:flex;align-items:center;justify-content:center}
+.donut .lbl{font-size:11.5px;color:var(--fg3);text-align:center}
+
 button{background:var(--panel);border:1px solid var(--line3);color:var(--fg);
   border-radius:var(--r3);padding:7px 13px;font-size:13px;cursor:pointer;white-space:nowrap;
   box-shadow:0 1px 1px rgba(16,16,16,.03);transition:background .12s,border-color .12s}
@@ -596,6 +622,9 @@ function go(tab, opt){
   if (tab === "runtime" && !S.schedule){
     loadRuntime().then(function(){ if (S.tab === "runtime") render(); });
   }
+  if (tab === "overview" && (!S.stats || !S.schedule)){
+    ensureOverview().then(function(){ if (S.tab === "overview") render(); });
+  }
   if (opt && opt.srcTab) S.srcTab = opt.srcTab;
   if (tab !== "sources"){ S.cand = null; }
   if (tab !== "output"){ S.chanDraft = null; }
@@ -663,6 +692,265 @@ function kv(pairs){
   }).join("") + '</div>';
 }
 /* ---------- 概览 ---------- */
+/* ovRangeName 概览里的区间名：与「请求统计」共用同一个区间口径，标题里写清楚，
+   免得用户把概览上的数字当成「实时」或「今日」。 */
+function ovRangeName(){
+  return statsRangeName((S.stats && S.stats.range) || S.statsRange || "7d");
+}
+/* ovKpi 概览顶部指标卡。v 允许带行内标签（如 17 / 17），所以这里不再 esc。 */
+function ovKpi(k, v, n){
+  return '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v">' + v +
+    '</div><div class="n">' + esc(n) + '</div></div>';
+}
+/* ovTrend 逐日请求趋势：数据来自 /v1/stats 的 series（每天一个点，跨重启保留）。
+   柱高按区间峰值归一；悬停给出当天请求 / 成功 / 失败 / token。 */
+function ovTrend(series){
+  var pts = (series || []).slice(-31);
+  if (!pts.length) return '<div class="empty">这个区间还没有请求。跑一次对话后刷新，这里就会出现逐日柱状图。</div>';
+  var peak = 0;
+  pts.forEach(function(p){ var r = Number(p.requests) || 0; if (r > peak) peak = r; });
+  var bars = pts.map(function(p){
+    var r = Number(p.requests) || 0;
+    var h = peak > 0 ? Math.max(r > 0 ? 5 : 1, Math.round(r * 100 / peak)) : 1;
+    var title = String(p.day || "") + " · 请求 " + fmtInt(r) + " · 成功 " + fmtInt(p.success) +
+      " · 失败 " + fmtInt(p.failed) + " · Tokens " + fmtInt(p.tokens);
+    return '<div class="tb' + (r > 0 ? "" : " zero") + '" style="height:' + h + '%" title="' + esc(title) + '"></div>';
+  }).join("");
+  var step = Math.max(1, Math.ceil(pts.length / 10));
+  var xs = pts.map(function(p, i){
+    return '<div class="tx">' + (i % step === 0 ? esc(String(p.day || "").slice(5)) : "") + '</div>';
+  }).join("");
+  var tot = pts.reduce(function(a, p){ return a + (Number(p.requests) || 0); }, 0);
+  return '<div class="trend">' + bars + '</div><div class="trend-x">' + xs + '</div>' +
+    '<div class="hint" style="margin-top:9px">' + esc(ovRangeName()) + ' 共 ' + fmtInt(tot) +
+    ' 次请求，峰值 ' + fmtInt(peak) + ' 次/天。</div>';
+}
+/* ovDonut 状态环：conic-gradient 画一圈，不引图表库。val 放环心，pct 决定颜色占比。 */
+function ovDonut(pct, color, val){
+  var p = Math.max(0, Math.min(100, Number(pct) || 0));
+  var deg = (p * 3.6).toFixed(1);
+  return '<div class="ring" style="background:conic-gradient(' + color + ' ' + deg +
+    'deg, var(--hover) ' + deg + 'deg 360deg)"><span>' + esc(val) + '</span></div>';
+}
+/* ovHealthCard 账号监测：池子当前各种状态的占比环（可用 / 冷却 / 熔断 / 禁用 / 连败 / 低额）。 */
+function ovHealthCard(){
+  var st = S.status;
+  if (!st) return "";
+  var acc = st.accounts || [];
+  var total = acc.length;
+  if (!total) return "";
+  var breaker = 0, fails = 0, low = 0;
+  acc.forEach(function(a){
+    if (futureTime(a.breaker_until)) breaker++;
+    if ((a.consecutive_fails || 0) > 0) fails++;
+    var c = creditRowOf(a.uid);
+    if (c && c.ok && c.total > 0 && (Number(c.remain) || 0) <= c.total * 0.15) low++;
+  });
+  var items = [
+    { k: "可用", n: st.healthy || 0, color: "var(--acc)" },
+    { k: "冷却", n: st.cooling || 0, color: "var(--warn)" },
+    { k: "熔断", n: breaker, color: "var(--danger)" },
+    { k: "禁用", n: st.disabled || 0, color: "var(--fg4)" },
+    { k: "连败", n: fails, color: "var(--warn)" },
+    { k: "低额", n: low, color: "var(--danger)" }
+  ];
+  var cells = items.map(function(x){
+    return '<div class="donut" title="' + esc(x.k + " " + x.n + " / " + total) + '">' +
+      ovDonut(total ? x.n * 100 / total : 0, x.color, String(x.n)) +
+      '<div class="lbl">' + esc(x.k) + '</div></div>';
+  }).join("");
+  return card("账号监测", "池子共 " + total + " 个号，各状态占比。环心是数量，颜色占比按全池算。",
+    '<div class="donuts">' + cells + '</div>');
+}
+/* ovProducersCard 按客户端：账号数来自号池，请求 / token 来自区间统计。 */
+function ovProducersCard(){
+  var st = S.status;
+  var list = (st && st.producer_totals) || [];
+  if (!list.length) return "";
+  var sp = {};
+  ((S.stats && S.stats.producers) || []).forEach(function(p){ sp[p.producer || ""] = p; });
+  var maxReq = 0;
+  list.forEach(function(x){ var p = sp[x.producer] || {}; if ((Number(p.requests) || 0) > maxReq) maxReq = Number(p.requests) || 0; });
+  var rows = list.map(function(x){
+    var p = sp[x.producer] || {};
+    var req = Number(p.requests) || 0;
+    var pct = maxReq ? req * 100 / maxReq : 0;
+    var realms = producerRealms(x.producer);
+    var realmRow = realms.length > 1 ? ' <span class="hint" style="margin:0">' + realms.map(function(r){
+      return esc(REALM_LABEL[r.id] || r.id) + " " + r.n;
+    }).join(" · ") + '</span>' : "";
+    return '<tr>' +
+      '<td>' + producerTag({ producer: x.producer }) + (x.servable ? "" : ' <span class="tag warn">只读</span>') + realmRow + '</td>' +
+      '<td class="num">' + fmtInt(x.total) + '</td>' +
+      '<td class="num">' + (x.healthy === x.total ? fmtInt(x.healthy)
+        : '<span style="color:var(--warn)">' + fmtInt(x.healthy) + '</span>') + '</td>' +
+      '<td class="num">' + fmtInt(req) + '</td>' +
+      '<td class="num">' + (req ? fmtPct((Number(p.success) || 0) / req) : "—") + '</td>' +
+      '<td class="num">' + fmtInt(p.total_tokens) + '</td>' +
+      '<td style="width:170px"><span class="sharetrack"><i style="width:' + pct.toFixed(1) + '%"></i></span></td>' +
+      '</tr>';
+  }).join("");
+  return card("按客户端（" + list.length + " 家）",
+    "账号数来自号池；请求 / token 来自「" + ovRangeName() + "」区间统计。",
+    '<div class="tablewrap"><table><thead><tr><th>客户端</th><th class="num">账号</th><th class="num">可用</th>' +
+    '<th class="num">请求</th><th class="num">成功率</th><th class="num">Tokens</th><th>请求占比</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>');
+}
+/* ovModelsCard 模型用量：区间内按请求数排序的模型 Top N，带请求 / token 占比条。
+   与「请求统计」页的按模型表同源（/v1/stats 的 models），这里只取前几名做速览。 */
+function ovModelsCard(){
+  var s = S.stats;
+  if (!s) return "";
+  var list = (s.models || []).slice();
+  if (!list.length) return "";
+  list.sort(function(a, b){ return (Number(b.requests) || 0) - (Number(a.requests) || 0); });
+  var tot = list.reduce(function(a, x){ return a + (Number(x.requests) || 0); }, 0) || 1;
+  var maxReq = Number(list[0].requests) || 0;
+  var top = list.slice(0, 8);
+  var rows = top.map(function(m){
+    var req = Number(m.requests) || 0;
+    var pct = req * 100 / tot;
+    var rate = m.credits || "";
+    return '<tr>' +
+      '<td><span class="mono">' + esc(m.model) + '</span>' +
+        (rate ? ' <span class="tag mut">' + esc(rate) + '</span>' : "") + '</td>' +
+      '<td class="num">' + fmtInt(req) + '</td>' +
+      '<td class="num">' + (req ? fmtPct((Number(m.success) || 0) / req) : "—") + '</td>' +
+      '<td class="num">' + fmtInt(m.total_tokens) + '</td>' +
+      '<td class="num">' + fmtPct(m.cache_hit_rate) + '</td>' +
+      '<td style="width:180px"><span class="sharetrack"><i style="width:' +
+        (maxReq ? (req * 100 / maxReq).toFixed(1) : 0) + '%"></i></span></td>' +
+      '<td class="num hint">' + fmtPct(pct / 100) + '</td>' +
+      '</tr>';
+  }).join("");
+  var more = list.length > top.length
+    ? '<div class="hint" style="margin-top:9px">另有 ' + (list.length - top.length) + ' 个模型未列出，完整清单看「请求统计」页。</div>'
+    : "";
+  return card("模型用量（Top " + top.length + " / " + list.length + "）",
+    "按「" + ovRangeName() + "」区间内的请求数排序；占比条按榜首归一，最后一列是全区间请求份额。",
+    '<div class="tablewrap"><table><thead><tr><th>模型</th><th class="num">请求</th><th class="num">成功率</th>' +
+    '<th class="num">Tokens</th><th class="num">缓存命中</th><th>相对榜首</th><th class="num">份额</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' + more +
+    '<div class="row" style="margin-top:11px"><button class="tiny" data-goto="stats">查看完整请求统计</button></div>');
+}
+/* ovChannelsCard 出口清单：主口 + 各专用口，状态 / 端口 / 格式 / 服务来源 / Base URL。 */
+function ovChannelsCard(){
+  var o = S.out;
+  if (!o) return "";
+  var chans = [];
+  if (o.channel_default) chans.push(o.channel_default);
+  (o.channel_status || []).forEach(function(c){ chans.push(c); });
+  if (!chans.length) return "";
+  var rows = chans.map(function(c){
+    var on = !!c.running;
+    var names = (c.producers && c.producers.length)
+      ? c.producers.map(function(p){ return producerName(p); }).join("、") : "全部来源";
+    return '<tr>' +
+      '<td><b>' + esc(c.name || c.id) + '</b>' + (c.id === "default" ? ' <span class="tag mut">主口</span>' : "") + '</td>' +
+      '<td>' + (on ? '<span class="tag ok">运行中</span>' : '<span class="tag err">未运行</span>') + '</td>' +
+      '<td><span class="mono">' + esc(c.listen || "") + '</span></td>' +
+      '<td>' + esc(fmtName(c.format)) + '</td>' +
+      '<td>' + esc(names) + '</td>' +
+      '<td>' + copySpan(c.base_url || "") + '</td></tr>';
+  }).join("");
+  return card("出口 API（" + chans.length + " 个）",
+    "一个出口 = 一个监听端口 + 一套输出参数。主口承接全部来源，专用口只服务勾选的来源。",
+    '<div class="tablewrap"><table><thead><tr><th>出口</th><th style="width:86px">状态</th><th>监听</th>' +
+    '<th>格式</th><th>服务来源</th><th>Base URL</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
+}
+/* ovCreditsCard 额度与积分：按客户端汇总剩余，并列出「读不到额度 / 剩余不到 15%」的号。 */
+function ovCreditsCard(){
+  var c = S.credits;
+  if (!c) return "";
+  var list = c.accounts || [];
+  if (!list.length) return "";
+  var groups = {};
+  list.forEach(function(x){
+    var k = x.producer || "none";
+    var g = groups[k] || (groups[k] = { n: 0, ok: 0, credit: 0, token: 0, expiring: 0 });
+    g.n++;
+    if (x.ok) g.ok++;
+    if (x.unit === "token") g.token += Number(x.remain) || 0;
+    else g.credit += Number(x.remain) || 0;
+    g.expiring += Number(x.expiring) || 0;
+  });
+  var rows = Object.keys(groups).map(function(k){
+    var g = groups[k];
+    var parts = [];
+    if (g.credit) parts.push(fmtInt(Math.round(g.credit)) + " 积分");
+    if (g.token) parts.push(fmtNum(g.token, "token") + " token");
+    if (!parts.length) parts.push("—");
+    return '<tr><td>' + producerTag({ producer: k }) + '</td>' +
+      '<td class="num">' + g.ok + ' / ' + g.n + '</td>' +
+      '<td class="num">' + esc(parts.join(" · ")) + '</td>' +
+      '<td class="num">' + (g.expiring ? '<span style="color:var(--warn)">' + esc(fmtInt(Math.round(g.expiring))) + '</span>' : "0") + '</td></tr>';
+  }).join("");
+  var warn = list.filter(function(x){
+    if (!x.ok) return true;
+    return Number(x.total) > 0 && (Number(x.remain) || 0) <= Number(x.total) * 0.15;
+  }).slice(0, 8);
+  var warnRows = warn.map(function(x){
+    var why = !x.ok ? (x.error || x.note || "额度读不到") : ("剩 " + fmtNum(x.remain, x.unit) +
+      (x.unit === "token" ? " token" : " 积分") + " / 总 " + fmtNum(x.total, x.unit));
+    return '<tr><td><b>' + esc(x.nickname || x.uid) + '</b></td>' +
+      '<td>' + producerTag({ producer: x.producer }) + '</td>' +
+      '<td class="hint">' + esc(why) + '</td></tr>';
+  }).join("");
+  var when = c.fetched_at ? fmtTime(c.fetched_at) : "—";
+  var body = '<div class="tablewrap"><table><thead><tr><th>客户端</th><th class="num">可读 / 账号</th>' +
+    '<th class="num">剩余合计</th><th class="num">快过期</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="hint" style="margin-top:9px">余额直查上游 billing（10 分钟缓存）· 上次 ' + esc(when) +
+    (c.refreshing ? " · 正在后台重查…" : "") + '。zcode 的「token」是套餐 token，workbuddy 的是积分。</div>';
+  if (warnRows){
+    body += '<div class="sep"></div><div style="font-size:13px;font-weight:600;margin-bottom:9px">需要关注（' +
+      warn.length + ' 个）</div><div class="tablewrap"><table><thead><tr><th style="width:220px">账号</th>' +
+      '<th style="width:120px">客户端</th><th>原因</th></tr></thead><tbody>' + warnRows + '</tbody></table></div>';
+  }
+  return card("额度与积分", "按客户端汇总剩余额度；下方列出读不到额度或剩余不到 15% 的号。", body,
+    '<button class="rf" data-action="credits-refresh" title="立刻重查每个号的积分余额">' + svg("refresh") + '刷新余额</button>');
+}
+/* ovSourcesCard 来源台账：三种来源各进来多少个号，占池子多少。 */
+function ovSourcesCard(){
+  var oc = (S.src && S.src.origin_counts) || {};
+  var total = (S.status && S.status.total) || 0;
+  var desc = {
+    app: "探查本机 AI 工具自己存的那一份登录态",
+    switch: "读 wb-switch / zcode-switch 账本里聚合好的多个账号",
+    file: "导入别的机器导出的 JSON 快照，导入时选归属"
+  };
+  var rows = METHOD_ORDER.map(function(k){
+    var n = oc[k] || 0;
+    var pct = total ? n * 100 / total : 0;
+    return '<tr><td>' + esc(methodLabel(k)) + '</td>' +
+      '<td class="num">' + n + '</td>' +
+      '<td style="width:200px"><span class="sharetrack"><i style="width:' + pct.toFixed(1) + '%"></i></span></td>' +
+      '<td class="num hint">' + pct.toFixed(0) + '%</td>' +
+      '<td class="hint">' + esc(desc[k] || "") + '</td></tr>';
+  }).join("");
+  return card("来源台账", "每种来源进来的账号都记在来源台账里；整体迁移时 auths 目录连同台账一起拷走，归类不会丢。",
+    '<div class="tablewrap"><table><thead><tr><th style="width:140px">来源</th><th class="num" style="width:80px">账号</th>' +
+    '<th>占池子</th><th class="num" style="width:60px">占比</th><th>说明</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="row" style="margin-top:11px"><button class="tiny" data-goto="sources">去获取源</button></div>');
+}
+/* ovScheduleCard 定时任务摘要：只报「几个开着、几点跑」，改开关去运行态页。 */
+function ovScheduleCard(){
+  var sc = S.schedule;
+  if (!sc) return "";
+  var tasks = sc.tasks || [];
+  if (!tasks.length) return "";
+  var on = tasks.filter(function(t){ return t.enabled; });
+  var chips = tasks.map(function(t){
+    var hrs = (t.hours && t.hours.length)
+      ? t.hours.map(function(h){ return (h < 10 ? "0" : "") + h + ":00"; }).join("/") : "—";
+    return '<span class="chip" style="cursor:default" title="' + esc(t.note || "") + '">' +
+      (t.enabled ? '<span class="tag ok">已启用</span> ' : '<span class="tag mut">已停用</span> ') +
+      esc(t.name) + ' <span style="opacity:.6">' + esc(hrs) + '</span></span>';
+  }).join("");
+  return card("定时任务（" + on.length + "/" + tasks.length + " 启用）",
+    "签到、保活、活动等自动任务；开关与整点在「运行态」页改，改完重启网关生效。",
+    '<div class="chips" style="margin:0">' + chips + '</div>' +
+    '<div class="row" style="margin-top:11px"><button class="tiny" data-goto="runtime">去运行态调整</button></div>');
+}
 function viewOverview(){
   var st = S.status, m = S.models || [];
   var total = st ? st.total : 0, healthy = st ? st.healthy : 0;
@@ -680,14 +968,6 @@ function viewOverview(){
     else { title = "网关运行中"; sub = "有 " + healthy + " 个账号可立即承接请求，共 " + total + " 个。"; }
   }
   var base = gwBase();
-  var oc = (S.src && S.src.origin_counts) || {};
-  var annotated = METHOD_ORDER.reduce(function(a, k){ return a + (oc[k] || 0); }, 0);
-  var stats = [
-    { k: "账号总数", v: total, n: "来源已标注 " + annotated + " 个" },
-    { k: "可用账号", v: healthy, n: healthy ? "可立即请求" : "先导入账号" },
-    { k: "冷却 / 禁用", v: cooling + disabled, n: "冷却 " + cooling + " · 禁用 " + disabled },
-    { k: "输出模型", v: m.length, n: m.length ? "GET /v1/models" : "需要健康账号" }
-  ];
   var html = head(title, sub);
   if (DESKTOP) html += gwCard(dsk, dskRunning);
   if (DESKTOP && dsk && !dskRunning){
@@ -695,48 +975,29 @@ function viewOverview(){
       '<div class="sub" style="margin:0">账号池、来源台账、发布清单都存在磁盘上，网关一停只是不再承接请求，' +
       '数据不会丢。把网关启动起来，这一页就会恢复成完整的账号与模型视图。</div>');
   }
-  html += '<div class="grid4">' + stats.map(function(s){
-    return '<div class="stat"><div class="k">' + esc(s.k) + '</div><div class="v">' + esc(s.v) +
-      '</div><div class="n">' + esc(s.n) + '</div></div>';
-  }).join("") + '</div>';
-  var miniDesc = {
-    app: "探查本机 AI 工具自己存的那一份登录态",
-    switch: "读 wb-switch / zcode-switch 账本里聚合好的多个账号",
-    file: "导入别的机器导出的 JSON 快照，导入时选归属"
-  };
-  html += card("三种获取来源",
-    "每种来源进来的账号都会记在来源台账里；换机器时 auths 目录连同台账一起拷走，归类不会丢。",
-    '<div class="grid3">' + METHOD_ORDER.map(function(k){
-      var c = oc[k] || 0;
-      var pct = total ? Math.round(c * 100 / total) : 0;
-      return '<div class="mini" data-goto="sources" data-srctab="' + k + '">' +
-        '<div class="t">' + esc(methodLabel(k)) + '</div>' +
-        '<div class="c">' + c + '<span style="font-size:12px;font-weight:400;color:var(--fg3)"> 个账号</span></div>' +
-        '<div class="d">' + esc(miniDesc[k]) + '</div>' +
-        '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
-        '<div class="hint" style="margin-top:6px">占池子 ' + pct + '%</div></div>';
-    }).join("") + '</div>');
-  var pt = (st && st.producer_totals) || [];
-  if (pt.length){
-    html += card("按客户端（AI 工具）",
-      "每个账号归属哪个客户端由来源台账记着（auths/.origins.json），整体迁移时跟着走。只有已接入上游反代的客户端会承接对话流量。",
-      '<div class="grid3">' + pt.map(function(x){
-        var nm = x.name || producerName(x.producer);
-        var usable = x.servable;
-        var realms = producerRealms(x.producer);
-        var realmRow = realms.length > 1 ? '<div class="chips" style="margin:9px 0 9px;gap:6px">' +
-          realms.map(function(r){
-            return '<span class="chip" style="padding:2px 10px;font-size:11px;cursor:pointer" data-goto="pool" data-pclient="' + esc(x.producer || "none") + '" data-prealm="' + esc(r.id) + '">' +
-              esc(REALM_LABEL[r.id] || r.id) + ' <span style="opacity:.6">' + r.n + '</span></span>';
-          }).join("") + '</div>' : "";
-        return '<div class="mini" data-goto="pool" data-pclient="' + esc(x.producer || "none") + '">' +
-          '<div class="t">' + esc(nm) + ' ' + (usable ? '<span class="tag ok">承接流量</span>' : '<span class="tag warn">只可查看</span>') + '</div>' +
-          '<div class="c">' + x.total + '<span style="font-size:12px;font-weight:400;color:var(--fg3)"> 个账号</span></div>' +
-          realmRow +
-          '<div class="d">' + (usable ? "已接入上游反代：模型与额度按账号自身携带的目录取" : "上游反代还未接入：账号能进池、能看余额，但不参与选号") + '</div>' +
-          '<div class="hint" style="margin-top:6px">可用 ' + x.healthy + ' / ' + x.total + '</div></div>';
-      }).join("") + '</div>');
-  }
+  var s = S.stats, t = (s && s.total) || {};
+  var rn = ovRangeName();
+  var realm = (st && st.realm_totals) || {};
+  var cn = realm.cn || {}, gl = realm.global || {};
+  var inFlight = 0;
+  ((st && st.accounts) || []).forEach(function(a){ inFlight += (a.in_flight || 0); });
+  html += '<div class="grid5">' +
+    ovKpi("账号可用", fmtInt(healthy) + ' <span style="font-size:14px;font-weight:400;color:var(--fg3)">/ ' + fmtInt(total) + '</span>',
+      "CN " + (cn.total || 0) + " · 国际 " + (gl.total || 0) + " · 冷却 " + cooling + " · 禁用 " + disabled) +
+    ovKpi("对外模型", fmtInt(m.length), m.length ? "GET /v1/models" : "需要健康账号") +
+    ovKpi(rn + "请求", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed)) +
+    ovKpi(rn + " Tokens", fmtInt(t.total_tokens), "缓存命中率 " + fmtPct(t.cache_hit_rate)) +
+    ovKpi("平均延迟", fmtDur(t.avg_latency_ms), "首字 " + fmtDur(t.avg_ttfb_ms) + " · 在飞 " + fmtInt(inFlight)) +
+    '</div>';
+  var trend = card("请求趋势（" + rn + "）", "每天一根柱，悬停看当天请求 / 成功 / 失败 / token。", ovTrend(s && s.series));
+  var health = ovHealthCard();
+  html += health ? ('<div class="grid2">' + trend + health + '</div>') : trend;
+  html += ovProducersCard();
+  html += ovModelsCard();
+  html += ovChannelsCard();
+  html += ovCreditsCard();
+  html += ovSourcesCard();
+  html += ovScheduleCard();
   var steps;
   if (total === 0) steps = [
     "打开「获取源」，先看「应用内登录态」能不能直接读（只有明文 json 才读得动）",
@@ -2350,6 +2611,15 @@ async function loadModels(){
   try { var r = await api("/v1/models"); S.models = (r && r.data) || []; }
   catch (e) { S.models = []; }
 }
+async function loadSchedule(){ try { S.schedule = await api("/admin/schedule"); } catch (e) { S.schedule = null; } }
+/* ensureOverview 概览首屏要用的数据：区间统计 + 定时任务（余额走 loadCredits 自己的轮询）。
+   以前只有点进「请求统计 / 运行态」才拉，导致概览永远缺这两块。 */
+function ensureOverview(){
+  var jobs = [];
+  if (!S.stats) jobs.push(loadStats());
+  if (!S.schedule) jobs.push(loadSchedule());
+  return Promise.all(jobs);
+}
 async function loadStats(){
   var r = S.statsRange || "7d";
   try { S.stats = await api("/v1/stats?range=" + encodeURIComponent(r)); } catch (e) { S.stats = null; }
@@ -2516,8 +2786,11 @@ async function refreshAll(silent){
     loadStatus(), loadSources(), loadOrigins(), loadOutput(), loadModels(), loadHealth(),
     loadCredits(!first), loadDesktop()
   ];
-  if (S.stats) jobs.push(loadStats());
-  if (S.schedule || S.modeldead) jobs.push(loadRuntime());
+  // 概览要用到区间统计与定时任务：不再等用户点进「请求统计 / 运行态」才拉，
+  // 否则首屏概览的这几块永远是空的。
+  jobs.push(loadStats());
+  jobs.push(loadSchedule());
+  if (S.modeldead) jobs.push(loadRuntime());
   // 候选面板开着就顺手重拉——但只在**没探过活/读过额度**时做：
   // 那两个动作每个号一次外网往返，全局刷新不该把它们偷偷重跑一遍。
   if (S.candKind && S.srcTab === "switch" && !S.candProbe && !S.candBalance){
