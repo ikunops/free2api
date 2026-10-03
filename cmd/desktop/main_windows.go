@@ -66,6 +66,10 @@ type desktop struct {
 
 	probeAt   time.Time // 上次探测「外部是否已有 free2api」的时间
 	probeOK   bool
+
+	// floatWin 桌面悬浮窗。指针常驻：它的生命周期独立于主控制台窗口
+	//（关掉控制台不关浮窗，只随进程退出），所以必须在 desktop 上有个稳定地址。
+	floatWin *floatWin
 }
 
 func main() {
@@ -113,6 +117,10 @@ func main() {
 		log.Printf("首次启动网关失败（窗口照常打开，可在概览页重试）: %v", err)
 	}
 
+	d.floatWin = newFloatWin(filepath.Join(exeDir, "data", "floatwin.json"), d.gwAddr, "")
+	floatOwner = d.floatWin
+	go d.syncFloatGateway()
+
 	ctrlAddr, err := serve(d, *ctrlPort)
 	if err != nil {
 		fatal("控制服务起不来: " + err.Error())
@@ -124,10 +132,12 @@ func main() {
 	if *headless {
 		log.Printf("headless 模式：浏览器打开 %s 即可操作；Ctrl+C 退出", uiURL)
 		waitSignal()
+		d.stopFloat()
 		_ = d.stopGateway()
 		return
 	}
 
+	winW, winH := defaultWindowSize()
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		AutoFocus: true,
 		DataPath:  filepath.Join(exeDir, "data", "webview2"),
@@ -135,8 +145,10 @@ func main() {
 			Title: "Free2API · 网关控制台",
 			// 窗口与任务栏用嵌入的图标组；不传的话是系统默认图标。
 			IconId: iconResourceID,
-			Width:  1280,
-			Height: 860,
+			// 默认尺寸按主屏工作区算（defaultWindowSize），不再写死 1280x860：
+			// 那在 2K 屏上只占一半宽，首屏 KPI 还会掉到 3 列。
+			Width:  uint(winW),
+			Height: uint(winH),
 			Center: true,
 		},
 	})
@@ -146,9 +158,12 @@ func main() {
 	}
 	defer w.Destroy()
 	w.SetSize(960, 640, webview.HintMin) // 最小尺寸：再小布局就散了
+	// 库自带的 Center 按整个屏幕居中，会压到任务栏；这里按工作区再摆一次。
+	centerWindowInWorkArea(uintptr(w.Window()), winW, winH)
 	w.Navigate(uiURL)
 	w.Run() // 阻塞到窗口关闭
 
+	d.stopFloat()
 	// 关窗口只停「本窗口托管」的那个网关：端口上如果是别的进程（计划任务常驻），
 	// 用户关掉控制台不该顺手把服务停了。真停外部进程请点页面里的「停止网关」。
 	if err := d.stopGateway(); err != nil {
@@ -210,6 +225,7 @@ func (d *desktop) startGateway() error {
 	d.probeAt = time.Time{}
 	d.mu.Unlock()
 	log.Printf("网关已启动，监听 %s", listen)
+	d.syncFloatGateway()
 	return nil
 }
 
@@ -311,6 +327,57 @@ func (d *desktop) state() stateView {
 	}
 }
 
+// -------------------------------------------------- 悬浮窗
+//
+// 浮窗的三个端点与生命周期都挂在控制服务上，不经过网关：这样「网关停着的时候
+// 也能把浮窗关掉」——否则一个指向死端口的浮窗用户就只能杀进程。
+
+func (d *desktop) floatView() map[string]any {
+	d.mu.Lock()
+	f := d.floatWin
+	d.mu.Unlock()
+	if f == nil {
+		return map[string]any{"available": false, "enabled": false, "running": false}
+	}
+	return f.view()
+}
+
+func (d *desktop) applyFloat(req floatApply) error {
+	d.mu.Lock()
+	f := d.floatWin
+	d.mu.Unlock()
+	if f == nil {
+		return errors.New("当前构建未带悬浮窗（仅 Windows 桌面程序支持）")
+	}
+	return f.apply(req)
+}
+
+func (d *desktop) stopFloat() {
+	d.mu.Lock()
+	f := d.floatWin
+	d.mu.Unlock()
+	if f != nil {
+		f.closeWin()
+	}
+}
+
+// syncFloatGateway 把网关地址/密钥同步给浮窗的数据源。
+// 启停网关后 listen 可能变（配置里改过端口），不跟着走的话浮窗会一直连旧地址。
+func (d *desktop) syncFloatGateway() {
+	d.mu.Lock()
+	f := d.floatWin
+	addr := d.gwAddr
+	inst := d.inst
+	d.mu.Unlock()
+	if f == nil {
+		return
+	}
+	_ = inst
+	// api_key 直接从 config.json 读（宽松解析）：Instance 不暴露配置，
+	// 而浮窗只需要这一串用来拼 SSE 的 ?api_key=。
+	f.setGateway(addr, resolveAPIKey(d.cfgPath))
+}
+
 // externalAlive 端口上是否已经有一个 free2api 在应答。3 秒缓存：状态端点是页面
 // 轮询的高频入口，不能每次请求都往外打一次 TCP。
 func (d *desktop) externalAlive(addr string) bool {
@@ -376,6 +443,26 @@ func serve(d *desktop, port int) (string, error) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": d.state()})
+	})
+	// 悬浮窗：走控制服务而不是网关，所以网关停着也能开关/改配置。
+	mux.HandleFunc("GET /__desktop/floatwin", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, d.floatView())
+	})
+	mux.HandleFunc("POST /__desktop/floatwin", func(w http.ResponseWriter, r *http.Request) {
+		var req floatApply
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": map[string]string{"message": "请求体解析失败: " + err.Error()},
+			})
+			return
+		}
+		if err := d.applyFloat(req); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok": false, "error": map[string]string{"message": err.Error()},
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": d.floatView()})
 	})
 	// 管理页由桌面程序自己发：网关停着时这个页面也必须能打开。
 	mux.HandleFunc("GET /{$}", d.page)
@@ -491,6 +578,21 @@ func hostPort(addr string) string {
 // resolveListen 只为「还没启动网关」时也能显示地址：配置读不动就回落默认端口。
 // 这里刻意不用 gateway.Load：它要连带做归一化校验，而此刻我们只是想知道端口号，
 // 配置哪怕有一处非法也不该让窗口连地址都显示不出来（真正的报错留给 Start）。
+// resolveAPIKey 宽松读 config.json 的 api_key，读不到就当没配。
+func resolveAPIKey(cfgPath string) string {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ""
+	}
+	var probe struct {
+		APIKey string `json:"api_key"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.APIKey)
+}
+
 func resolveListen(cfgPath string) string {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -537,6 +639,121 @@ func ensureConfig(cfgPath string) error {
 	}
 	log.Printf("已生成默认配置 %s（端口 %s，可在「输出 API」页修改）", cfgPath, defaultListen)
 	return nil
+}
+
+// ---------------------------------------------------------------- 窗口几何
+//
+// 这两个系统调用 x/sys 没有封装，按仓库里 MessageBoxW 的先例裸调 user32。
+// 全部是只读查询 + 一次摆位，不碰窗口样式，所以不影响 WebView2 的宿主行为。
+
+// rECT 与 Win32 RECT 内存布局一致（四个 int32）。
+type rECT struct{ Left, Top, Right, Bottom int32 }
+
+// spiGetWorkArea 是 SystemParametersInfoW 的 SPI_GETWORKAREA。
+const spiGetWorkArea = 0x0030
+
+var (
+	user32ge             = windows.NewLazySystemDLL("user32.dll")
+	procGetSystemMetrics = user32ge.NewProc("GetSystemMetrics")
+	procSystemParameters = user32ge.NewProc("SystemParametersInfoW")
+	procGetWindowRect    = user32ge.NewProc("GetWindowRect")
+	procSetWindowPos     = user32ge.NewProc("SetWindowPos")
+)
+
+// primaryWorkArea 返回主屏工作区（已扣掉任务栏）的像素矩形。
+// ok=false 表示两种算法都拿不到，调用方自己退回默认值。
+func primaryWorkArea() (rECT, bool) {
+	var r rECT
+	ret, _, _ := procSystemParameters.Call(spiGetWorkArea, 0, uintptr(unsafe.Pointer(&r)), 0)
+	if ret != 0 && r.Right > r.Left && r.Bottom > r.Top {
+		return r, true
+	}
+	// 退路：整屏尺寸（含任务栏），至少保证窗口落在屏幕里。
+	sw, _, _ := procGetSystemMetrics.Call(0) // SM_CXSCREEN
+	sh, _, _ := procGetSystemMetrics.Call(1) // SM_CYSCREEN
+	if int32(sw) <= 0 || int32(sh) <= 0 {
+		return r, false
+	}
+	return rECT{Right: int32(sw), Bottom: int32(sh)}, true
+}
+
+// defaultWindowSize 按主屏工作区算启动尺寸：
+// 宽取工作区的 3/4、高取 6/7，再夹在 [1280x860, 1760x1120] 内，
+// 最后不允许超过工作区本身。
+//
+// 为什么不是写死：以前固定 1280x860，在 2560x1080 的主屏上只占一半宽，
+// 首屏 5 个 KPI 还会因为 1400px 断点掉到 3 列，白白浪费右半边屏幕。
+func defaultWindowSize() (int, int) {
+	const (
+		minW, minH = 1280, 860
+		maxW, maxH = 1760, 1120
+	)
+	wa, ok := primaryWorkArea()
+	if !ok {
+		return minW, minH
+	}
+	workW := int(wa.Right - wa.Left)
+	workH := int(wa.Bottom - wa.Top)
+	w := workW * 3 / 4
+	h := workH * 6 / 7
+	if w < minW {
+		w = minW
+	}
+	if h < minH {
+		h = minH
+	}
+	if w > maxW {
+		w = maxW
+	}
+	if h > maxH {
+		h = maxH
+	}
+	// 极窄屏：宁可小于 minW 也别超出去，否则标题栏会被推到屏幕外。
+	if w > workW {
+		w = workW
+	}
+	if h > workH {
+		h = workH
+	}
+	return w, h
+}
+
+// centerWindowInWorkArea 把窗口摆到主屏工作区正中。
+//
+// 库自带的 Center 用 GetSystemMetrics(SM_CXSCREEN/CYSCREEN) 按整屏算位置，
+// 任务栏在底部时窗口整体偏下、底部会被压住；这里按工作区重算一次。
+func centerWindowInWorkArea(hwnd uintptr, w, h int) {
+	if hwnd == 0 {
+		return
+	}
+	wa, ok := primaryWorkArea()
+	if !ok {
+		return
+	}
+	// 优先用 GetWindowRect 的实测外框，避开 DPI 换算和标题栏宽度的猜测。
+	ow, oh := w, h
+	var r rECT
+	if ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ret != 0 {
+		if cw, ch := int(r.Right-r.Left), int(r.Bottom-r.Top); cw > 0 && ch > 0 {
+			ow, oh = cw, ch
+		}
+	}
+	workW := int(wa.Right - wa.Left)
+	workH := int(wa.Bottom - wa.Top)
+	x := int(wa.Left) + (workW-ow)/2
+	y := int(wa.Top) + (workH-oh)/2
+	if x < int(wa.Left) {
+		x = int(wa.Left)
+	}
+	if y < int(wa.Top) {
+		y = int(wa.Top)
+	}
+	const (
+		swpNoZOrder   = 0x0004
+		swpNoActivate = 0x0010
+	)
+	_, _, _ = procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y),
+		uintptr(ow), uintptr(oh), swpNoZOrder|swpNoActivate)
 }
 
 func setupLogging(exeDir string) {

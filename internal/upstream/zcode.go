@@ -8,9 +8,12 @@
 //
 //   - 只换 base URL 与头组（Authorization + Content-Type + Accept），不注入任何
 //     workbuddy 专有头——那些头对智谱是垃圾，注进去反而可能被风控当异常流量。
-//   - 请求体原样透传，不过 prepareBody（不做 fingerprint 中和、不注入 prompt_cache_key、
-//     不做 effort 档位降级）：这些是 workbuddy 上游的特定需要，智谱端点认的是标准字段，
-//     动它只会引入「未知字段被拒」的风险。
+//   - 请求体原样透传，不过 prepareBody（不做 fingerprint 中和、不注入 prompt_cache_key）：
+//     这些是 workbuddy 上游的特定需要，智谱端点认的是标准字段，动它只会引入
+//     「未知字段被拒」的风险。唯一例外是「始终思考」模型的推理档位收敛
+//     （zcodeNormalizeReasoning）——智谱对 glm-5.3/glm-5.3-flash 拒绝关思考的档位
+//     （reasoning_effort=none/off/minimal/medium 或 thinking.type=disabled 一律 400
+//     code=1210），原样透传会把这类请求打成必然失败的死循环。
 //   - realm 不参与分派：zcode 账号的 realm 恒 cn（导入时写死），双域那套不适用。
 //
 // 实测依据（2026-09，本机 10 个号轮测）：
@@ -152,6 +155,130 @@ func zcodeForceStream(body []byte) []byte {
 	return out
 }
 
+// zcodeSupportedEfforts 返回某模型在智谱端点支持的推理档位（供出站档位收敛）。
+//
+// 取值优先级：CN 静态兜底表 > 远端 cn 桶。静态表在前是有意的——它按 CodeBuddy CN
+// 产品面逐模型枚举，与 z.ai 实测口径一致（glm-5.3-flash = low/high/max）；远端 cn 桶
+// 来自 workbuddy CN 探测，与智谱并非同一上游，只作兜底不作权威。
+// 两者皆无 → nil（未知模型原样透传，保持薄适配器语义：glm-4.6 实测对全部档位宽容）。
+func (c *Client) zcodeSupportedEfforts(model string) []string {
+	if model == "" {
+		return nil
+	}
+	if cap, ok := cnEffortFallback[model]; ok && len(cap.efforts) > 0 {
+		return cap.efforts
+	}
+	if m := c.effortsSnapshot("cn"); m != nil {
+		if v := m[model]; len(v) > 0 {
+			return v
+		}
+	}
+	return nil
+}
+
+// zcodeEffortLowest 支持集中的最低档（按 effortRank）；空集/全未知 → 空串。
+func zcodeEffortLowest(supported []string) string {
+	best, bestIdx := "", 1<<30
+	for _, s := range supported {
+		if idx, ok := effortRank[strings.TrimSpace(strings.ToLower(s))]; ok && idx < bestIdx {
+			best, bestIdx = s, idx
+		}
+	}
+	return best
+}
+
+// zcodeEffortPick 在支持集中为请求档位挑一个合法档：
+//   - 命中 → 原值；
+//   - 未命中但请求档有已知档位序 → ≤请求档的最高支持档；
+//   - 全部高于请求档，或请求档未知（如 none/任意串）→ 最低支持档。
+func zcodeEffortPick(req string, supported []string) string {
+	for _, s := range supported {
+		if strings.EqualFold(strings.TrimSpace(s), req) {
+			return s
+		}
+	}
+	if reqIdx, known := effortRank[req]; known {
+		best, bestIdx := "", -1
+		for _, s := range supported {
+			if idx, ok := effortRank[strings.TrimSpace(strings.ToLower(s))]; ok && idx <= reqIdx && idx > bestIdx {
+				best, bestIdx = s, idx
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
+	return zcodeEffortLowest(supported)
+}
+
+// zcodeNormalizeEffort 就地收敛出站体的推理档位；返回是否有改动。
+//
+// 智谱「始终思考」模型（glm-5.3 / glm-5.3-flash）只认 reasoning_effort ∈ {low,high,max}
+// 或缺省；none/off/minimal/medium 与 thinking.type=disabled 一律 400 code=1210
+// 「该模型始终思考，不支持关闭思考」（本机实测）。收敛规则：
+//   - reasoning_effort（snake/camel）不在支持集 → zcodeEffortPick 挑合法档；
+//   - thinking.type=disabled 且该模型确实不能关思考（支持集不含 off/none）→ 删 thinking，
+//     且无显式档位时补最低支持档（否则上游仍按默认高档思考，违背客户端「尽量少思考」的意图）。
+func zcodeNormalizeEffort(obj map[string]any, supported []string) bool {
+	lowest := zcodeEffortLowest(supported)
+	if lowest == "" {
+		return false
+	}
+	model, _ := obj["model"].(string)
+	changed := false
+	disabledRemoved := false
+	if th, ok := obj["thinking"].(map[string]any); ok {
+		if typ, _ := th["type"].(string); strings.EqualFold(strings.TrimSpace(typ), "disabled") &&
+			!containsEffort(supported, "off") && !containsEffort(supported, "none") {
+			delete(obj, "thinking")
+			disabledRemoved = true
+			changed = true
+		}
+	}
+	hasEffort := false
+	for _, key := range []string{"reasoning_effort", "reasoningEffort"} {
+		v, ok := obj[key].(string)
+		if !ok {
+			continue
+		}
+		hasEffort = true
+		req := strings.TrimSpace(strings.ToLower(v))
+		pick := zcodeEffortPick(req, supported)
+		if pick != "" && !strings.EqualFold(pick, v) {
+			obj[key] = pick
+			changed = true
+			log.Printf("WARN: [upstream] zcode reasoning_effort floored model=%s %s -> %s", model, v, pick)
+		}
+	}
+	if disabledRemoved && !hasEffort {
+		obj["reasoning_effort"] = lowest
+		changed = true
+	}
+	return changed
+}
+
+// zcodeNormalizeReasoning 解析出站体并按模型支持集收敛推理档位；无改动/不可解析时原样返回。
+// 与 zcodeForceStream 同属 zcode 通道的最小改写，仅对「已知支持集」的模型生效。
+func (c *Client) zcodeNormalizeReasoning(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	model, _ := obj["model"].(string)
+	supported := c.zcodeSupportedEfforts(model)
+	if len(supported) == 0 || !zcodeNormalizeEffort(obj, supported) {
+		return body
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // zcodeChatStreamContext zcode 的 chat 出站：单路径、原样 body、三件头。
 // 结构对齐 ChatStreamContext（同一套错误信封与 idle 掐流），只是把路径/头/分类换成
 // 智谱口径。返回签名与 ChatStreamContext 完全一致，handler 侧无需分支。
@@ -163,6 +290,10 @@ func (c *Client) zcodeChatStreamContext(ctx context.Context, a *auth.Auth, body 
 	// 客户端写 stream:false 时智谱会回非流式 JSON，Aggregate 找不到 SSE 帧即 502
 	// upstream_parse。只补这一个字段，其余字段（含 workbuddy 专有改写）一律不动。
 	body = zcodeForceStream(body)
+	// 「始终思考」模型收敛推理档位（见 zcodeNormalizeReasoning）：原样透传会让
+	// reasoning_effort=none/off/minimal/medium 或 thinking.type=disabled 命中
+	// 智谱 400 code=1210，池子换号重试也永远是同一个失败。
+	body = c.zcodeNormalizeReasoning(body)
 	url := c.zcodeBase(a) + zcodeChatPath
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -281,9 +412,9 @@ func firstNonEmptyStr(vals ...string) string {
 type ZCodeProbeStatus string
 
 const (
-	ZCodeProbeOK        ZCodeProbeStatus = "ok"        // 200：凭据可用
+	ZCodeProbeOK        ZCodeProbeStatus = "ok"         // 200：凭据可用
 	ZCodeProbeNoBalance ZCodeProbeStatus = "no_balance" // 429/1113：凭据可用但没额度
-	ZCodeProbeBadKey    ZCodeProbeStatus = "bad_key"   // 401：凭据过期/不完整
+	ZCodeProbeBadKey    ZCodeProbeStatus = "bad_key"    // 401：凭据过期/不完整
 	ZCodeProbeUnreach   ZCodeProbeStatus = "unreachable"
 	ZCodeProbeError     ZCodeProbeStatus = "error"
 )
@@ -350,9 +481,9 @@ func ProbeZCodeKey(ctx context.Context, client *http.Client, base, key string) Z
 
 // ZCodeBalance 额度查询结果（zcode 计划链路的 billing/balance）。
 type ZCodeBalance struct {
-	Plans    []ZCodePlan    `json:"plans,omitempty"`
-	Balances []ZCodeGrant   `json:"balances,omitempty"`
-	Raw      string         `json:"raw,omitempty"` // 原样回显（结构变了也能看）
+	Plans    []ZCodePlan  `json:"plans,omitempty"`
+	Balances []ZCodeGrant `json:"balances,omitempty"`
+	Raw      string       `json:"raw,omitempty"` // 原样回显（结构变了也能看）
 }
 
 // zcodeFlexString 收下上游「有时是字符串、有时是数字（Unix 时间戳）」的字段：
@@ -458,18 +589,18 @@ func (p *ZCodePlan) UnmarshalJSON(b []byte) error {
 
 // ZCodeGrant 一条额度（赠送/套餐）明细。
 type ZCodeGrant struct {
-	ShowName       string        `json:"show_name,omitempty"`
-	PlanID         string        `json:"plan_id,omitempty"`
-	EntitlementID  string        `json:"entitlement_id,omitempty"`
-	TotalUnits     zcodeFlexInt  `json:"total_units,omitempty"`
-	UsedUnits      zcodeFlexInt  `json:"used_units,omitempty"`
-	RemainingUnits zcodeFlexInt  `json:"remaining_units,omitempty"`
-	AvailableUnits zcodeFlexInt  `json:"available_units,omitempty"`
-	UnitType       string        `json:"unit_type,omitempty"`
-	ExpiresAt      zcodeFlexInt  `json:"expires_at,omitempty"`
-	Capabilities   []string      `json:"capabilities,omitempty"`
-	Meter          string        `json:"meter,omitempty"`
-	Priority       int           `json:"priority,omitempty"`
+	ShowName       string       `json:"show_name,omitempty"`
+	PlanID         string       `json:"plan_id,omitempty"`
+	EntitlementID  string       `json:"entitlement_id,omitempty"`
+	TotalUnits     zcodeFlexInt `json:"total_units,omitempty"`
+	UsedUnits      zcodeFlexInt `json:"used_units,omitempty"`
+	RemainingUnits zcodeFlexInt `json:"remaining_units,omitempty"`
+	AvailableUnits zcodeFlexInt `json:"available_units,omitempty"`
+	UnitType       string       `json:"unit_type,omitempty"`
+	ExpiresAt      zcodeFlexInt `json:"expires_at,omitempty"`
+	Capabilities   []string     `json:"capabilities,omitempty"`
+	Meter          string       `json:"meter,omitempty"`
+	Priority       int          `json:"priority,omitempty"`
 }
 
 // EntitledModels 抽出「这个账号当前**真正能用**的模型」。

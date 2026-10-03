@@ -183,6 +183,9 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /v1/stats", h.withAuth(h.stats))
 	h.mux.HandleFunc("POST /v1/stats/reset", h.withAuth(h.statsReset))
+	// 统计的 SSE 推送：与 /v1/stats 同载荷，只是由服务端主动推。
+	// 没有它，前端只能轮询，实时性天然差一个轮询间隔。
+	h.mux.HandleFunc("GET /v1/stats/stream", wrapQueryKey(h.withAuth(h.statsStream)))
 	// 运维管理端点（默认关闭，config admin.enabled 开启后生效）。
 	// 路径用 {uid} 通配而非查询参数：uid 是账号身份，放进路径便于审计与直观。
 	// 条件注册而非 handler 内 404（设计 supplement §2.3）：未注册的路由对未鉴权
@@ -254,14 +257,57 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			// 常量时间比较（发现 7）：!= 短路时序随前缀长度变化，公网暴露下
 			// 理论上可逐字节探测 key 前缀；ConstantTimeCompare 消除该信号。
 			provided := strings.TrimPrefix(authz, "Bearer ")
-			if !strings.HasPrefix(authz, "Bearer ") ||
-				subtle.ConstantTimeCompare([]byte(provided), []byte(h.cfg.APIKey)) != 1 {
+			ok := strings.HasPrefix(authz, "Bearer ") &&
+				subtle.ConstantTimeCompare([]byte(provided), []byte(h.cfg.APIKey)) == 1
+			if !ok {
+				ok = h.queryKeyOK(r)
+			}
+			if !ok {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+// queryKeyOK 校验 ?api_key=… / ?key=…。只对「浏览器自己发不出自定义头」的
+// 请求形态有意义：EventSource（/v1/stats/stream）没法带 Authorization 头，
+// WebSocket 同理。这类请求没法自定义 header，只能把 key 放查询串里。
+//
+// 代价是 key 会进访问日志 / Referer，所以严格限定：仅当该 handler 显式
+// 标了 allowQueryKey 时才接受——由 wrapQueryKey 标注，不是全局开口子。
+// 常量时间比较，且两个头(名)比完再放行，避免逐字节探测 key 的存在性。
+func (h *Handler) queryKeyOK(r *http.Request) bool {
+	if h.cfg.APIKey == "" {
+		return true
+	}
+	if !queryKeyAllowed(r) {
+		return false
+	}
+	got := r.URL.Query().Get("api_key")
+	if got == "" {
+		got = r.URL.Query().Get("key")
+	}
+	if got == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(h.cfg.APIKey)) == 1
+}
+
+// qkCtxKey 标记「本条路由允许 api_key 走查询串」。
+type qkCtxKey struct{}
+
+// wrapQueryKey 标一条路由为「允许 ?api_key=」，必须与 handler 一起套用。
+func wrapQueryKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r.WithContext(context.WithValue(r.Context(), qkCtxKey{}, true)))
+	}
+}
+
+func queryKeyAllowed(r *http.Request) bool {
+	v, _ := r.Context().Value(qkCtxKey{}).(bool)
+	return v
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +364,10 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		},
 		"sticky_sessions": sticky,
 		"redis_mode":      redisMode,
+		// live_models：此刻正在跑的模型 → 在飞请求数（零值时省略）。
+		// 概览「正在发生」区块问的是「现在在跑什么」，而 accounts[].in_flight
+		// 只答「哪个号在忙」——两者不是一回事，故单列一个按模型维度的计数。
+		"live_models": globalLiveModels.snapshot(),
 		// cost_explore 事件与 per-model 时间戳（时间值由 encoding/json 写 RFC3339）。
 		"cost_explore": map[string]any{
 			"events_total": exploreEvents,

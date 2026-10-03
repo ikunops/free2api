@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,17 +24,17 @@ var chatLogEnabled = true
 
 // chatStat 单个 chat 请求的日志统计；handler 挂 defer，请求出口后落一行。
 type chatStat struct {
-	start  time.Time
-	model  string
+	start time.Time
+	model string
 	// producer 本次请求路由到的来源（workbuddy / zcode / …）。/v1/stats 的「按来源」
 	// 维度就靠它；空串在聚合侧归一为 workbuddy（与路由层同口径）。
 	producer string
 	mode     string // "stream" | "sync"
 	uid      string // 完整 uid，展示时只取前 8 位
-	nick   string // 账号昵称（auth.Auth.Nickname，登录时落盘）；空则只显示 uid8
-	ttfb   time.Duration
-	toks   int // <0 表示 usage 缺失 → 显示 "-"
-	status int
+	nick     string // 账号昵称（auth.Auth.Nickname，登录时落盘）；空则只显示 uid8
+	ttfb     time.Duration
+	toks     int // <0 表示 usage 缺失 → 显示 "-"
+	status   int
 
 	// metrics 采集字段（供 /v1/stats 聚合）：全部来自上游 usage，缺失时保持零值
 	// 并由 hasUsage 区分「缺观测」与「显式 0」——与成本账本同一纪律。
@@ -46,7 +47,61 @@ type chatStat struct {
 	hasCredit bool
 
 	logged bool
+	// liveModel 本次请求是否已登记进 globalLiveModels（done 时据此销账）。
+	// 不看 s.model != "" 判定——那样和登记条件耦合，一改就漏销或多销。
+	liveModel bool
 }
+
+// ---------- 在飞模型计数 ----------
+//
+// 「此刻正在跑哪个模型」是概览实时区块要答的问题。账号维度的 in_flight 早就有，
+// 但那是「哪个号在忙」，答不了「在跑什么」。这里按模型名做增减计数：
+// 请求进 handler +1，done() -1。计数器自带 clamp，异常路径也不会变负。
+//
+// 零值不可用，必须 newModelCounter()。
+
+type modelCounter struct {
+	mu sync.Mutex
+	m  map[string]int
+}
+
+func newModelCounter() *modelCounter { return &modelCounter{m: map[string]int{}} }
+
+// add delta=+1 登记、-1 销账。计数下限 0。
+func (c *modelCounter) add(model string, delta int) {
+	if c == nil || model == "" || delta == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]int{}
+	}
+	n := c.m[model] + delta
+	if n <= 0 {
+		delete(c.m, model)
+		return
+	}
+	c.m[model] = n
+}
+
+// snapshot 返回 model → 在飞数的拷贝（按值传出，调用方随便遍历都不影响计数）。
+func (c *modelCounter) snapshot() map[string]int {
+	out := map[string]int{}
+	if c == nil {
+		return out
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, v := range c.m {
+		if v > 0 {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+var globalLiveModels = newModelCounter()
 
 // newChatStat 以请求进入 handler 的时刻为起点构造统计对象；toks 默认 -1（usage 缺失）。
 func newChatStat(now time.Time, body []byte, stream bool) *chatStat {
@@ -54,7 +109,15 @@ func newChatStat(now time.Time, body []byte, stream bool) *chatStat {
 	if stream {
 		mode = "stream"
 	}
-	return &chatStat{start: now, model: parseModelFromBody(body), mode: mode, toks: -1}
+	st := &chatStat{start: now, model: parseModelFromBody(body), mode: mode, toks: -1}
+	// 在飞模型计数：进入 handler 就登记，done() 时销账。
+	// 这是「此刻正在跑哪个模型」的唯一数据源——账号维度的 in_flight 早就有
+	// （/status accounts[].in_flight），但没有模型维度，页面答不了这个问题。
+	if st.model != "" {
+		globalLiveModels.add(st.model, 1)
+		st.liveModel = true
+	}
+	return st
 }
 
 // done 幂等落一行表格日志，并把本次请求记入 metrics 聚合（/v1/stats 数据源）。
@@ -72,6 +135,12 @@ func (s *chatStat) done() {
 	prompt := -1
 	if s.hasUsage {
 		prompt = s.prompt
+	}
+	// 销账：与 newChatStat 里的登记配对。模型名可能为空（无 liveModel 标记），
+	// 或者请求跨过进程重启（此时计数已随进程清空，多减一次会减成负数——
+	// 所以 clamp 到 0，绝不让计数变负）。
+	if s.liveModel {
+		globalLiveModels.add(s.model, -1)
 	}
 	logChatRow(s.ttfb, total, s.model, s.mode, s.uid, s.nick, s.status, s.toks, prompt)
 	recordChatMetric(s, total)

@@ -51,3 +51,9 @@ docs/
 # 本机因为有工作区副本照样能编，CI 全新 clone 则直接
 # `pattern defaultprompt.md: no matching files found` 编译失败。
 !internal/prompt/defaultprompt.md
+
+# 本机调试/验收产物，别进版本库。
+/work/
+/desktop.exe
+/desktop
+/free2api*.exe

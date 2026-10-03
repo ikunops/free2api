@@ -72,6 +72,104 @@ func TestZCodeForceStream(t *testing.T) {
 	}
 }
 
+// TestZCodeNormalizeReasoning 锁定「始终思考」模型的推理档位收敛（智谱 400 code=1210 修复）。
+// glm-5.3-flash 只认 low/high/max 或缺省；none/off/minimal/medium 与 thinking.type=disabled
+// 必须被收敛到合法档，否则池子换号重试永远是同一个失败（见 demo/data/desktop.log 死循环）。
+// 未知模型（glm-4.6 实测宽容）一律字节级原样透传。
+func TestZCodeNormalizeReasoning(t *testing.T) {
+	c := &Client{}
+	cases := []struct {
+		name      string
+		in        string
+		wantField map[string]any // 期望字段（子集）；nil 表示需断言 rawSame
+		rawSame   bool
+	}{
+		{
+			name:      "flash + effort=none → 收敛到 low",
+			in:        `{"model":"glm-5.3-flash","reasoning_effort":"none","messages":[]}`,
+			wantField: map[string]any{"reasoning_effort": "low"},
+		},
+		{
+			name:      "flash + effort=off → low",
+			in:        `{"model":"glm-5.3-flash","reasoning_effort":"off"}`,
+			wantField: map[string]any{"reasoning_effort": "low"},
+		},
+		{
+			name:      "flash + effort=medium → low（≤请求档的最高支持档）",
+			in:        `{"model":"glm-5.3-flash","reasoning_effort":"medium"}`,
+			wantField: map[string]any{"reasoning_effort": "low"},
+		},
+		{
+			name:      "flash + effort=minimal → low",
+			in:        `{"model":"glm-5.3-flash","reasoning_effort":"minimal"}`,
+			wantField: map[string]any{"reasoning_effort": "low"},
+		},
+		{
+			name:      "flash + camel reasoningEffort=none → low",
+			in:        `{"model":"glm-5.3-flash","reasoningEffort":"none"}`,
+			wantField: map[string]any{"reasoningEffort": "low"},
+		},
+		{
+			name:    "flash + effort=high（已合法）→ 字节级原样",
+			in:      `{"model":"glm-5.3-flash","reasoning_effort":"high"}`,
+			rawSame: true,
+		},
+		{
+			name:    "flash 无档位字段 → 字节级原样",
+			in:      `{"model":"glm-5.3-flash","messages":[]}`,
+			rawSame: true,
+		},
+		{
+			name:      "flash + thinking.disabled → 删 thinking 并补最低档",
+			in:        `{"model":"glm-5.3-flash","thinking":{"type":"disabled"}}`,
+			wantField: map[string]any{"reasoning_effort": "low"},
+		},
+		{
+			name:      "flash + thinking.disabled + effort=high → 删 thinking，档位保持 high",
+			in:        `{"model":"glm-5.3-flash","thinking":{"type":"disabled"},"reasoning_effort":"high"}`,
+			wantField: map[string]any{"reasoning_effort": "high"},
+		},
+		{
+			name:    "未知模型 glm-4.6 + effort=none → 原样（不擅自改写）",
+			in:      `{"model":"glm-4.6","reasoning_effort":"none"}`,
+			rawSame: true,
+		},
+		{
+			name:    "坏 JSON → 原样",
+			in:      `{"model":`,
+			rawSame: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := c.zcodeNormalizeReasoning([]byte(tc.in))
+			if tc.rawSame {
+				if string(out) != tc.in {
+					t.Fatalf("want 原样 %q, got %q", tc.in, string(out))
+				}
+				return
+			}
+			var obj map[string]any
+			if err := json.Unmarshal(out, &obj); err != nil {
+				t.Fatalf("出站体不是 JSON: %v (%s)", err, out)
+			}
+			for k, v := range tc.wantField {
+				if obj[k] != v {
+					t.Errorf("%s = %#v, want %#v（出站体=%s）", k, obj[k], v, out)
+				}
+			}
+			// thinking.type=disabled 必须被摘掉，否则仍会被上游 1210 拒。
+			if strings.Contains(tc.in, `"type":"disabled"`) {
+				if th, ok := obj["thinking"].(map[string]any); ok {
+					if typ, _ := th["type"].(string); typ == "disabled" {
+						t.Errorf("thinking.type=disabled 未被摘除: %s", out)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestZCodeChatForcesStreamBearerOnly zcode 出站端到端（httptest）：路径 = base +
 // /chat/completions、鉴权只有 Bearer <apiKey>、body 的 stream 被强制 true。
 // 同时锚定「不掺 workbuddy 头族」——那套头对智谱是垃圾，注进去反而可能被风控。
@@ -254,6 +352,7 @@ func TestZCodeBalanceCodeNonZero(t *testing.T) {
 		t.Fatalf("err = %v, want 带 code=41001", err)
 	}
 }
+
 // TestZCodeEntitledModelsIsTheTruth 锁定「真正可用模型」的判据：
 // capabilities 里的 model:<id>，而不是 /models 能列出多少。
 // 实测周末活动的号 /models 列 11 个，但 capabilities 只有 glm-5.3-flash。

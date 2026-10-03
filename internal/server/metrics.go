@@ -68,6 +68,112 @@ type modelMetrics struct {
 	LastSeen metricsTime `json:"last_seen,omitempty"`
 }
 
+// ---------- 短窗口速率（实时） ----------
+//
+// 为什么需要它：/v1/stats 里的成功率 / 缓存命中率 / 平均延迟 / tokens_per_sec
+// 全都是「区间均值」——它们天生迟钝，区间越长越迟钝（实测一次 51s 的请求里
+// total_tokens 51 秒只跳了 4 次）。这不是 bug，是均值该有的样子。
+//
+// 但「现在跑多快」这个问题，均值答不了。答它的是短窗口：最近 60 秒里
+// 实际发生了什么。窗口是滚动的（tumbling，按到达顺序切），不是全局累计，
+// 所以数字会随每个请求落地而变化——这才是页面该拿来表达「实时」的那类量。
+//
+// 内存有界：只保留最近 liveWindowMax 个观测点，超出就丢最旧的
+// （而不是无限增长）。60s 内最多能记多少请求取决于实际负载，
+// 128 个点足够覆盖「一秒多请求」的极端情况。
+
+const (
+	// liveWindowSec 速率窗口长度（秒）。
+	liveWindowSec = 60
+	// liveWindowMax 窗口内最多保留的观测点数。有界内存：超出丢最旧。
+	liveWindowMax = 128
+)
+
+// livePoint 窗口里的一个观测点（一次请求结束时记一笔）。
+type livePoint struct {
+	at       time.Time
+	compTok  int64
+	genSec   float64 // 生成阶段秒数；tokens/s = compTok / ΣgenSec
+	ok       bool
+	latencyMS float64
+}
+
+// liveWindow 固定长度的滚动窗口。零值不可用，必须 newLiveWindow。
+type liveWindow struct {
+	pts []livePoint // 环形缓冲，按 at 升序（旧 → 新）
+}
+
+func newLiveWindow() *liveWindow { return &liveWindow{pts: make([]livePoint, 0, liveWindowMax)} }
+
+// add 记一笔并淘汰过期点。调用方须持 m.mu。
+func (w *liveWindow) add(p livePoint) {
+	w.pts = append(w.pts, p)
+	if len(w.pts) > liveWindowMax {
+		w.pts = w.pts[len(w.pts)-liveWindowMax:]
+	}
+}
+
+// prune 淘汰早于 cutoff 的点（每次取快照时调一次；add 时也顺手做）。
+func (w *liveWindow) prune(cutoff time.Time) {
+	i := 0
+	for i < len(w.pts) && w.pts[i].at.Before(cutoff) {
+		i++
+	}
+	if i > 0 {
+		w.pts = append(w.pts[:0], w.pts[i:]...)
+	}
+}
+
+// liveRate 把窗口折算成速率快照。
+type liveRate struct {
+	WindowSec    int     `json:"window_sec"`
+	Samples      int     `json:"samples"`
+	Requests     int64   `json:"requests"`
+	Success      int64   `json:"success"`
+	Failed       int64   `json:"failed"`
+	CompTok      int64   `json:"completion_tokens"`
+	TokensPerSec float64 `json:"tokens_per_sec"`
+	AvgLatencyMS float64 `json:"avg_latency_ms"`
+	SuccessRate  float64 `json:"success_rate"`
+	LastAt       *time.Time `json:"last_at,omitempty"`
+}
+
+// snapshot 折算当前窗口。cutoff 之前的不算。
+func (w *liveWindow) snapshot(now time.Time) liveRate {
+	if w == nil {
+		return liveRate{WindowSec: liveWindowSec} // 零值 store：空窗口，不是崩溃
+	}
+	cutoff := now.Add(-liveWindowSec * time.Second)
+	w.prune(cutoff)
+	out := liveRate{WindowSec: liveWindowSec}
+	var genSec, latSum float64
+	var last *time.Time
+	for i := range w.pts {
+		p := w.pts[i]
+		out.Samples++
+		out.Requests++
+		if p.ok {
+			out.Success++
+		} else {
+			out.Failed++
+		}
+		out.CompTok += p.compTok
+		genSec += p.genSec
+		latSum += p.latencyMS
+		t := p.at
+		last = &t
+	}
+	if genSec > 0 {
+		out.TokensPerSec = float64(out.CompTok) / genSec
+	}
+	if out.Requests > 0 {
+		out.AvgLatencyMS = latSum / float64(out.Requests)
+		out.SuccessRate = float64(out.Success) / float64(out.Requests)
+	}
+	out.LastAt = last
+	return out
+}
+
 // metricsTime 宽容时间：接受 RFC3339（本程序写的）与 "2006-01-02T15:04:05"
 // （手改过 / 老版本留下的裸本地时间）。解析不了就置零，而不是让整个 stats.json
 // 反序列化失败——一条坏记录不该把 92 天历史全丢掉（同 modeldead.go 的纪律）。
@@ -192,6 +298,16 @@ type metricsStore struct {
 	loaded    bool   // 是否已从磁盘载入过（InitMetricsPersist 幂等）
 	dirty     bool
 	lastFlush time.Time
+
+	// live 是「最近 liveWindowSec 秒」的滚动窗口，供实时速率用。
+	// 与 byModel/days 那些「区间累计」并存：前者答「现在多快」，后者答「一共多少」。
+	live *liveWindow
+
+	// changed 是 SSE 的信号量（容量 1），不是事件队列：
+	// 有请求落地就敲一下，正在推的连接会被唤醒；没人听时信号直接丢掉，
+	// 下一个连上来的连接会先收到一帧全量快照，所以不丢信息。
+	// 容量 1 的非阻塞发送保证高频请求不会把信号堆成内存泄漏。
+	changed chan struct{}
 }
 
 var globalMetrics = &metricsStore{
@@ -199,6 +315,17 @@ var globalMetrics = &metricsStore{
 	byModel:    map[string]*modelMetrics{},
 	byProducer: map[string]*modelMetrics{},
 	days:       map[string]*dayBucket{},
+	live:       newLiveWindow(),
+	changed:    make(chan struct{}, 1),
+}
+
+// notifyChanged 通知所有 SSE 订阅者「有新的观测落地了」。非阻塞。
+// 调用方不必持 m.mu（在解锁之后调），所以不会被慢订阅者拖住写路径。
+func (m *metricsStore) notifyChanged() {
+	select {
+	case m.changed <- struct{}{}:
+	default: // 已有一个待处理信号，下游会读到更新后的快照，无需再敲
+	}
 }
 
 // recordChatMetric 把一次请求的观测累加进聚合表。由 chatStat.done() 调用。
@@ -240,8 +367,23 @@ func recordChatMetric(s *chatStat, total time.Duration) {
 	m.addKeyedLocked(b.ByProducer, producer, d, 0)
 	b.Hours[hour]++
 	m.dirty = true
+	// 短窗口速率：同一次观测再记一份到滚动窗口，回答「现在多快」。
+	// 与上面的区间累计是同一笔数据、两种口径——不是重复统计。
+	if m.live == nil {
+		m.live = newLiveWindow() // 零值 metricsStore（部分测试直接构造）自愈
+	}
+	m.live.add(livePoint{
+		at:        start,
+		compTok:   d.CompTok,
+		genSec:    d.GenSecSum,
+		ok:        s.status >= 200 && s.status < 300,
+		latencyMS: float64(total.Milliseconds()),
+	})
 	m.mu.Unlock()
 
+	// 通知放在解锁之后：SSE 订阅者读快照要抢同一把锁，锁内通知等于把
+	// 每个请求的收尾都绑在订阅者的 marshal 速度上。
+	m.notifyChanged()
 	m.maybeFlush()
 }
 
@@ -713,6 +855,16 @@ type MetricsSnapshot struct {
 	// PartialDays 区间内「缺输入 token 观测」的天数：>0 时总 token
 	// 只是下限（那几天的输入侧无法回填，日志里就没记）。
 	PartialDays int `json:"partial_days"`
+
+	// Live 最近 liveWindowSec 秒的滚动速率（不随区间变）。区间均值天生迟钝，
+	// 「现在跑多快」只能由短窗口回答；页面拿它做实时展示。
+	Live liveRate `json:"live"`
+
+	// LiveModels 此刻在跑的模型 -> 在飞请求数（与 /status.live_models 同源）。
+	// 放进快照的理由：桌面悬浮窗只连一条 SSE 就能拿到「在飞 + 速率 + 累计」三样，
+	// 不必为了「正在跑什么」再开一路 2s 轮询 /status（那是几百 KB 的账号全量）。
+	// 零值时省略，避免每帧多带一个空对象。
+	LiveModels map[string]int `json:"live_models,omitempty"`
 }
 
 // ModelStatPayload 单模型派生统计。
@@ -807,6 +959,7 @@ func MetricsSnapshotOf() MetricsSnapshot {
 		Now:       now,
 		UptimeSec: int64(now.Sub(m.since).Seconds()),
 		Models:    make([]ModelStatPayload, 0, len(m.byModel)),
+		Live:      m.live.snapshot(now),
 	}
 
 	// total 由各模型累加得出（与 models 同口径，避免两处算法分叉）。
@@ -902,6 +1055,8 @@ func metricsSnapshotRange(spec rangeSpec) MetricsSnapshot {
 		// PartialDays 数出区间内输入侧缺失的天数，前端据此把
 		// 总量标为下限而不是完整口径。
 		PartialDays: partialDays,
+		// Live 与 range 无关：它永远是「最近 60 秒」，不因为切区间而变。
+		Live: m.live.snapshot(now),
 	}
 
 	var tot modelMetrics
@@ -997,11 +1152,13 @@ func ResetMetrics() {
 	m.byModel = map[string]*modelMetrics{}
 	m.byProducer = map[string]*modelMetrics{}
 	m.days = map[string]*dayBucket{}
+	m.live = newLiveWindow()
 	m.since = time.Now()
 	m.warned = false
 	m.dirty = true
 	path, raw, ok := m.flushLocked()
 	m.mu.Unlock()
+	m.notifyChanged()
 	if ok {
 		_ = writeFileAtomic(path, raw)
 	}
@@ -1024,6 +1181,7 @@ func logMetricsCapWarn(model string) {
 // resolveModel 剥前缀后按 realm 查表；未知前缀/裸名含冒号/"-" 查不到 → 省略。
 // total 行不参与（跨倍率聚合无意义）。
 func (h *Handler) enrichCredits(snap *MetricsSnapshot) {
+	snap.LiveModels = globalLiveModels.snapshot()
 	cn := make(map[string]string) // bare id -> credits 原文
 	for _, mi := range cachedModelsSnapshot() {
 		if mi.Credits != "" {
@@ -1094,4 +1252,100 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) statsReset(w http.ResponseWriter, r *http.Request) {
 	ResetMetrics()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// sseKeepaliveSec 心跳间隔。纯保活用：中间没有代理时会因为空闲超时掐断长连，
+// 浏览器 EventSource 断开后会自动重连，但前端会看到一次「已暂停」闪烁。
+const sseKeepaliveSec = 20
+
+// statsStream 处理 GET /v1/stats/stream?range=...：把 /v1/stats 变成 SSE 推送。
+//
+// 为什么要有这条线：统计是「请求落地那一刻就已经算好了」的即时数据，
+// 但纯轮询天生带一个「最多迟一个间隔」的延迟，还每次都把整份快照重新
+// JSON 序列化一遍（85 个模型时不小）。改成推送后：
+//   - 延迟从「≤ 轮询间隔」变成「≈0」；
+//   - 没有新观测时一条字节都不发，比轮询省。
+//
+// 载荷与 /v1/stats 完全一致（同一个 metricsSnapshotRange + enrichCredits），
+// 所以前端可以无脑用同一段渲染逻辑；现有接口不动，纯增量。
+func (h *Handler) statsStream(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		// 没 Flusher 说明中间件链里套了不支持流式的 writer，
+		// 此时降级成一次性快照而不是 500：至少页面上还有数据。
+		spec := parseRangeSpec(r.URL.Query().Get("range"))
+		snap := metricsSnapshotRange(spec)
+		h.enrichCredits(&snap)
+		writeJSON(w, http.StatusOK, snap)
+		return
+	}
+	spec := parseRangeSpec(r.URL.Query().Get("range"))
+	sig := globalMetrics.changed
+
+	hdr := w.Header()
+	hdr.Set("Content-Type", "text/event-stream")
+	hdr.Set("Cache-Control", "no-cache")
+	hdr.Set("Connection", "keep-alive")
+	// nginx 之类的反代会缓冲响应，不关掉的话事件全攒在代理里一次性吐给前端，
+	// 那就退化成轮询了。
+	hdr.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	// 心跳：既保活，也顺带给前端一个「连接还活着」的信号。
+	// 用注释帧（以 ':' 开头，SSE 规范里被客户端忽略），不污染事件流。
+	ping := func() {
+		fmt.Fprintf(w, ": ping\n\n")
+		fl.Flush()
+	}
+
+	// 首帧立即推全量：连上来的瞬间就有东西显示，不用等下一次请求落地。
+	send := func() bool {
+		snap := metricsSnapshotRange(spec)
+		h.enrichCredits(&snap)
+		raw, err := json.Marshal(snap)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: stats\ndata: %s\n\n", raw); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+	// 建连前先排空信号槽：里面可能压着「上一批观测」留下的信号，而下面的
+	// 首帧快照已经把它们全算进去了。不排空的话，循环第一次 select 就会
+	// 立刻醒来再推一帧内容完全相同的快照（客户端表现为收到两次一样的数据）。
+	//
+	// 顺序很讲究：先排空、后取快照。反过来（先快照后排空）会吞掉
+	// 「落地在两步之间的那次请求」的通知，那条数据就永远推不出去了。
+	// 现在的顺序最坏情况只是多推一帧相同内容，不会漏——宁可重复不可丢。
+	for {
+		select {
+		case <-sig:
+			// 继续排空，直到空。
+		default:
+			goto drained
+		}
+	}
+drained:
+	if !send() {
+		return
+	}
+	ping()
+
+	tick := time.NewTicker(sseKeepaliveSec * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			// 客户端关页面 / 断开：这是正常路径，静默收尾。
+			return
+		case <-sig:
+			if !send() {
+				return
+			}
+		case <-tick.C:
+			ping()
+		}
+	}
 }

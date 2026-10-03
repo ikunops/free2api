@@ -205,3 +205,23 @@ func TestStateViewJSON(t *testing.T) {
 		t.Errorf("listen = %v", got["listen"])
 	}
 }
+
+// TestDefaultWindowSizeStaysSane 锁住窗口默认尺寸的两条不变量：
+// 永远不会大到超过工作区，也永远不会小到布局散架的下限以下（除非屏幕本身更小）。
+// 这两个 getter 在非 Windows 上不存在，所以整个文件已带 windows build tag。
+func TestDefaultWindowSizeStaysSane(t *testing.T) {
+	w, h := defaultWindowSize()
+	if w <= 0 || h <= 0 {
+		t.Fatalf("defaultWindowSize() = %dx%d", w, h)
+	}
+	if wa, ok := primaryWorkArea(); ok {
+		if workW, workH := int(wa.Right-wa.Left), int(wa.Bottom-wa.Top); workW > 0 && workH > 0 {
+			if w > workW || h > workH {
+				t.Errorf("窗口 %dx%d 超过工作区 %dx%d", w, h, workW, workH)
+			}
+		}
+	}
+	if w < 960 || h < 640 {
+		t.Errorf("窗口 %dx%d 小于最小可用尺寸 960x640", w, h)
+	}
+}

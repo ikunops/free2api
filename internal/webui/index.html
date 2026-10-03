@@ -76,9 +76,9 @@ nav{padding:6px 8px;overflow:auto;flex:1}
 
 /* min-width:0：grid 子项默认 min-width:auto，会被内容顶宽（表格一宽整页就横向滚动），
    显式归零后宽度由网格列决定，宽表交给 .tablewrap 卡内滚动。 */
-.main{padding:26px 40px 64px;width:100%;min-width:0}
-@media(min-width:1600px){.main{padding-left:56px;padding-right:56px}}
-@media(min-width:2200px){.main{padding-left:80px;padding-right:80px}}
+.main{padding:22px 32px 56px;width:100%;min-width:0}
+@media(min-width:1600px){.main{padding-left:48px;padding-right:48px}}
+@media(min-width:2200px){.main{padding-left:72px;padding-right:72px}}
 .toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px}
 .ic{width:34px;height:34px;border-radius:var(--r3);border:1px solid var(--line3);
   background:var(--panel);color:var(--fg2);cursor:pointer;display:flex;align-items:center;
@@ -121,13 +121,13 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .sub{font-size:12.5px;color:var(--fg3);margin:2px 0 16px;line-height:1.7}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
-  padding:18px 20px;box-shadow:var(--sh);margin-bottom:16px}
+  padding:15px 18px;box-shadow:var(--sh);margin-bottom:12px}
 .card.pad0{padding:14px 20px}
-.card-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:14px}
+.card-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:11px}
 .card-head .grow{flex:1}
 .sep{height:1px;background:var(--line2);margin:16px 0}
 
-.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
 @media(max-width:1000px){.grid4,.grid3,.grid2{grid-template-columns:repeat(2,1fr)}}
@@ -135,15 +135,75 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
   .app{grid-template-columns:1fr}.side{position:static;height:auto}.main{padding:20px}}
 
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
-  padding:15px 17px;box-shadow:var(--sh)}
+  padding:12px 14px;box-shadow:var(--sh)}
 .stat .k{font-size:12px;color:var(--fg3);display:flex;align-items:center;gap:6px}
-.stat .v{font-size:29px;font-weight:750;line-height:1.25;margin:4px 0 2px;
-  font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.stat .v{font-size:25px;font-weight:750;line-height:1.25;margin:3px 0 1px;
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px;transition:color .18s}
 .stat .n{font-size:11.5px;color:var(--fg4)}
+/* 数字滚动期间的过渡高亮：只染字不动布局，颜色走 --acc-fg，浅深色通用。 */
+.stat .v.bump{color:var(--acc-fg)}
+@media(prefers-reduced-motion:reduce){.stat .v{transition:none}}
 
-.mini{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;cursor:pointer;
-  background:var(--panel);transition:border-color .12s}
-.mini:hover{border-color:var(--line3)}
+/* 增量角标：累计值跳变时在数字右上角浮出 +N，随即淡出。
+   为什么要它——今天 Tokens 基数 6500 万，一次请求 +1 万占 0.015%，
+   「从 6570 万爬到 6571 万」肉眼等于没动；但「跳了一下 +12,043」看得清清楚楚。
+   所以累计量不做连续滚动（那是拿插值骗人），改用「跳变 + 角标」表达实时。 */
+.ldelta{display:inline-block;font-size:11px;font-weight:700;color:var(--acc-fg);
+  vertical-align:super;margin-left:5px;opacity:0;pointer-events:none;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.ldelta.show{animation:ldeltaPop 2.4s ease-out forwards}
+@keyframes ldeltaPop{
+  0%{opacity:0;transform:translateY(4px)}
+  12%{opacity:1;transform:translateY(0)}
+  70%{opacity:1;transform:translateY(0)}
+  100%{opacity:0;transform:translateY(-4px)}
+}
+@media(prefers-reduced-motion:reduce){
+  .ldelta.show{animation:none;opacity:1}
+  .ldelta{transition:opacity .4s}
+}
+/* 局部更新过的节点给一个极短的背景闪，让「这一格刚变了」有落点。
+   只染背景不染字，配合 delta 角标，实时感来自「变化被定位到具体数字」。 */
+.lv{transition:background-color .5s ease-out;border-radius:4px}
+.lv.flash{background-color:var(--acc-soft);transition:none}
+
+/* ---------- 正在发生（实时活跃态） ---------- */
+/* 概览顶部这块和下面的累计卡是两种东西：累计是「一共多少」，这里是「此刻在干嘛」。
+   它的数字是真正连续的（在飞请求、当前模型、实时速度），不参与区间累计口径。 */
+.livebar{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--line2);
+  border:1px solid var(--line2);border-radius:var(--r2);overflow:hidden;background-clip:padding-box}
+.livebar>div{background:var(--panel);padding:10px 13px;min-width:0}
+.livebar .lk{font-size:11px;color:var(--fg3);display:flex;align-items:center;gap:5px}
+.livebar .lk .dot{width:6px;height:6px;border-radius:50%;background:var(--fg4);flex:none}
+.livebar.on .lk .dot{background:var(--acc);animation:ratePulse 1.4s ease-in-out infinite}
+.livebar .lv-v{font-size:19px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.3px}
+.livebar .lv-n{font-size:10.5px;color:var(--fg4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:1400px){.livebar{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:900px){.livebar{grid-template-columns:repeat(2,1fr)}}
+
+/* ---------- 三类量：累计 / 速率 / 均值 ----------
+   把不同性质的数字用不同视觉语言区分开，用户一眼就知道「这个该动」还是
+   「这个不该动」。混在一起显示就会让人以为均值卡死了：
+     .lv-cum  累计量：跳变 + 增量角标（基数大，爬升看不见，跳变看得见）
+     .lv-rate 速率量：真·连续变化（短窗口），给一个呼吸的活性点提示它在动
+     .lv-avg  均值量：区间平均，天生迟钝，明确标注口径且不给任何动画暗示 */
+.lv-rate{position:relative}
+.lv-rate::after{content:"";position:absolute;top:1px;right:-9px;width:5px;height:5px;
+  border-radius:50%;background:var(--acc);opacity:.85;animation:ratePulse 1.8s ease-in-out infinite}
+@keyframes ratePulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){.lv-rate::after{animation:none;opacity:.6}}
+.lv-avg{color:var(--fg)}
+/* 均值卡右侧的「区间平均」小标：让人知道为什么不跳。 */
+.avgmark{display:inline-block;font-size:10px;font-weight:500;color:var(--fg4);
+  border:1px solid var(--line3);border-radius:4px;padding:0 4px;margin-left:6px;
+  vertical-align:2px;letter-spacing:.2px}
+
+/* .mini 是「卡片但可点」（源类型统计块、快捷入口）。原来边框比普通卡片还淡，
+   看起来像静态信息块；升到 --line3 并让 hover 走主色，和不可点的 .card 拉开。 */
+.mini{border:1px solid var(--line3);border-radius:var(--r2);padding:13px 15px;cursor:pointer;
+  background:var(--panel);transition:border-color .12s,box-shadow .12s}
+.mini:hover{border-color:var(--acc);box-shadow:var(--sh2)}
 .mini .t{font-size:13px;font-weight:600}
 .mini .c{font-size:24px;font-weight:700;margin:6px 0 3px;font-variant-numeric:tabular-nums}
 .mini .d{font-size:11.5px;color:var(--fg3);line-height:1.6}
@@ -151,7 +211,7 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .bar-fill{height:100%;background:var(--acc);border-radius:3px}
 
 /* 概览：KPI 行 5 列（宽屏一排放得下），窄屏自动降列。 */
-.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px}
+.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px}
 @media(max-width:1400px){.grid5{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:1000px){.grid5{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.grid5{grid-template-columns:1fr}}
@@ -178,10 +238,18 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
   display:flex;align-items:center;justify-content:center}
 .donut .lbl{font-size:11.5px;color:var(--fg3);text-align:center}
 
-button{background:var(--panel);border:1px solid var(--line3);color:var(--fg);
+/* 按钮边界：这一段是「可点的东西看起来可点」的全部依据。
+   之前 button 的边框和 .card 同为 var(--line)，在一堆卡片里几乎看不出来，
+   导致「刷新」「删除」这些按钮要盯着找才看得见。现在：
+     - 边框升到 --line3（比卡片深一档）
+     - 背景给 --panel，卡片是 --panel → 改用极轻的 --soft2 让它「浮」出卡片
+     - hover 时边框升到主色，边界立刻明确
+   只改可点元素；.tag / .stat / .mstrip 这些只读信息一律不加框。 */
+button{background:var(--soft2);border:1px solid var(--line3);color:var(--fg);
   border-radius:var(--r3);padding:7px 13px;font-size:13px;cursor:pointer;white-space:nowrap;
   box-shadow:0 1px 1px rgba(16,16,16,.03);transition:background .12s,border-color .12s}
-button:hover:not(:disabled):not(.chip){border-color:var(--acc);background:var(--soft2)}
+button:hover:not(:disabled):not(.chip){border-color:var(--acc);background:var(--panel)}
+button:disabled{opacity:.5;cursor:not-allowed}
 button:active:not(:disabled):not(.chip){transform:translateY(1px);box-shadow:none}
 button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 button:disabled{opacity:.45;cursor:not-allowed}
@@ -189,7 +257,10 @@ button.pri{background:var(--dark);border-color:var(--dark);color:var(--on-dark);
   box-shadow:0 1px 2px rgba(16,16,16,.14)}
 button.pri:hover:not(:disabled){background:var(--dark-hover);border-color:var(--dark-hover)}
 button.gh{background:var(--panel)}
-button.tiny{padding:5px 11px;font-size:12.5px}
+/* .tiny 是页面上最常见的次级动作（复活 / 禁用 / 删除 / 清冷却）。
+   原来 padding 5px 11px 让它只有 28px 高，触区偏小且边界几乎不可见。
+   加到 7px 12px / 30px 高，边界升到 line3。 */
+button.tiny{padding:7px 12px;font-size:12.5px;border-color:var(--line3);background:var(--panel)}
 /* 关键动作（刷新/重扫）用 .rf：带图标 + 主色描边，和一片白底的普通按钮拉开层次。 */
 button.rf{display:inline-flex;align-items:center;gap:6px;color:var(--acc-fg);
   border-color:var(--acc-bg);background:var(--panel)}
@@ -202,6 +273,29 @@ button.withico svg{width:13px;height:13px}
   padding:11px 13px;border:1px solid var(--line2);border-radius:var(--r2);background:var(--soft2)}
 .actionbar button{display:inline-flex;align-items:center;gap:6px}
 .actionbar button svg{width:15px;height:15px}
+/* ---- 开关（设置页） ----
+   用 iOS 那种 pill 开关而不是复选框：开关本身就是「这一项开没开」的答案，
+   不需要旁边的文字重复一遍；开关态用主色填充，边界清晰，一眼能扫到哪些开着。 */
+button.toggle{position:relative;width:40px;height:23px;flex:0 0 40px;border-radius:999px;
+  border:1px solid var(--line3);background:var(--panel);padding:0;cursor:pointer;
+  transition:background .16s,border-color .16s}
+button.toggle:hover:not(:disabled){border-color:var(--acc)}
+button.toggle .knob{position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;
+  background:var(--fg3);transition:transform .16s,background .16s}
+button.toggle.on{background:var(--acc);border-color:var(--acc)}
+button.toggle.on .knob{transform:translateX(17px);background:#fff}
+button.toggle.big{width:46px;height:26px;flex:0 0 46px}
+button.toggle.big .knob{width:20px;height:20px}
+button.toggle.big.on .knob{transform:translateX(19px)}
+button.toggle:disabled{opacity:.5;cursor:default}
+/* 悬浮窗设置行：标题 + 说明一行，左文右开关，边界描出来才知道可点 */
+.fwrow{display:flex;align-items:center;gap:14px;padding:11px 13px;margin-bottom:8px;
+  border:1px solid var(--line2);border-radius:var(--r2);background:var(--soft2)}
+.fwrow:hover{border-color:var(--line3)}
+.fwrow .fwtxt{flex:1;min-width:0}
+.fwrow .fwtxt b{display:flex;align-items:center;gap:6px;font-weight:500;font-size:13.5px}
+.fwrow .fwtxt b svg{width:14px;height:14px;color:var(--fg3)}
+.fwrow .hint{display:block;margin-top:2px}
 button.gh.warn-gh{color:var(--danger-fg);border-color:var(--err-line)}
 button.gh.warn-gh:hover:not(:disabled){border-color:var(--danger);background:var(--err-bg)}
 
@@ -215,12 +309,16 @@ label.f{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:5px}
 .field{margin-bottom:13px}
 .hint{font-size:11.5px;color:var(--fg4);margin-top:5px;line-height:1.65}
 
-.seg{display:inline-flex;background:var(--soft);border:1px solid var(--line);
+/* 分段控件（今天/7天/30天/全部 这类切换）：
+   容器边框升到 --line3 让它「是个控件」而不是一段文字；
+   选中项除了底色还加主色描边——只靠底色差在低对比屏上分不清选中没选中。 */
+.seg{display:inline-flex;background:var(--soft);border:1px solid var(--line3);
   border-radius:10px;padding:3px;gap:2px;margin-bottom:16px}
-.seg button{border:none;background:transparent;padding:6px 14px;border-radius:7px;
+.seg button{border:1px solid transparent;background:transparent;padding:6px 14px;border-radius:7px;
   font-size:13px;color:var(--fg2);box-shadow:none}
+.seg button:hover:not(.on){color:var(--fg)}
 .seg button.on{background:var(--panel);color:var(--fg);font-weight:550;
-  box-shadow:0 1px 2px rgba(16,16,16,.07)}
+  border-color:var(--acc-bg);box-shadow:0 1px 2px rgba(16,16,16,.07)}
 .seg button .b{font-size:11px;color:var(--fg4);margin-left:6px}
 
 .chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}
@@ -263,7 +361,17 @@ th.sorth.on{color:var(--fg)}
 .tag.err{color:var(--danger-fg);border-color:var(--err-line);background:var(--err-bg)}
 .tag.mut{color:var(--fg4)}
 
-.kv{display:grid;grid-template-columns:96px 1fr;gap:9px 14px;font-size:13px}
+.kv{display:grid;grid-template-columns:96px 1fr;gap:7px 14px;font-size:13px}
+/* mstrip 紧凑指标条：替代 4 个大 KPI 的补充信息位，一行放 6 个小量，
+   用来承接后端已有但没画出来的字段（credit / prompt / completion / 缓存写入…）。 */
+.mstrip{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line2);
+  border:1px solid var(--line2);border-radius:var(--r2);overflow:hidden}
+.mstrip>div{background:var(--panel);padding:9px 12px}
+.mstrip .mk{font-size:11px;color:var(--fg3);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.mstrip .mv{font-size:15px;font-weight:650;margin-top:2px;font-variant-numeric:tabular-nums}
+@media(max-width:1200px){.mstrip{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.mstrip{grid-template-columns:repeat(2,1fr)}}
 .kv>div:nth-child(odd){color:var(--fg3);font-size:12.5px}
 /* codebox：Codex 配置改前/改后对照。等宽、可滚、限高，避免长配置把页面撑爆。 */
 .codebox{background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:9px 11px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;max-height:300px;margin:0}
@@ -434,7 +542,8 @@ const ICON = {
   sun: "M12 17a5 5 0 100-10 5 5 0 000 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4",
   moon: "M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z",
   search: "M11 19a8 8 0 100-16 8 8 0 000 16zM21 21l-4.3-4.3",
-  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  sliders: "M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M7 14v6"
 };
 function svg(k, cls){
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
@@ -534,9 +643,10 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, schedule: null, modeldead: null, selftest: null,
+  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
+  floatwin: null, floatBusy: false,
   mq: "", mfProducer: "all", mfRate: "all"
 };
 const NAV = [
@@ -548,6 +658,7 @@ const NAV = [
     { id: "sources", name: "获取源", ico: "inbox", badge: "src" },
     { id: "pool", name: "账号池", ico: "layers", badge: "pool" },
     { id: "output", name: "输出 API", ico: "plug", badge: "models" } ] },
+  { group: "系统", items: [ { id: "settings", name: "设置", ico: "sliders" } ] },
   { group: "帮助", items: [ { id: "help", name: "怎么用", ico: "help" } ] }
 ];
 function methodLabel(m){
@@ -618,7 +729,20 @@ function renderNav(){
   }).join("");
 }
 function go(tab, opt){
+  var prevTab = S.tab;
   S.tab = tab;
+  // 区间是「每页各自的选择」：切到没切过的那页就用它的默认值（概览=今天、
+  // 统计=7 天）。S.statsRange 是全局生效值（数据只拉一份），所以切页时要重设，
+  // 不然概览会拿 7 天的数据却写着「今天 Tokens」。
+  if (tab === "overview" || tab === "stats"){
+    var want = statsRangeFor(tab);
+    if (want !== S.statsRange){
+      S.statsRange = want;
+      S.stats = null;          // 别拿旧区间的数字冒充新口径
+      resetStatsStream();      // SSE 的 range 建连时定死，必须重连
+      loadStats().then(function(){ if (S.tab === tab) render(); });
+    }
+  }
   if (tab === "pool" && !S.credits) loadCredits(false);
   // 切到统计页时先画骨架、数据回来再重画：少了这个 then，用户会一直停在「读取中」
   // 直到后台 30s 轮询把数据填上（踩过——`if (!S.stats) loadStats();` 之后没人 render）。
@@ -627,6 +751,9 @@ function go(tab, opt){
   }
   if (tab === "runtime" && !S.schedule){
     loadRuntime().then(function(){ if (S.tab === "runtime") render(); });
+  }
+  if (tab === "settings" && DESKTOP && !S.floatwin){
+    floatLoad().then(function(){ if (S.tab === "settings") render(); });
   }
   if (tab === "overview" && (!S.stats || !S.schedule)){
     ensureOverview().then(function(){ if (S.tab === "overview") render(); });
@@ -649,7 +776,7 @@ function render(opt){
   var keepListTop = 0, l0 = $("#mList");
   if (l0) keepListTop = l0.scrollTop;
   var keepPageTop = window.scrollY || window.pageYOffset || 0;
-  var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, stats: viewStats, runtime: viewRuntime, help: viewHelp }[S.tab] || viewOverview;
+  var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, stats: viewStats, runtime: viewRuntime, settings: viewSettings, help: viewHelp }[S.tab] || viewOverview;
   var down = DESKTOP && S.desk && !(S.desk.running || S.desk.external);
   if (down && S.tab !== "overview" && S.tab !== "help"){
     $("#view").innerHTML = head("网关已停止", "这一页的数据由网关提供，先把它启动起来。") +
@@ -692,6 +819,16 @@ function card(title, sub, body, extra){
   return '<div class="card"><div class="card-head"><div class="grow"><h2>' + esc(title) + '</h2>' +
     (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") + '</div>' + (extra || "") + '</div>' + body + '</div>';
 }
+/* mstrip 一行紧凑指标：值里可带 HTML 时传 true（第四个参数）。
+   p[3] 非空 = 该格的 key，值可局部更新。 */
+function mstrip(pairs){
+  return '<div class="mstrip">' + pairs.map(function(p){
+    var v = p[3] ? liveNode(p[3], p[2] ? p[1] : esc(p[1]), !!p[2], p[4]) : (p[2] ? p[1] : esc(p[1]));
+    return '<div><div class="mk">' + esc(p[0]) +
+      (p[4] === "avg" ? '<span class="avgmark">均值</span>' : '') +
+      '</div><div class="mv">' + v + (p[3] ? liveDelta(p[3]) : '') + '</div></div>';
+  }).join('') + '</div>';
+}
 function kv(pairs){
   return '<div class="kv">' + pairs.map(function(p){
     return '<div>' + esc(p[0]) + '</div><div>' + (p[2] ? p[1] : esc(p[1])) + '</div>';
@@ -701,12 +838,46 @@ function kv(pairs){
 /* ovRangeName 概览里的区间名：与「请求统计」共用同一个区间口径，标题里写清楚，
    免得用户把概览上的数字当成「实时」或「今日」。 */
 function ovRangeName(){
-  return statsRangeName((S.stats && S.stats.range) || S.statsRange || "7d");
+  return statsRangeName((S.stats && S.stats.range) || statsRangeFor() || "7d");
 }
-/* ovKpi 概览顶部指标卡。v 允许带行内标签（如 17 / 17），所以这里不再 esc。 */
-function ovKpi(k, v, n){
-  return '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v">' + v +
-    '</div><div class="n">' + esc(n) + '</div></div>';
+/* ---------- 实时局部更新（live patch） ----------
+   动机：SSE 每来一帧就 render() 整页，概览 11 张卡、统计页 85 行模型表全被
+   innerHTML 换掉——滚动位置、hover、展开态统统丢失，视觉上就是「闪一下」。
+   而数据实际只变了几个数字。所以给这些数字挂 data-live="key"，
+   帧到达时只改这些节点的 textContent，其余 DOM 一个都不碰。
+
+   key 的取值与 liveValue(key) 一一对应；两边必须同步改，否则静默不更新。 */
+
+/* liveNode 渲染一个可局部更新的数字节点。
+   html=true 时走 innerHTML（值里带标签的用），否则 textContent（更快更安全）。
+   kind 标注量的性质（cum 累计 / rate 速率 / avg 均值 / null 不标注），
+   只影响 CSS 类，不改渲染逻辑——分类是给人看的，不是行为开关。 */
+function liveNode(key, text, html, kind){
+  return '<span class="lv' + (kind ? ' lv-' + kind : '') + '" data-live="' + esc(key) + '"' +
+    (html ? ' data-live-html="1"' : '') + '>' + (html ? text : esc(text)) + '</span>';
+}
+/* liveDelta 增量角标：数字跳变时在右侧浮出 +N，2.4s 后淡出。
+   累计值基数大（6500 万）时，「爬升」几乎看不见，但「跳了一下」看得见——
+   所以累计量用跳变+角标表达实时，比伪造连续滚动诚实也有效。 */
+function liveDelta(key){
+  return '<span class="ldelta" data-delta="' + esc(key) + '"></span>';
+}
+/* ovKpi 概览顶部指标卡。v 允许带行内标签（如 17 / 17），所以这里不再 esc。
+   key 非空时值与副文本都可局部更新。 */
+function ovKpi(k, v, n, key, kind){
+  var vk = key ? liveNode(key, v, true, kind) : v;
+  var nk = key ? liveNode(key + ".n", n, true) : esc(n);
+  return '<div class="stat"' + (key ? ' data-live-card="' + esc(key) + '"' : '') + '>' +
+    '<div class="k">' + esc(k) + (kind === "avg" ? '<span class="avgmark">均值</span>' : '') +
+    '</div><div class="v">' + vk + (key ? liveDelta(key) : '') +
+    '</div><div class="n">' + nk + '</div></div>';
+}
+/* lbCell 「正在发生」里的一格。与 mstrip 同构（紧凑指标），但值区更大、
+   带一个活性点，且整个条在有请求在跑时会亮起（.livebar.on）。 */
+function lbCell(key, k, v, n){
+  return '<div><div class="lk"><span class="dot"></span>' + esc(k) + '</div>' +
+    '<div class="lv-v">' + liveNode(key, v, false, "rate") + '</div>' +
+    '<div class="lv-n">' + liveNode(key + ".n", n, false) + '</div></div>';
 }
 /* ovTrend 逐日请求趋势：数据来自 /v1/stats 的 series（每天一个点，跨重启保留）。
    柱高按区间峰值归一；悬停给出当天请求 / 成功 / 失败 / token。 */
@@ -993,16 +1164,40 @@ function viewOverview(){
   var cn = realm.cn || {}, gl = realm.global || {};
   var inFlight = 0;
   ((st && st.accounts) || []).forEach(function(a){ inFlight += (a.in_flight || 0); });
+  // 正在跑的模型：后端 /status.live_models（按模型维度的在飞计数）。
+  // 不用 accounts[].in_flight 反推——那个只说「哪个号在忙」，没有模型信息。
+  var hotModels = (st && st.live_models) || {};
+  var live = (s && s.live) || {};
+  var winSec = live.window_sec || 60;
+  var hotList = Object.keys(hotModels).sort(function(a, b){ return hotModels[b] - hotModels[a]; });
+  var hotText = hotList.length ? (hotList.length === 1 ? hotList[0] : (hotList.length + " 个模型"))
+    : (live.requests ? "—" : "空闲");
   html += '<div class="grid5">' +
     ovKpi("账号可用", fmtInt(healthy) + ' <span style="font-size:14px;font-weight:400;color:var(--fg3)">/ ' + fmtInt(total) + '</span>',
       "CN " + (cn.total || 0) + " · 国际 " + (gl.total || 0) + " · 冷却 " + cooling + " · 禁用 " + disabled) +
     ovKpi("对外模型", fmtInt(m.length), m.length ? "GET /v1/models" : "需要健康账号") +
-    ovKpi(rn + "请求", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed)) +
+    ovKpi(rn + "请求", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed), "ov.requests", "cum") +
     ovKpi(rn + " Tokens", ((s && s.partial_days) ? "≥" : "") + fmtInt(t.total_tokens),
       (s && s.partial_days) ? ("下限：" + s.partial_days + " 天缺输入 token · 缓存命中率 " + fmtPct(t.cache_hit_rate))
-        : ("缓存命中率 " + fmtPct(t.cache_hit_rate))) +
-    ovKpi("平均延迟", fmtDur(t.avg_latency_ms), "首字 " + fmtDur(t.avg_ttfb_ms) + " · 在飞 " + fmtInt(inFlight)) +
+        : ("缓存命中率 " + fmtPct(t.cache_hit_rate)), "ov.tokens", "cum") +
+    ovKpi("平均延迟", fmtDur(t.avg_latency_ms), "首字 " + fmtDur(t.avg_ttfb_ms) + " · 在飞 " + fmtInt(inFlight), "ov.latency", "avg") +
     '</div>';
+  // 「正在发生」：与上面那排累计卡是两种东西。累计卡答「一共多少」（区间口径、
+  // 该迟钝就迟钝）；这块答「此刻在干嘛」——在飞请求、正在跑的模型、最近 60 秒的
+  // 速度。放在累计之上是因为它是概览真正实时的那部分。
+  html += '<div class="row" style="margin-bottom:10px;align-items:center">' +
+    statsRangeSeg() + statsLiveTag() + '</div>' +
+    '<div class="livebar' + (inFlight > 0 ? ' on' : '') + '" data-live-bar="1">' +
+    lbCell("lv.inflight", "在飞请求", fmtInt(inFlight), inFlight > 0 ? (inFlight + " 个正在跑") : "当前空闲") +
+    lbCell("lv.model", "正在跑", hotText, hotList.length === 1 ? "1 个模型" : (hotList.length ? hotList.length + " 个模型" : "没有请求在跑")) +
+    lbCell("lv.rate_tps", "实时速度", (live.tokens_per_sec ? Number(live.tokens_per_sec).toFixed(1) : "—"),
+      live.tokens_per_sec ? "tok/s · 生成阶段" : "最近 " + winSec + "s 无输出") +
+    lbCell("lv.rate_req", "近 " + winSec + "s 请求", fmtInt(live.requests || 0),
+      "成功 " + fmtInt(live.success || 0) + " · 失败 " + fmtInt(live.failed || 0)) +
+    lbCell("lv.rate_tok", "近 " + winSec + "s 生成", fmtInt(live.completion_tokens || 0),
+      live.samples ? (live.samples + " 次观测") : "窗口内无观测") +
+    '</div>' +
+    '<div class="hint" style="margin:-4px 0 12px">「最近 ' + winSec + ' 秒」是滚动窗口，随每个请求落地而变；上面那排累计卡按下方区间统计，是累计口径。</div>';
   var trend = card("请求趋势（" + rn + "）", "每天一根柱，悬停看当天请求 / 成功 / 失败 / token。", ovTrend(s && s.series));
   var health = ovHealthCard();
   html += health ? ('<div class="grid2">' + trend + health + '</div>') : trend;
@@ -1412,6 +1607,14 @@ function creditRowOf(uid){
   return null;
 }
 /* creditCell 余额单元格：优先用直查结果（权威），查不到才回落到池内值并标明。 */
+function fmtCredit(n){
+  // credit 是上游给的浮点扣费数，直接 toFixed/String 会漏出 33.59000000000001 这种尾巴。
+  n = Number(n) || 0;
+  if (!isFinite(n) || n === 0) return "0";
+  if (Math.abs(n) >= 1000) return String(Math.round(n));
+  if (Math.abs(n) >= 1) return String(Math.round(n * 100) / 100);
+  return String(Math.round(n * 10000) / 10000);
+}
 function fmtNum(n, unit){
   n = Number(n) || 0;
   if (unit !== "token") return String(n);
@@ -1673,8 +1876,17 @@ function viewPool(){
     '</div>');
   return html;
 }
-function statBox(k, v, n){
-  return '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div><div class="n">' + esc(n) + '</div></div>';
+/* statBox 统计页/运行态的指标卡。key 非空时值与副文本挂 data-live，可局部更新。 */
+/* statBox 统计页/运行态的指标卡。key 非空时值与副文本挂 data-live，可局部更新。
+   kind='avg' 时标题后自动挂一个「均值」小标——区间均值天生迟钝（这是它该有的
+   样子，不是卡死），不给任何标记的话用户会一直等它跳。 */
+function statBox(k, v, n, key, kind){
+  var vk = key ? liveNode(key, v, true, kind) : esc(v);
+  var nk = key ? liveNode(key + ".n", n, true) : esc(n);
+  return '<div class="stat"' + (key ? ' data-live-card="' + esc(key) + '"' : '') + '>' +
+    '<div class="k">' + esc(k) + (kind === "avg" ? '<span class="avgmark">均值</span>' : '') +
+    '</div><div class="v">' + vk + (key ? liveDelta(key) : '') +
+    '</div><div class="n">' + nk + '</div></div>';
 }
 /* ---------- 输出 API ---------- */
 /* 多出口（每个客户端一条独立 API）：出口 = 独立端口 + 自己的一套输出参数 +
@@ -2306,9 +2518,121 @@ function statsRangeName(id){
   for (var i = 0; i < STATS_RANGES.length; i++){ if (STATS_RANGES[i].id === id) return STATS_RANGES[i].name; }
   return id || "全部";
 }
+/* ---------- 数字滚动（实时感的关键） ----------
+   只在数字真的变了时播：从旧值匀速数到新值，结束落在真值上。
+   为了不打断阅读，位数不变的量（如 96.2% → 96.4%）走最短路径，
+   变位数的（1,203 → 1,999）也照样补齐，最后一帧强制写真值，
+   避免四舍五入让显示值和真实值长期差 1。 */
+var TWEEN_MS = 620;
+var tweenRAF = null;
+/* tweenNumber 把 el 里的数字从 from 滚到 to，fmt 决定显示格式。
+   返回 true 表示安排了动画，false 表示无变化或格式不支持，直接跳过。 */
+function tweenNumber(el, from, to, fmt){
+  if (!el || from === to || !isFinite(from) || !isFinite(to)) return false;
+  var start = null;
+  el.classList.add("bump");
+  setTimeout(function(){ el.classList.remove("bump"); }, TWEEN_MS + 40);
+  function step(ts){
+    if (start === null) start = ts;
+    var k = Math.min(1, (ts - start) / TWEEN_MS);
+    // easeOutCubic：起步快、收尾稳，数字读起来像「在涨」而不是「在飘」。
+    var e = 1 - Math.pow(1 - k, 3);
+    var v = from + (to - from) * e;
+    el.textContent = fmt(k >= 1 ? to : v);
+    if (k < 1) tweenRAF = requestAnimationFrame(step);
+  }
+  tweenRAF = requestAnimationFrame(step);
+  return true;
+}
+/* bindLive 把「数据键 -> DOM 元素 + 格式化函数」登记起来，
+   下一轮 refreshLiveNumbers 就能只动变化了的数字，不必重画整页。 */
+var liveBindings = [];
+function bindLive(key, el, fmt){
+  liveBindings.push({ key: key, el: el, fmt: fmt });
+}
+/* refreshLiveNumbers 比对新旧快照，只给变了的键播滚动动画。
+   oldStats 为 null（首屏）时只登记不动画——第一次出现就闪一下没有意义。 */
+function refreshLiveNumbers(oldStats, newStats){
+  if (!oldStats || !newStats) return;
+  var oldT = oldStats.total || {}, newT = newStats.total || {};
+  liveBindings.forEach(function(b){
+    if (!b.el || !b.el.isConnected) return;
+    var a = oldT[b.key], c = newT[b.key];
+    if (a === undefined || c === undefined) return;
+    a = Number(a) || 0; c = Number(c) || 0;
+    if (a === c) return;
+    tweenNumber(b.el, a, c, b.fmt);
+  });
+}
+/* registerLiveNumbers 登记「会变的数字」到 DOM 元素上。
+   只绑两个大数：「请求总数」和「合计 tokens」——它们是用户真正
+   会一直盯着的量，滚动往这里最值得。其余小量不滚：多个小数同时
+   动会把整页拉成一片红幕，反而看不清重点。
+   注意「合计 tokens」在 mstrip 里（不是 .stat 卡），所以两处都要找。 */
+function registerLiveNumbers(){
+  liveBindings = [];
+  [].slice.call(document.querySelectorAll("#view .stat")).forEach(function(card){
+    var label = ((card.querySelector(".k") || {}).textContent || "").trim();
+    if (!/^请求总数$/.test(label)) return;
+    var el = card.querySelector(".v");
+    if (el) bindLive("requests", el, function(v){ return fmtInt(Math.round(v)); });
+  });
+  [].slice.call(document.querySelectorAll("#view .mstrip > div")).forEach(function(cell){
+    var label = ((cell.querySelector(".mk") || {}).textContent || "").trim();
+    if (label !== "合计 tokens") return;
+    var el = cell.querySelector(".mv");
+    if (!el) return;
+    // mstrip 的值可能带「≥ 」前缀（区间有缺天时是下限），保留这个前缀。
+    var pre = /^≥/.test(el.textContent) ? "≥ " : "";
+    bindLive("total_tokens", el, function(v){ return pre + fmtInt(Math.round(v)); });
+  });
+}
+
+/* statsLiveTag 统计页页头的实时标记：说清楚现在是「推送」还是「轮询」。
+   SSE 活着 = 推送（请求落地即到）；退化成轮询 = 每 2s 拉一次；
+   两者都拿不到新数据 = 已暂停。超过 12s 没成功更新就显示灰的。 */
+function statsLiveTag(){
+  var fresh = S.stats && S.statsAt && (Date.now() - S.statsAt) < 12000;
+  var at = S.statsAt ? fmtTime(S.statsAt) : "—";
+  var pushing = statsES !== null;
+  var tip = pushing
+    ? "推送中：网关在每次请求落地时主动推一帧（GET /v1/stats/stream），数字没变就不重画，不影响你正在看的表格"
+    : "轮询中：推送连不上，已退回每 2 秒拉一次 GET /v1/stats。数字没变就不重画。";
+  var label = !fresh ? "● 已暂停" : (pushing ? "● 实时推送" : "● 轮询刷新");
+  return '<span class="tag statsLiveTag ' + (fresh ? "ok" : "mut") + '" style="margin-left:2px" title="' + esc(tip) + '">'
+    + label + ' · ' + esc(at) + '</span>';
+}
+/* refreshLiveTag 只原地改页头那一个标记 span。
+   传输方式（推送 / 轮询）变了但数据没变时，数字不该重画、滚动位置不该丢，
+   所以这里只动标记本身。找不到元素（比如不在统计页）就什么都不做。 */
+function refreshLiveTag(){
+  var cur = document.querySelector("#view .statsLiveTag");
+  if (!cur) return;
+  var fresh = S.stats && S.statsAt && (Date.now() - S.statsAt) < 12000;
+  var at = S.statsAt ? fmtTime(S.statsAt) : "—";
+  var pushing = statsES !== null;
+  var label = !fresh ? "● 已暂停" : (pushing ? "● 实时推送" : "● 轮询刷新");
+  cur.className = "tag statsLiveTag " + (fresh ? "ok" : "mut");
+  cur.textContent = label + " · " + at;
+}
+
 /* statsRangeSeg 区间切换：与「获取源」的 .seg 同一套控件，放页面最上面。 */
+/* statsTabDefault 每页的默认区间。概览看当下，统计看趋势。 */
+function statsTabDefault(tab){ return tab === "overview" ? "today" : "7d"; }
+/* statsRangeFor 取当前生效的区间：优先该页上次的选择，否则该页默认值。
+   统计页的 statsRangeSeg 与概览的共用它，所以两页永远显示同一个真实区间，
+   不会出现「标题写 7 天、数据其实是今天」这种口径打架。 */
+function statsRangeFor(tab){
+  tab = tab || S.tab;
+  var byTab = S.statsRangeByTab || {};
+  // 记忆优先；没切过就用该页默认。
+  // 刻意不回落 S.statsRange：它是「当前生效值」，用它兜底会让概览一进来
+  // 就拿到统计页的 7 天（实测踩过：概览明明写着「近 7 天请求」，
+  // 而它本该默认今天）。S.statsRange 由 go() 按本页需要重设，不是配置源。
+  return byTab[tab] || statsTabDefault(tab);
+}
 function statsRangeSeg(){
-  var cur = S.statsRange || "7d";
+  var cur = statsRangeFor();
   return '<div class="seg">' + STATS_RANGES.map(function(r){
     return '<button data-range="' + r.id + '" class="' + (cur === r.id ? "on" : "") + '">' + esc(r.name) + '</button>';
   }).join("") + '</div>';
@@ -2393,10 +2717,10 @@ function heatmapCard(heat){
 /* viewStats 请求统计：区间切换 → 总量 → 趋势/热力图 → 按来源 → 按模型 → token。
    数据源 GET /v1/stats?range=…（逐日聚合落 data/stats.json，跨重启保留）。 */
 function viewStats(){
-  var cur = S.statsRange || "7d";
+  var cur = statsRangeFor();
   var html = head("请求统计", "按「今天 / 近 7 天 / 近 30 天 / 全部」看请求量、来源、模型、延迟与 token。" +
     "历史按天落盘（data/stats.json），跨重启保留。数据源 /v1/stats。") +
-    '<div class="row" style="margin-bottom:14px">' + statsRangeSeg() + '</div>';
+    '<div class="row" style="margin-bottom:14px">' + statsRangeSeg() + statsLiveTag() + '</div>';
   var st = S.stats;
   if (!st) return html + card("正在读取", "", '<div class="empty">读取中…</div>');
   var t = st.total || {};
@@ -2405,16 +2729,16 @@ function viewStats(){
     : span >= 3600 ? (span/3600).toFixed(1) + " 小时"
     : span >= 60 ? Math.round(span/60) + " 分钟" : span + " 秒";
   html += '<div class="grid4">' +
-    statBox("请求总数", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed)) +
-    statBox("成功率", (t.requests ? fmtPct(t.success / t.requests) : "—"), "失败 " + fmtInt(t.failed) + " 次") +
-    statBox("流式占比", (t.requests ? fmtPct(t.streaming / t.requests) : "—"), "流式 " + fmtInt(t.streaming) + " 次") +
+    statBox("请求总数", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed), "st.requests", "cum") +
+    statBox("成功率", (t.requests ? fmtPct(t.success / t.requests) : "—"), "失败 " + fmtInt(t.failed) + " 次", "st.success_rate", "avg") +
+    statBox("流式占比", (t.requests ? fmtPct(t.streaming / t.requests) : "—"), "流式 " + fmtInt(t.streaming) + " 次", "st.streaming", "avg") +
     statBox("区间跨度", spanText, "起始 " + esc(fmtTime(st.since)) + " · " + esc(statsRangeName(st.range || cur))) +
     '</div>';
   html += '<div class="grid4">' +
-    statBox("首字延迟", fmtDur(t.avg_ttfb_ms), "平均 TTFB（流式首帧）") +
-    statBox("端到端延迟", fmtDur(t.avg_latency_ms), "平均总耗时") +
-    statBox("生成速度", (t.tokens_per_sec ? Number(t.tokens_per_sec).toFixed(1) + " tok/s" : "—"), "纯生成阶段吞吐") +
-    statBox("缓存命中率", fmtPct(t.cache_hit_rate), "命中 " + fmtInt(t.cache_hit_tokens) + " / 未命中 " + fmtInt(t.cache_miss_tokens)) +
+    statBox("首字延迟", fmtDur(t.avg_ttfb_ms), "区间平均 TTFB（流式首帧）", "st.ttfb", "avg") +
+    statBox("端到端延迟", fmtDur(t.avg_latency_ms), "区间平均总耗时", "st.latency", "avg") +
+    statBox("生成速度", (t.tokens_per_sec ? Number(t.tokens_per_sec).toFixed(1) + " tok/s" : "—"), "区间平均吞吐", "st.tps", "avg") +
+    statBox("缓存命中率", fmtPct(t.cache_hit_rate), "命中 " + fmtInt(t.cache_hit_tokens) + " / 未命中 " + fmtInt(t.cache_miss_tokens), "st.cache_hit", "avg") +
     '</div>';
   if (!t.requests){
     html += card("这个区间还没有请求", "", '<div class="empty">换个区间看看，或先跑一次对话再回来刷新。</div>');
@@ -2475,12 +2799,25 @@ function viewStats(){
       statsTh("Tokens", "total_tokens", true) + statsTh("缓存命中", "cache_hit_rate", true) +
       '<th>费率</th><th>最近</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
   }
-  html += card("token 总量", partialNote(),
-    kv([
-      ["提示词 tokens", ((st.partial_days) ? "≥ " : "") + fmtInt(t.prompt_tokens)],
-      ["生成 tokens", fmtInt(t.completion_tokens)],
-      ["合计 tokens", ((st.partial_days) ? "≥ " : "") + fmtInt(t.total_tokens)],
-      ["缓存写入 tokens", fmtInt(t.cache_write_tokens)]
+  // 原来这里只有一张 4 行 kv（提示词/生成/合计/缓存写入），竖着占一整张卡。
+  // 后端 snapshot 里还有 credit、credit_per_req、缓存命中/未命中这些真算了但没画的值，
+  // 这里换成一条紧凑指标条：一次把 token 结构 + 真实扣费都摊开，省一张卡的高度。
+  html += card("token 结构与扣费", partialNote() + " 后端只采信上游 usage，缺失的天数已在上面的总量标成下限。",
+    mstrip([
+      ["提示词 tokens", ((st.partial_days) ? "≥ " : "") + fmtInt(t.prompt_tokens), true, "tk.prompt", "cum"],
+      ["生成 tokens", fmtInt(t.completion_tokens), true, "tk.comp", "cum"],
+      ["合计 tokens", ((st.partial_days) ? "≥ " : "") + fmtInt(t.total_tokens), true, "tk.total", "cum"],
+      ["缓存命中 tokens", fmtInt(t.cache_hit_tokens), true, "tk.hit", "cum"],
+      ["缓存未命中", fmtInt(t.cache_miss_tokens), true, "tk.miss", "cum"],
+      ["缓存写入 tokens", fmtInt(t.cache_write_tokens), true, "tk.write", "cum"],
+      // credit 是上游返回的扣费数（积分/额度），不是钱——
+      // 所以只写 credit，不给它加任何货币符号，免得被误读成元。
+      ["上游扣费 credit", t.credit ? fmtCredit(t.credit) : "—", true, "tk.credit", "cum"],
+      ["平均每请求扣费", t.credit_per_req ? fmtCredit(t.credit_per_req) : "—", true, "tk.credit_per_req", "avg"],
+      ["平均单请求 tokens", t.requests ? fmtInt(Math.round(t.total_tokens / t.requests)) : "—", true, "tk.per_req_tokens", "avg"],
+      ["非流式请求", fmtInt(Math.max(0, (t.requests || 0) - (t.streaming || 0))), true, "tk.nostream", "cum"],
+      ["最近一次请求", esc(fmtTime(t.last_seen)), true, "tk.last_seen"],
+      ["观测到的模型数", fmtInt((st.models || []).length), true, "tk.models"]
     ]));
   html += '<div class="row"><button class="tiny" data-action="stats-reset" ' +
     'title="清空累计统计（含逐日历史），便于观察增量。不影响账号池与请求处理。">重置统计</button>' +
@@ -2642,6 +2979,125 @@ async function deskCtl(op){
   render();
 }
 
+/* ---------- 设置页（悬浮窗） ---------- */
+/* floatLoad 拉悬浮窗配置。走控制服务 /__desktop/floatwin，不经过网关——
+   所以网关停着的时候也照样能开关浮窗、看清它是不是真在跑。 */
+async function floatLoad(){
+  if (!DESKTOP) return;
+  try {
+    var r = await fetch("/__desktop/floatwin", { cache: "no-store" });
+    S.floatwin = r.ok ? await r.json() : null;
+  } catch (e) { S.floatwin = null; }
+}
+/* floatApply 提交悬浮窗设置。后端按字段做了增量 apply：只传改动的键。
+   开关即时生效，不需要重启桌面程序。 */
+async function floatApply(patch, okMsg){
+  if (!DESKTOP){ toast("err", "悬浮窗只在 Windows 桌面程序里可用（当前是浏览器直连）", 5000); return; }
+  if (S.floatBusy) return;
+  S.floatBusy = true;
+  render();
+  try {
+    var r = await fetch("/__desktop/floatwin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch)
+    });
+    var j = null;
+    try { j = await r.json(); } catch (e) {}
+    if (!r.ok){
+      var m = (j && j.error && j.error.message) || ("HTTP " + r.status);
+      toast("err", "设置失败：" + m, 9000);
+    } else {
+      S.floatwin = (j && j.state) ? j.state : S.floatwin;
+      toast("ok", okMsg || "悬浮窗设置已保存", 2400);
+    }
+  } catch (e) {
+    toast("err", "控制服务连不上：" + e.message, 9000);
+  }
+  S.floatBusy = false;
+  await floatLoad();
+  render();
+}
+/* floatToggle 主开关。开着但没跑起来（比如建窗失败）时，按钮旁必须显示原因，
+   不能让用户以为已经生效了。 */
+async function floatToggle(on){
+  await floatApply({ enabled: !!on }, on ? "悬浮窗已显示（拖动可移动）" : "悬浮窗已隐藏");
+}
+/* floatItemToggle 逐项开关显示内容。 */
+async function floatItemToggle(id, next){
+  var items = ((S.floatwin && S.floatwin.items) || []).slice();
+  var i = items.indexOf(id);
+  if (next && i < 0) items.push(id);
+  if (!next && i >= 0) items.splice(i, 1);
+  await floatApply({ items: items });
+}
+function floatRangeLabel(r){
+  return { today: "今天", "7d": "近 7 天", "30d": "近 30 天", all: "全部" }[r] || "今天";
+}
+/* floatSwitchItem 一行开关。同一行的开关点完立刻生效，所以不做「保存」按钮——
+   多一个按钮就多一次「我到底改了没有」的犹豫。 */
+function floatSwitchItem(it, on, icon){
+  return '<div class="fwrow">' +
+    '<div class="fwtxt"><b>' + (icon ? svg(icon) : "") + esc(it.Name) + '</b>' +
+    '<span class="hint">' + esc(it.Hint) + '</span></div>' +
+    '<button class="toggle' + (on ? " on" : "") + '" data-action="float-item" ' +
+    'data-id="' + esc(it.ID) + '" data-next="' + (on ? "0" : "1") + '"' +
+    (S.floatBusy ? " disabled" : "") + ' aria-label="' + esc(it.Name) + '">' +
+    '<span class="knob"></span></button></div>';
+}
+function viewSettings(){
+  var html = head("设置", "桌面程序的本地偏好：悬浮窗显示什么、区间口径与配色。都在本机落盘，不上传。");
+  if (!DESKTOP){
+    html += card("桌面专属设置", "", '<div class="empty">当前是浏览器直连网关，没有桌面宿主，' +
+      '这一页只对 Free2API 桌面程序有效。配置请直接改 config.json。</div>');
+  } else {
+    var fw = S.floatwin || {};
+    var avail = fw.available || [];
+    var on = !!fw.enabled;
+    var items = fw.items || [];
+    // 网关没跑时主动说清楚，而不是让用户对着一个不动的小窗猜。
+    var conn = fw.connected ? '<span class="tag ok">数据已连接</span>'
+      : '<span class="tag warn">等网关上线</span>';
+    html += card("桌面悬浮窗", "原生小窗，常驻在桌面右下角；数据来自网关的实时推送线。" +
+      "按住任意位置可拖动，位置会被记住。",
+      '<div class="row" style="margin-bottom:12px">' +
+        '<button class="toggle big' + (on ? " on" : "") + '" data-action="float-main" data-next="' + (on ? "0" : "1") + '"' +
+        (S.floatBusy ? " disabled" : "") + '><span class="knob"></span></button>' +
+        '<div class="fwtxt"><b>' + (on ? "已开启" : "已关闭") + '</b>' +
+        '<span class="hint">' + (on ? (fw.running ? "小窗已在桌面上。" : "正在打开…") : "开启后才会占用一点屏幕。") + '</span></div>' +
+        conn +
+      '</div>' +
+      '<div class="hint" style="margin:-4px 0 12px">默认关闭：常驻小窗会挡视线。</div>');
+
+    if (on || items.length){
+      var rows = avail.map(function(it){
+        return floatSwitchItem(it, items.indexOf(it.ID) >= 0, it.ID === floatItemClick ? "eye" : (it.ID === floatItemTopmost ? "layers" : ""));
+      }).join("");
+      html += card("显示哪些内容", "「Token 速度」那一行是真会动的实时值；" +
+        "「区间请求数 / 区间 Token」跟随下面选的区间。",
+        rows +
+        '<div class="row" style="margin-top:12px">' +
+          '<span class="hint" style="margin:0">统计区间</span>' +
+          ["today","7d","30d","all"].map(function(r){
+            return '<button class="tiny' + ((fw.range || "today") === r ? " pri" : "") + '" ' +
+              'data-action="float-range" data-range="' + r + '">' + esc(floatRangeLabel(r)) + '</button>';
+          }).join("") +
+        '</div>' +
+        '<div class="row" style="margin-top:8px">' +
+          '<span class="hint" style="margin:0">配色</span>' +
+          '<button class="tiny' + ((fw.theme || "dark") === "dark" ? " pri" : "") + '" data-action="float-theme" data-theme="dark">深色</button>' +
+          '<button class="tiny' + ((fw.theme || "dark") === "light" ? " pri" : "") + '" data-action="float-theme" data-theme="light">浅色</button>' +
+        '</div>' +
+        '<div class="hint" style="margin-top:11px">配置落在 <span class="mono">data/floatwin.json</span>，' +
+        '跟着 exe 目录走；「记忆位置」也在同一份文件里。</div>');
+    }
+  }
+  html += card("网关密钥", "网关配了 api_key 时，其他本机客户端要带密钥才能调；本机直连默认免密钥。",
+    '<div class="row"><button class="tiny" data-action="open-key">' + svg("key") + '设置网关密钥</button>' +
+    '<span class="hint" style="margin:0">' + (S.apiKey ? "本机已保存密钥。" : "当前未保存密钥（本机直连免密钥）。") + '</span></div>');
+  return html;
+}
+
 /* ---------- 数据加载 ---------- */
 async function loadHealth(){
   try { S.health = await api("/healthz"); } catch (e) { S.health = null; }
@@ -2690,8 +3146,310 @@ function ensureOverview(){
   return Promise.all(jobs);
 }
 async function loadStats(){
-  var r = S.statsRange || "7d";
-  try { S.stats = await api("/v1/stats?range=" + encodeURIComponent(r)); } catch (e) { S.stats = null; }
+  var r = statsRangeFor();
+  try { S.stats = await api("/v1/stats?range=" + encodeURIComponent(r)); S.statsAt = Date.now(); }
+  catch (e) { S.stats = null; }
+}
+/* liveValue(key) 由当前 S.stats / S.status 算出某个 data-live 节点该显示什么。
+   返回 {text, html} 或 null（key 未知 → 调用方跳过）。
+
+   这是「局部更新」的唯一真相来源：渲染时用它算初值，帧到达时也用它算新值，
+   两边走同一个函数，所以永远不会出现「首屏和刷新后不一致」。
+   新增一个实时数字时只要在这里加一条 case，渲染处挂上同名 key 即可。 */
+function liveValue(key){
+  var s = S.stats, t = (s && s.total) || {};
+  var st = S.status || {};
+  var rn = ovRangeName();
+  var partial = (s && s.partial_days) ? "≥ " : "";
+  switch (key) {
+  /* --- 概览 --- */
+  case "ov.requests":
+    return { text: fmtInt(t.requests), html: true, delta: t.requests };
+  case "ov.requests.n":
+    return { text: "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed), html: true };
+  case "ov.tokens":
+    return { text: partial + fmtInt(t.total_tokens), html: true, delta: t.total_tokens };
+  case "ov.tokens.n":
+    return { text: (s && s.partial_days)
+      ? ("下限：" + s.partial_days + " 天缺输入 token · 缓存命中率 " + fmtPct(t.cache_hit_rate))
+      : ("缓存命中率 " + fmtPct(t.cache_hit_rate)), html: true };
+  case "ov.latency":
+    return { text: fmtDur(t.avg_latency_ms), html: true };
+  case "ov.latency.n":
+    var infl = 0;
+    ((st && st.accounts) || []).forEach(function(a){ infl += (a.in_flight || 0); });
+    return { text: "首字 " + fmtDur(t.avg_ttfb_ms) + " · 在飞 " + fmtInt(infl), html: true };
+
+  /* --- 「正在发生」（概览顶部实时条） --- */
+  case "lv.inflight": {
+    var n = 0;
+    ((st && st.accounts) || []).forEach(function(a){ n += (a.in_flight || 0); });
+    return { text: fmtInt(n), html: false };
+  }
+  case "lv.inflight.n":
+    return { text: (function(){
+      var n = 0;
+      ((st && st.accounts) || []).forEach(function(a){ n += (a.in_flight || 0); });
+      return n > 0 ? (n + " 个正在跑") : "当前空闲";
+    })(), html: false };
+  case "lv.model": {
+    var hm = (st && st.live_models) || {};
+    var ks = Object.keys(hm).sort(function(a, b){ return hm[b] - hm[a]; });
+    return { text: ks.length ? (ks.length === 1 ? ks[0] : (ks.length + " 个模型")) : ((s && s.live && s.live.requests) ? "—" : "空闲"),
+             html: false };
+  }
+  case "lv.model.n": {
+    var hm2 = (st && st.live_models) || {};
+    var k2 = Object.keys(hm2).length;
+    return { text: k2 === 1 ? "1 个模型" : (k2 ? (k2 + " 个模型") : "没有请求在跑"), html: false };
+  }
+  case "lv.rate_tps":
+    return { text: ((s && s.live && s.live.tokens_per_sec) ? Number(s.live.tokens_per_sec).toFixed(1) : "—"), html: false };
+  case "lv.rate_tps.n":
+    return { text: ((s && s.live && s.live.tokens_per_sec) ? "tok/s · 生成阶段" : "最近 " + ((s && s.live && s.live.window_sec) || 60) + "s 无输出"), html: false };
+  case "lv.rate_req":
+    return { text: fmtInt((s && s.live && s.live.requests) || 0), html: false };
+  case "lv.rate_req.n":
+    return { text: "成功 " + fmtInt((s && s.live && s.live.success) || 0) + " · 失败 " + fmtInt((s && s.live && s.live.failed) || 0), html: false };
+  case "lv.rate_tok":
+    return { text: fmtInt((s && s.live && s.live.completion_tokens) || 0), html: false };
+  case "lv.rate_tok.n":
+    return { text: ((s && s.live && s.live.samples) ? ((s.live.samples) + " 次观测") : "窗口内无观测"), html: false };
+
+  /* --- 统计页 KPI --- */
+  case "st.requests":
+    return { text: fmtInt(t.requests), html: true, delta: t.requests };
+  case "st.requests.n":
+    return { text: "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed), html: true };
+  case "st.success_rate":
+    return { text: (t.requests ? fmtPct(t.success / t.requests) : "—"), html: true };
+  case "st.success_rate.n":
+    return { text: "失败 " + fmtInt(t.failed) + " 次", html: true };
+  case "st.streaming":
+    return { text: (t.requests ? fmtPct(t.streaming / t.requests) : "—"), html: true };
+  case "st.streaming.n":
+    return { text: "流式 " + fmtInt(t.streaming) + " 次", html: true };
+  case "st.ttfb":
+    return { text: fmtDur(t.avg_ttfb_ms), html: true };
+  case "st.latency":
+    return { text: fmtDur(t.avg_latency_ms), html: true };
+  case "st.tps":
+    return { text: (t.tokens_per_sec ? Number(t.tokens_per_sec).toFixed(1) + " tok/s" : "—"), html: true };
+  case "st.cache_hit":
+    return { text: fmtPct(t.cache_hit_rate), html: true };
+  case "st.cache_hit.n":
+    return { text: "命中 " + fmtInt(t.cache_hit_tokens) + " / 未命中 " + fmtInt(t.cache_miss_tokens), html: true };
+
+  /* --- token 结构与扣费（mstrip） --- */
+  case "tk.prompt":
+    return { text: partial + fmtInt(t.prompt_tokens), html: true, delta: t.prompt_tokens };
+  case "tk.comp":
+    return { text: fmtInt(t.completion_tokens), html: true, delta: t.completion_tokens };
+  case "tk.total":
+    return { text: partial + fmtInt(t.total_tokens), html: true, delta: t.total_tokens };
+  case "tk.hit":
+    return { text: fmtInt(t.cache_hit_tokens), html: true, delta: t.cache_hit_tokens };
+  case "tk.miss":
+    return { text: fmtInt(t.cache_miss_tokens), html: true, delta: t.cache_miss_tokens };
+  case "tk.write":
+    return { text: fmtInt(t.cache_write_tokens), html: true, delta: t.cache_write_tokens };
+  case "tk.credit":
+    return { text: (t.credit ? fmtCredit(t.credit) : "—"), html: true, delta: t.credit };
+  case "tk.credit_per_req":
+    return { text: (t.credit_per_req ? fmtCredit(t.credit_per_req) : "—"), html: true };
+  case "tk.per_req_tokens":
+    return { text: (t.requests ? fmtInt(Math.round(t.total_tokens / t.requests)) : "—"), html: true };
+  case "tk.nostream":
+    return { text: fmtInt(Math.max(0, (t.requests || 0) - (t.streaming || 0))), html: true };
+  case "tk.last_seen":
+    return { text: esc(fmtTime(t.last_seen)), html: true };
+  case "tk.models":
+    return { text: fmtInt(((s && s.models) || []).length), html: true };
+  }
+  return null;
+}
+
+/* patchLive 只更新挂 data-live 的节点（以及它们的增量角标）。
+
+   返回值语义是「这页是否被局部更新完整覆盖了」，**不是**「有没有数字变了」——
+   这一点反过来过一次：早先返回「是否变化」，结果数据没变化时 patchLive 返回 false，
+   applyStatsSnapshot 就退化成整页重画，反而在最该安静的时候把整页换掉了。
+   正确口径是：只要这页挂了实时节点，就由局部更新负责；哪怕一个数字都没变，
+   也应当什么都不做地返回 true。 */
+function patchLive(prevStats){
+  var nodes = document.querySelectorAll("#view [data-live]");
+  if (!nodes.length) return false;   // 这页没有实时节点 → 调用方整页重画
+  var changed = false;
+  var oldT = (prevStats && prevStats.total) || {};
+  for (var i = 0; i < nodes.length; i++){
+    var el = nodes[i];
+    var key = el.getAttribute("data-live");
+    var got = liveValue(key);
+    if (!got) continue;
+    var txt = String(got.text == null ? "" : got.text);
+    if (el.textContent !== txt){
+      if (el.getAttribute("data-live-html")) el.innerHTML = txt;
+      else el.textContent = txt;
+      changed = true;
+      /* 增量角标：只有「带 delta 语义」的累计量才闪，且要真的有增量。
+         均值类（成功率 / 延迟 / 命中率）不加角标——它们本来就该迟钝，
+         让它们闪反而在暗示「这里在实时」，那是假的。 */
+      var d = el.parentNode && el.parentNode.querySelector('[data-delta="' + key + '"]');
+      if (d && typeof got.delta === "number" && isFinite(got.delta)){
+        var prev = Number(oldT[liveDeltaKey(key)]) || 0;
+        var inc = got.delta - prev;
+        if (inc > 0){
+          d.textContent = "+" + fmtInt(inc);
+          d.classList.remove("show");
+          void d.offsetWidth;      // 强制重排，让动画能重播
+          d.classList.add("show");
+        }
+      }
+    }
+  }
+  // 「正在发生」整条的活性态：有请求在跑时点亮（.livebar.on 会让 5 个圆点呼吸）。
+  // 这个类不在 data-live 体系里（它是容器状态，不是数字），所以单独同步一次。
+  var bar = document.querySelector("#view [data-live-bar]");
+  if (bar){
+    var n = 0;
+    var stt = S.status || {};
+    ((stt && stt.accounts) || []).forEach(function(a){ n += (a.in_flight || 0); });
+    bar.classList.toggle("on", n > 0);
+  }
+  // 无条件 true：这页有实时节点，局部更新已经负责完毕（changed 只用于日志/调试）。
+  return true;
+}
+/* liveDeltaKey 把 live key 映射回 /v1/stats total 里的字段名（算增量用）。
+   只有 total.* 下的标量才需要；其余返回 null。 */
+function liveDeltaKey(key){
+  var m = {
+    "ov.requests": "requests", "ov.tokens": "total_tokens",
+    "st.requests": "requests",
+    "tk.prompt": "prompt_tokens", "tk.comp": "completion_tokens",
+    "tk.total": "total_tokens", "tk.hit": "cache_hit_tokens",
+    "tk.miss": "cache_miss_tokens", "tk.write": "cache_write_tokens",
+    "tk.credit": "credit"
+  };
+  return m[key] || null;
+}
+
+/* applyStatsSnapshot 把一份快照吃进状态：和上一份逐字节比，没变就一个 DOM 都不动
+   （重画会清掉滚动位置，也会打断用户正在看的表格排序）；变了才重画 + 播滚动。
+   轮询和 SSE 共用这一段，所以两条路的渲染结果完全一致。 */
+/* statsShape 一份快照的「结构指纹」：只取会影响页面骨架的那些字段。
+   数字变化（请求数、token、延迟）在指纹里体现不出来——这是故意的，
+   指纹只回答「页面骨架要不要重画」：
+     - 按模型表多了一行 / 少了一行 → 表要重画
+     - 逐日序列多了一天 / 少了一天 → 趋势图要重画
+     - 按来源多了一家 → 来源表要重画
+   指纹相同 = 只动了数字 = 局部更新足够。
+   （热力图和 token 结构条只随 total 变，不需要进指纹。） */
+function statsShape(st){
+  if (!st) return "";
+  var models = (st.models || []).map(function(m){ return m.model; }).join("|");
+  var prod = (st.producers || []).map(function(p){ return p.producer; }).join("|");
+  var days = (st.series || []).map(function(d){ return d.day; }).join("|");
+  return models + "#" + prod + "#" + days;
+}
+function applyStatsSnapshot(next, prev){
+  if (!next) return false;
+  var after = JSON.stringify(next);
+  if (prev && JSON.stringify(prev) === after) return false;
+  S.stats = next;
+  S.statsAt = Date.now();
+  // 优先局部更新：只改变了的那几个数字节点，不动其他 DOM。
+  // 这样滚动位置、hover、展开态、输入焦点都原样保留——整页重画会把它们全清掉，
+  // 实时帧来得越频繁，这个代价越大。
+  //
+  // 两个条件都满足才走局部：① 这页挂了实时节点；② 骨架指纹没变。
+  // 只满足 ① 不够——概览的趋势图 / 来源表 / 按模型表不在 live 覆盖范围内，
+  // 今天新冒出来一个模型时那些表必须重画，否则数字更新了、表还是上一版的。
+  var shapeOk = !prev || statsShape(prev) === statsShape(next);
+  if (shapeOk && patchLive(prev)){
+    refreshLiveTag();
+    return true;
+  }
+  render();
+  // 重画会换掉 DOM，所以先登记新元素，再拿旧快照的数字播滚动。
+  registerLiveNumbers();
+  refreshLiveNumbers(prev, next);
+  return true;
+}
+/* statsStreamEnabled 关掉后强制退回轮询。留这个开关是为了排查：
+   万一某台机器 / 某个反向代理把 SSE 掐了，能一键确认不是推送的问题。 */
+var statsStreamEnabled = true;
+var statsES = null;          // EventSource 实例；null = 当前没连上
+var statsESRetry = 0;        // 连续失败次数，用来退避
+var statsPollTimer = null;   // SSE 活着时停掉轮询，断了再挂回来
+var STATS_POLL_MS = 2000;    // 兜底轮询间隔
+var STATS_FALLBACK_MS = 4000;// SSE 断开后的退避起点
+
+function stopStatsPolling(){
+  if (statsPollTimer){ clearInterval(statsPollTimer); statsPollTimer = null; }
+}
+function startStatsPolling(){
+  stopStatsPolling();
+  statsPollTimer = setInterval(function(){ loadStatsLive(); }, STATS_POLL_MS);
+}
+/* loadStatsLive 是轮询路径：只有「当前就停在这一页」才去拉。 */
+async function loadStatsLive(){
+  if (S.tab !== "stats" && S.tab !== "overview") return;
+  var prev = S.stats;
+  var r = statsRangeFor();
+  var next = null;
+  try { next = await api("/v1/stats?range=" + encodeURIComponent(r)); }
+  catch (e) { return; }               // 拉失败保持旧数据，别把页面清空
+  applyStatsSnapshot(next, prev);
+}
+/* statsStreamMsg 收到一帧推送：直接喂给同一套渲染逻辑。
+   JSON.parse 失败只丢这一帧（连接还在），不整体降级。 */
+function statsStreamMsg(ev){
+  if (S.tab !== "stats" && S.tab !== "overview") return;
+  var next = null;
+  try { next = JSON.parse(ev.data); }
+  catch (e) { return; }
+  applyStatsSnapshot(next, S.stats);
+}
+/* openStatsStream 建立（或重建）SSE 连接。
+   EventSource 自带断线重连，但重连节奏不可控，所以自己管：
+   成功 open -> 停轮询；error -> 关连接、挂轮询、退避后重连。 */
+function openStatsStream(){
+  if (!statsStreamEnabled || typeof EventSource === "undefined"){ startStatsPolling(); return; }
+  closeStatsStream();
+  // EventSource 不能自定义请求头，key 只能走查询串（后端只对这条路由放行）。
+  var url = "/v1/stats/stream?range=" + encodeURIComponent(statsRangeFor());
+  if (S.apiKey) url += "&api_key=" + encodeURIComponent(S.apiKey);
+  var es;
+  try { es = new EventSource(url); }
+  catch (e) { startStatsPolling(); return; }
+  statsES = es;
+  es.addEventListener("open", function(){
+    statsESRetry = 0;
+    stopStatsPolling();               // 推送通了就不必再轮询
+    refreshLiveTag();
+  });
+  es.addEventListener("stats", statsStreamMsg);
+  es.addEventListener("error", function(){
+    // EventSource 在连接失败时 readyState 会变 CONNECTING（它自己在重连）
+    // 或 CLOSED（彻底断了 we'll 自己重建）。两种都先退回轮询兜底，
+    // 这样即使推送永久不可用（老网关 / 反代拦截），页面照样是活的。
+    closeStatsStream();
+    startStatsPolling();
+    statsESRetry++;
+    refreshLiveTag();   // 立刻把页头标记从「实时推送」改成「轮询刷新」，
+                         // 不能等下一次 render —— 否则降级了用户还看不出来。
+    var wait = Math.min(STATS_FALLBACK_MS * Math.pow(2, Math.min(statsESRetry, 4)), 60000);
+    setTimeout(function(){ if (statsESRetry > 0) openStatsStream(); }, wait);
+  });
+}
+function closeStatsStream(){
+  if (statsES){ try { statsES.close(); } catch (e) {} statsES = null; }
+}
+/* 切区间 / 切页面时要重连：SSE 的 range 是建连时定死的。 */
+function resetStatsStream(){
+  if (!statsStreamEnabled) return;
+  statsESRetry = 0;
+  openStatsStream();
 }
 async function runSelfTest(){
   if (S.selftest && S.selftest.running) return;
@@ -2859,6 +3617,7 @@ async function refreshAll(silent){
   // 否则首屏概览的这几块永远是空的。
   jobs.push(loadStats());
   jobs.push(loadSchedule());
+  if (DESKTOP) jobs.push(floatLoad());
   if (S.modeldead) jobs.push(loadRuntime());
   // 候选面板开着就顺手重拉——但只在**没探过活/读过额度**时做：
   // 那两个动作每个号一次外网往返，全局刷新不该把它们偷偷重跑一遍。
@@ -3210,10 +3969,18 @@ async function chanSave(){
 }
 /* statsRangeSet 切换统计页区间并重拉（只影响这一页的观测口径）。 */
 function statsRangeSet(r){
-  if (!r || r === S.statsRange) return;
+  if (!r || r === statsRangeFor()) return;
+  // 每页各自记住选择：概览默认「今天」（问「现在怎么样」），
+  // 统计页默认「近 7 天」（问「这段时间的规律」）。切页时各自恢复，
+  // 不互相覆盖——否则在概览选了「今天」，切到统计页又被拽成 7 天。
+  S.statsRangeByTab = S.statsRangeByTab || {};
+  S.statsRangeByTab[S.tab] = r;
   S.statsRange = r;
   S.stats = null; // 先清掉旧区间的数字，避免新数据回来前显示错口径的统计
   render();
+  // SSE 的 range 在建连时就定死了，换区间必须重连；同时先拉一帧，
+  // 免得新连接握手完之前页面是空的。
+  resetStatsStream();
   loadStats().then(function(){ if (S.tab === "stats") render(); });
 }
 /* statsReset 清空累计统计（含逐日历史；观测，不影响路由）。 */
@@ -3353,6 +4120,11 @@ async function actOn(t){
     if (act === "stats-range") return statsRangeSet(t.getAttribute("data-range"));
     if (act === "stats-sort") return statsSortSet(t.getAttribute("data-key"));
     if (act === "sched-toggle") return schedToggle(t.getAttribute("data-key"), t.getAttribute("data-next") === "1");
+    if (act === "open-key") return $("#btnKey").click();
+    if (act === "float-main") return floatToggle(t.getAttribute("data-next") === "1");
+    if (act === "float-item") return floatItemToggle(t.getAttribute("data-id"), t.getAttribute("data-next") === "1");
+    if (act === "float-range") return floatApply({ range: t.getAttribute("data-range") });
+    if (act === "float-theme") return floatApply({ theme: t.getAttribute("data-theme") });
     if (act === "modeldead-clear") return modeldeadClear();
     if (act === "codex-detach-preview") return codexDetachPreview();
     if (act === "codex-detach-apply") return codexDetachApply();
@@ -3499,8 +4271,22 @@ document.addEventListener("click", function(ev){
   if (!S.models || !S.models.length){
     setTimeout(function(){ loadModels().then(function(){ render(); }); }, 2500);
   }
+  // 请求统计实时刷新：优先走 SSE 推送（/v1/stats/stream，请求落地即到）；
+  // 连不上（老网关 / 反代拦截长连 / 网关重启中）自动退回 2s 轮询，
+  // 数字没变就不重画。两条路共用 applyStatsSnapshot，渲染结果一致。
+  openStatsStream();
+  startStatsPolling(); // 先挂上，SSE open 后会把它停掉；这样首个 2s 内也有兜底
   setInterval(function(){ loadHealth(); }, 15000);
   setInterval(function(){ loadStatus().then(function(changed){ if (changed) render(); }); }, 30000);
+  // 概览页的「正在发生」需要知道此刻有几个请求在飞、跑的是哪个模型，而这两个只
+  // 在 /status 里（accounts[].in_flight / live_models）——跟 SSE 的统计线无关。
+  // 30s 太粗：跑一个 5 秒的请求，整条实时条全程显示「空闲」。概览页单独 2s 拉一次，
+  // 且走局部更新不重画（patchLive 里已处理），所以不打断视野。
+  setInterval(function(){
+    if (S.tab !== "overview") return;
+    if (document.querySelector("#view [data-live-bar]") === null) return;
+    loadStatus().then(function(){ patchLive(null); refreshLiveTag(); });
+  }, 2000);
   // 桌面程序：宿主状态轮询。网关被计划任务之类的外部动作停掉/拉起时，页面不用手动刷新。
   if (DESKTOP){
     setInterval(function(){
