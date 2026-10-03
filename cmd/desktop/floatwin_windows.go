@@ -366,10 +366,7 @@ func (f *floatWin) runWindow(ready chan<- error) {
 	}
 
 	title, _ := windows.UTF16PtrFromString("Free2API")
-	// WS_POPUP：无标题栏无边框。WS_EX_LAYERED：逐像素透明。
-	// WS_EX_NOACTIVATE：绝不抢焦点（否则会在你打字时把输入焦点抢走）。
-	style := uint32(wsPopup) | wsVisible
-	exStyle := uint32(wsExLayered | wsExToolWindow | wsExNoActivate | wsExTopmost)
+	style, exStyle := floatWindowStyles()
 	hwnd, _, cerr := pCreateWindowExW.Call(
 		uintptr(exStyle),
 		uintptr(unsafe.Pointer(className)),
@@ -406,16 +403,19 @@ func (f *floatWin) runWindow(ready chan<- error) {
 		x, y = savedX, savedY
 	}
 
+	// 摆到最终位置（此时窗口仍不可见，用户看不到任何中间态）。
 	const swpNoActivate = 0x0010
 	_, _, _ = pSetWindowPos.Call(hwnd, hwndTopmost,
 		uintptr(int32(x)), uintptr(int32(y)), uintptr(int32(w)), uintptr(int32(h)),
 		swpNoActivate)
+
+	// 先画第一帧再显示：UpdateLayeredWindow 之后内容就交出去了，如果先 ShowWindow
+	// 再 paint，中间会有一帧是上一次遗留的位图（重开开关时就是旧数据，甚至是空的）。
+	f.paint(hwnd)
 	_, _, _ = pShowWindow.Call(hwnd, swShowNoActivate)
-	_, _, _ = pUpdateWindow.Call(hwnd)
 
 	// 40ms 一帧 ≈ 25fps：呼吸点够顺滑，且几乎不耗电。
 	_, _, _ = pSetTimer.Call(hwnd, 1, 40, 0)
-	f.paint(hwnd)
 	ready <- nil
 
 	var m msgT
@@ -436,6 +436,22 @@ func (f *floatWin) runWindow(ready chan<- error) {
 		f.hwnd = 0
 	}
 	f.mu.Unlock()
+}
+
+// floatWindowStyles 悬浮窗的窗口样式 / 扩展样式。
+//
+// 抽成函数是为了让「绝不能带 WS_VISIBLE」这条变成可断言的契约（见
+// TestFloatWindowStylesNotVisibleAtCreation）。
+//
+// WS_POPUP：无标题栏无边框。WS_EX_LAYERED：逐像素透明。
+// WS_EX_NOACTIVATE：绝不抢焦点（否则会在你打字时把输入焦点抢走）。
+//
+// **刻意不带 WS_VISIBLE**：带了的话 CreateWindowExW 一返回窗口就已可见，而此刻它
+// 还停在调用里给的占位矩形（0,0,10,10）上、也还没画过任何内容——屏幕上会「啪」地
+// 闪出一个左上角的小方块，再被后面的 SetWindowPos 挪走。真实截图里就是这个方块。
+// 顺序必须是：隐藏建窗 → 摆位 → 画好第一帧 → ShowWindow。
+func floatWindowStyles() (style, exStyle uint32) {
+	return uint32(wsPopup), uint32(wsExLayered | wsExToolWindow | wsExNoActivate | wsExTopmost)
 }
 
 // onScreen 判断记住的位置是否还落在（主屏）工作区里。

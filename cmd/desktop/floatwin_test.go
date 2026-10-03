@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"unsafe"
 	"os"
 	"path/filepath"
 	"testing"
@@ -320,5 +321,65 @@ func TestRoundedRectSDFSigns(t *testing.T) {
 	// 半径夹紧后仍是合法形状：中心在内。
 	if d := roundedRectSDF(10.5, 30.5, 20, 60, 10); d >= 0 {
 		t.Errorf("clamped-shape center SDF = %v, want negative", d)
+	}
+}
+
+// TestFloatWindowStylesNotVisibleAtCreation 建窗样式里**不能**有 WS_VISIBLE。
+//
+// 这是一条真实修过的 bug：早先建窗时带了 WS_VISIBLE，于是 CreateWindowExW 一返回，
+// 窗口就已经显示在调用里给的占位矩形 (0,0,10,10) 上、而且还没画过任何内容——
+// 屏幕左上角会「啪」地闪出一个小方块，再被后面的 SetWindowPos 挪到右下角。
+// 截图里红框标出的那个方块就是它。
+//
+// 光靠肉眼看代码很容易改回去，所以把「不可见」直接写成断言。
+func TestFloatWindowStylesNotVisibleAtCreation(t *testing.T) {
+	style, exStyle := floatWindowStyles()
+	if style&wsVisible != 0 {
+		t.Errorf("creation style has WS_VISIBLE (0x%x); the window would flash at (0,0,10,10)", style)
+	}
+	if style&wsPopup == 0 {
+		t.Errorf("style should be WS_POPUP (borderless), got 0x%x", style)
+	}
+	if exStyle&wsExLayered == 0 {
+		t.Error("exStyle must have WS_EX_LAYERED (per-pixel alpha)")
+	}
+	if exStyle&wsExNoActivate == 0 {
+		t.Error("exStyle must have WS_EX_NOACTIVATE (must never steal focus)")
+	}
+	if exStyle&wsExToolWindow == 0 {
+		t.Error("exStyle must have WS_EX_TOOLWINDOW (keep out of the taskbar/Alt-Tab)")
+	}
+}
+
+// TestFloatWindowShowedUpAtItsRealRect 窗口一旦显示，就必须已经在最终位置上——
+// 不能还停在建窗时的占位矩形。这条把「摆位在显示之前」这个顺序钉住。
+func TestFloatWindowShowedUpAtItsRealRect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "floatwin.json")
+	f := newFloatWin(path, "127.0.0.1:1", "")
+	floatOwner = f
+	defer func() { f.closeWin(); floatOwner = nil }()
+
+	on := true
+	if err := f.apply(floatApply{Enabled: &on}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !f.running() {
+		t.Fatal("window not running")
+	}
+	f.mu.Lock()
+	hwnd := f.hwnd
+	f.mu.Unlock()
+
+	var r rECT
+	if ret, _, _ := pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ret == 0 {
+		t.Fatal("GetWindowRect failed")
+	}
+	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
+	if w < 100 || h < 40 {
+		t.Fatalf("window is %dx%d — still sitting at the creation placeholder size", w, h)
+	}
+	// 也不该停在左上角（那正是「闪一下」时它出现的位置）。
+	if r.Left < 40 && r.Top < 40 {
+		t.Errorf("window at (%d,%d): visible at the top-left placeholder position", r.Left, r.Top)
 	}
 }
