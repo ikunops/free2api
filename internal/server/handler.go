@@ -929,7 +929,27 @@ func (h *Handler) publishAllows(published map[string]bool, realm, producer, id s
 		return true
 	}
 	if realm != "global" {
-		return published[modelKey(producer, id)]
+		if published[modelKey(producer, id)] {
+			return true
+		}
+		// 裸 id 回退：老清单（面板早期版本、或脚本批量写入的存档）存的是裸 id 而不是
+		// modelKey 的 "zcode:<id>" 形态，于是 publishAllows 一律判否——白名单里明明勾了
+		// glm-5.3-flash，/v1/models 却一个 zcode 模型都不吐，ZCode 专用口直接空掉。
+		// 实测 7864 主口 42 个模型里 zcode 段为 0、7870 吐 0 个，就是这个键口径分叉。
+		//
+		// 回退只在「整份清单里一个带 producer 段的键都没有」时才生效（即确属老形态清单）。
+		// 否则新形态清单下同名的裸 id 可能是给别的来源勾的，无差别回退会串台。
+		// workbuddy 本身就是裸 id，不进回退分支。
+		if producer == "" || producer == "workbuddy" {
+			return published[id]
+		}
+		prefix := producer + ":"
+		for k := range published {
+			if strings.HasPrefix(k, prefix) {
+				return false
+			}
+		}
+		return published[id]
 	}
 	if published[globalModelKey(id)] {
 		return true
