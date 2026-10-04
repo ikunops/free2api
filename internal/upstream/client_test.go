@@ -62,8 +62,20 @@ func TestClassify(t *testing.T) {
 		{400, `{"code": 11135, "msg": "image rejected"}`, ErrImageInvalid},
 		{400, `{"code": "11135", "msg": "image rejected"}`, ErrImageInvalid},
 		{400, `{"error": {"code": 11135, "message": "image rejected"}}`, ErrImageInvalid},
-		// 其他 code 不得被 11135 口径误伤（防过宽）。
-		{400, `{"code": 11133, "msg": "other business error"}`, ErrClient},
+		// 其他 code 不得被 11135 口径误伤（防过宽）。用 11199 而不是 11133：
+		// 11133 已独立归 ErrModelParamInvalid（见下一组用例），拿它当「不该被
+		// 11135 抓住」的对照就变成了同义反复，防过宽这条就白测了。
+		{400, `{"code": 11199, "msg": "other business error"}`, ErrClient},
+		// 11133 model_param_invalid：请求参数被模型供应商拒绝，与 11135 同性质
+		// （请求的问题不是账号的问题）。归独立类别是为了**不轮转**——早先落进
+		// ErrClient 会轮转 MaxRotate 个号，每个号都拿到同样的 11133，最后对外
+		// 报成 503 no_healthy_account：上游说「参数不对」，客户端收到「没号可用」。
+		{400, `{"code":11133,"msg":"Invalid request parameters"}`, ErrModelParamInvalid},
+		{400, `{"code": 11133, "msg": "Invalid request parameters"}`, ErrModelParamInvalid},
+		{400, `{"extError":{"code":"model_param_invalid"},"msg":"x"}`, ErrModelParamInvalid},
+		{400, `{"msg":"Invalid request parameters"}`, ErrModelParamInvalid},
+		// 非 400 的 11133 不归此类（状态码语义不同，不走 fail-fast 路径）。
+		{500, `{"code":11133,"msg":"Invalid request parameters"}`, ErrServer},
 		{200, `quota exceeded`, ErrHardCredit},
 		// 账号级授权/配额故障（与 429 一起纳入轮换）：11140 request illegal = auth_forbidden
 		// 风控（需重登），14017 = quota_not_activated（试用未激活，需完成 register）。修复前

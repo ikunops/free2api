@@ -201,20 +201,52 @@ func TestApplyRoundedAlphaCornerIsFeathered(t *testing.T) {
 	}
 	t.Logf("top-row alpha scan through corner = %v", diag)
 
-	// 直边仍然是硬的：顶边中点附近应该一步到位到 alpha（一条直线不需要羽化）。
-	// 如果这里也羽化，说明覆盖率算错了——那会让整条上边看起来发虚。
-	mid := 30
-	hard := false
+	// 直边中段必须很快到满 alpha（羽化只有 1.5px 宽，第 2 行就该是满的）。
+	// 内缩是为了消掉「最外一列满 238 造成的直角残边」，不是把整条边做虚。
 	for x := 15; x < w-15; x++ {
-		if px[(0*w+x)*4+3] == alpha && px[(1*w+x)*4+3] == alpha {
-			hard = true
-			break
+		if px[(1*w+x)*4+3] != alpha {
+			t.Fatalf("straight top edge must reach full alpha by row 1, x=%d got %d",
+				x, px[(1*w+x)*4+3])
 		}
 	}
-	if !hard {
-		t.Error("straight top edge should be fully opaque well past the corner")
+}
+
+// TestApplyRoundedAlphaStraightEdgeIsFeathered 直边（不是圆角）也必须有羽化。
+//
+// 这条断言对应一条真实可见的缺陷：fillAlpha=238 < 255，若边界与窗口矩形
+// 完全重合，最外一列/一行就是满的 238，17/255 的背景从直边整条渗出且是硬切 ——
+// 屏幕上留下一圈与圆角风格不搭的直角残边。实测 dump 证据：直边 x=0..5 全为 238，
+// 而圆角处 5 像素内就从 0 爬到 238。修法是内缩 1.5px 让整圈边界统一羽化。
+//
+// 这条断言曾经写反过（当时断言「直边必须是硬的」）—— 那正是残边的成因，
+// 两者不可兼得：既然底色不满 255，直边就不能是硬的。
+func TestApplyRoundedAlphaStraightEdgeIsFeathered(t *testing.T) {
+	const w, h = 60, 40
+	const alpha = 238
+	px := make([]byte, w*h*4)
+	for i := 0; i < len(px); i += 4 {
+		px[i], px[i+1], px[i+2] = 200, 200, 200
 	}
-	_ = mid
+	applyRoundedAlpha(px, w, h, 14, alpha)
+
+	midY := h / 2
+	first := int(px[(midY*w+0)*4+3])
+	if first == 0 {
+		t.Error("leftmost column must not be fully transparent (窗口会显得比内容小一圈)")
+	}
+	if first == alpha {
+		t.Errorf("leftmost column alpha=%d (hard edge) — 这就是那圈直角残边；应小于 %d",
+			first, alpha)
+	}
+	// 内缩只有 1.5px，所以第 2 列就该满 alpha。
+	if got := int(px[(midY*w+1)*4+3]); got != alpha {
+		t.Errorf("left edge col1 alpha=%d want %d (feather 1.5px 不该扩散到更深处)", got, alpha)
+	}
+	// 顶边同理。
+	top := int(px[(0*w+midY)*4+3])
+	if top == alpha {
+		t.Errorf("topmost row alpha=%d (hard edge) — 直边同样会留残边", top)
+	}
 }
 
 // TestApplyRoundedAlphaRadiusClamped 半径超过边长一半时夹紧，且夹紧后仍然是

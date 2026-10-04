@@ -37,6 +37,7 @@ const (
 	ErrWafBlock                      // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避（WAF 403 修复 P0-1）
 	ErrPromptTooLong                 // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
 	ErrImageInvalid                  // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
+	ErrModelParamInvalid             // 11133 model_param_invalid「请求参数不符合当前模型要求」→ 与 ErrImageInvalid 同性质：同一份 body 换任何账号都是同样的 400。不罚号、**不轮转**、不冷却，末端 400 透传原文
 	ErrClient                        // 其他 4xx / 业务错误
 )
 
@@ -66,6 +67,8 @@ func (k ErrKind) String() string {
 		return "prompt_too_long"
 	case ErrImageInvalid:
 		return "image_invalid"
+	case ErrModelParamInvalid:
+		return "model_param_invalid"
 	case ErrClient:
 		return "client"
 	default:
@@ -619,6 +622,16 @@ func Classify(status int, body string) ErrKind {
 	// 口径与 hint.go 的 isInvalidImageData（同样用 codeMarker）一致。
 	if status == http.StatusBadRequest && (invalidImageRule.hit(body, lower) || codeMarker(lower, "11135")) {
 		return ErrImageInvalid
+	}
+	// 11133 model_param_invalid：请求参数被模型供应商拒绝。与上面 11135 同性质——
+	// 同一个 body 换多少个账号都会被同样地拒（模型侧的能力边界，与账号无关）。
+	// 早先这里漏了判定，落进通用 ErrClient：网关会老老实实轮转 MaxRotate 个号，
+	// 每个号都拿到一模一样的 11133，最后兜底成 **503 no_healthy_account**——
+	// 上游明摆着说的是「你的参数不对」，客户端收到的却是「没有可用账号」，
+	// 既误导（用户以为是号的问题）又把一次请求放大成 N 次无效上游调用。
+	// 现在归独立的请求级错误：不轮转、末端 400 透传上游原文。
+	if status == http.StatusBadRequest && isModelParamInvalid(body) {
+		return ErrModelParamInvalid
 	}
 	// 内容策略拦截（HTTP 400 + 审核文案）：判在通用 ErrClient 之前。
 	// 这是误报信号，不罚账号，由网关降级重试处理（见 handler.applyErrorPolicy）。

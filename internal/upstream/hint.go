@@ -25,6 +25,11 @@ import (
 //   - Model / ModelInCatalog / ModelSupportsImages：模型目录对该模型的
 //     supports_images 声明（目录未收录 → 不做「不支持」判定，防查不到误判成不支持）。
 //
+// 11133 带图形态有两条现实（缺一不可，早期版本少了第一条导致判不出问题在哪）：
+//   - 目录 supports_images=true，上游仍 11133：账号侧能力与目录声明不一致，换模型/
+//     换会话才有用；
+//   - 目录 supports_images=false：模型本来不收图，让用户换多模态模型。
+//
 // 判定次序：11133/11135 上游业务码**先于** Kind 表——实测这两族归 ErrClient/
 // ErrBadParams 皆有可能（Classify 词表不含 11133），hint 层自带判定（hint 是补充
 // 说明非权威分类，误判代价只是多一条中性补充说明）；其余走 Kind 一对一映射。
@@ -33,6 +38,13 @@ func GatewayHint(kind ErrKind, msg string, ctx HintContext) string {
 	// 参数被模型供应商拒绝）。只有请求确实带图、且目录能对该模型做出「不支持图片」
 	// 的判定时才给「换模型」指向，否则退中性参数形态（可能是任意参数问题，不点名图片）。
 	if isModelParamInvalid(msg) {
+		// 带图 + 目录声明「支持图片」但上游仍拒 = 该账号的图像能力与目录声明不一致。
+		// 实测：deepseek-v4.1-flash 在 /v1/models 里 supports_images=true，1x1 极小图
+		// 稳定 11133；同一模型同一个号换成 64px 正常图又能过。所以文案指向「换模型/
+		// 换会话」，而不是让用户以为是自己 body 写错了。
+		if ctx.HasImage && ctx.ModelInCatalog && ctx.ModelSupportsImages {
+			return "image was rejected by this account's model backend even though the catalog marks it multimodal; retry with a different model or start a new conversation"
+		}
 		if ctx.HasImage && ctx.ModelInCatalog && !ctx.ModelSupportsImages {
 			return "model " + ctx.Model + " does not support images; pick one with supports_images=true from /v1/models"
 		}

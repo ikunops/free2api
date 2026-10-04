@@ -85,8 +85,8 @@ func TestChat11133HintModelNoImages(t *testing.T) {
 	}
 }
 
-// TestChat11133HintCatalogSupportsImages 11133 + 带图 + 目录声明支持（数据非法撞
-// 11133）→ 中性参数 hint；目录未收录（缓存冷）→ 同样中性（宁缺勿滥）。
+// TestChat11133HintCatalogSupportsImages 11133 + 带图 + 目录声明支持 -> 指向「换模型/
+// 换会话」（账号侧图像能力与目录声明不一致）；目录未收录（缓存冷）-> 中性（宁缺勿滥）。
 func TestChat11133HintCatalogSupportsImages(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -114,11 +114,22 @@ func TestChat11133HintCatalogSupportsImages(t *testing.T) {
 			if e.Error.Message != body11133Real {
 				t.Errorf("message must be verbatim: %q", e.Error.Message)
 			}
-			if e.Error.GatewayHint == nil || !strings.Contains(*e.Error.GatewayHint, "request parameters were rejected by the model provider") {
-				t.Errorf("gateway_hint=%v want neutral params hint", e.Error.GatewayHint)
+			if e.Error.GatewayHint == nil {
+				t.Fatal("gateway_hint 缺失")
+			}
+			if tc.seeded == nil {
+				// 目录未收录 -> 不做能力判定，中性文案
+				if !strings.Contains(*e.Error.GatewayHint, "request parameters were rejected by the model provider") {
+					t.Errorf("gateway_hint=%v want neutral params hint", *e.Error.GatewayHint)
+				}
+			} else {
+				// 目录声明支持却被拒 -> 必须指向换模型/换会话，不能让用户去改 body
+				if !strings.Contains(*e.Error.GatewayHint, "retry with a different model or start a new conversation") {
+					t.Errorf("gateway_hint=%v 期望指向换模型/换会话", *e.Error.GatewayHint)
+				}
 			}
 			if strings.Contains(*e.Error.GatewayHint, "does not support images") {
-				t.Errorf("must NOT claim model-not-supports-images without catalog proof: %q", *e.Error.GatewayHint)
+				t.Errorf("must NOT claim model-not-supports-images when catalog says the opposite: %q", *e.Error.GatewayHint)
 			}
 		})
 	}
@@ -387,4 +398,97 @@ func TestCachedModelsSnapshotZeroUpstreamCalls(t *testing.T) {
 		t.Errorf("expired cache must NOT claim supports_images fact: %v", e.Error.GatewayHint)
 	}
 	_ = calls
+}
+
+// TestChat11133FailFastNoRotate 11133 的端到端 fail-fast 语义：上游只被调用
+// 一次（不轮转）、对外 400 而非 503、message 逐字透传、且不罚任何账号（无冷却）。
+//
+// 背景：11133 属「请求参数被模型拒绝」，换号结果完全相同。过去它落在通用
+// ErrClient 分支，被当换号错误处理 —— 一个请求放大成 MaxRotate 次无效上游
+// 调用，最后还对外报成 503 no_healthy_account，把「参数错」说成「没号了」。
+func TestChat11133FailFastNoRotate(t *testing.T) {
+	resetModelsCache()
+	defer resetModelsCache()
+
+	calls := 0
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		return 400, body11133Real, false
+	})
+	p := testPoolWith(
+		&auth.Auth{UID: "a1", AccessToken: "at1", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "a2", AccessToken: "at2", ExpiresAt: 9999999999},
+	)
+	h := NewHandler(Config{Pool: p, Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-v3-0324","messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 (must NOT degrade to 503 no_healthy_account), body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Errorf("upstream calls=%d want 1: 11133 is deterministic, must not rotate accounts", calls)
+	}
+	var e hintEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
+		t.Fatalf("resp not json: %v", err)
+	}
+	if e.Error.Message != body11133Real {
+		t.Errorf("message must be verbatim upstream body:\n got %q\nwant %q", e.Error.Message, body11133Real)
+	}
+	for _, uid := range []string{"a1", "a2"} {
+		if st, ok := p.Status(uid); ok && st.Cooling {
+			t.Errorf("account %s must NOT be cooled for a client-side param error: kind=%s reason=%s", uid, st.CoolKind, st.Reason)
+		}
+	}
+}
+
+// TestChat11133FailFastSingleAccount 单账号同样 fail-fast（回归锚：单账号时最容易被
+// 轮转逻辑吃掉，一次请求变成 3 次）。
+func TestChat11133FailFastSingleAccount(t *testing.T) {
+	resetModelsCache()
+	defer resetModelsCache()
+
+	calls := 0
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		return 400, body11133Real, false
+	})
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "a1", AccessToken: "at1", ExpiresAt: 9999999999}), Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-v3-0324","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Errorf("upstream calls=%d want 1 for single-account pool", calls)
+	}
+}
+
+// TestChatClientErrStillRotates 对照锚：同样 400 但**不是** 11133 的普通客户端错
+// 误仍走轮转（换号有意义 —— 不同账号可能模型权限不同）。没有这条，上面
+// fail-fast 测试里 "calls==1" 可能只是脚手架坏了而不是真 fail-fast。
+func TestChatClientErrStillRotates(t *testing.T) {
+	resetModelsCache()
+	defer resetModelsCache()
+
+	const bodyUnknown = `{"code":11199,"msg":"some client side error"}`
+	calls := 0
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		return 400, bodyUnknown, false
+	})
+	p := testPoolWith(
+		&auth.Auth{UID: "a1", AccessToken: "at1", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "a2", AccessToken: "at2", ExpiresAt: 9999999999},
+	)
+	h := NewHandler(Config{Pool: p, Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"deepseek-v3-0324","messages":[{"role":"user","content":"hi"}]}`)))
+	if calls < 2 {
+		t.Fatalf("non-11133 client error MUST still rotate, calls=%d status=%d", calls, rec.Code)
+	}
 }

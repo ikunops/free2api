@@ -171,6 +171,10 @@ type floatWin struct {
 	apiKey   string
 
 	phase float64 // 呼吸点相位，按帧推进
+
+	blitLogMu    sync.Mutex // 贴图失败日志去重（见 logBlitErr）
+	lastBlitErr  string
+	lastBlitErrAt time.Time
 }
 
 // floatClassName 窗口类名。进程内唯一，重复注册会拿到 ERROR_CLASS_ALREADY_EXISTS。
@@ -286,6 +290,14 @@ func (f *floatWin) retick() {
 	if h != 0 {
 		postFloatMessage(h, wmFloatData, 0, 0)
 	}
+}
+
+// wantsWindow 上次退出时用户是不是开着悬浮窗。启动路径据此自动恢复，
+// 不然「配置里 enabled=true 但重启后小窗不见了」。
+func (f *floatWin) wantsWindow() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg.Enabled
 }
 
 func (f *floatWin) running() bool {
@@ -790,6 +802,19 @@ const swpNoOwnerZ    = 0x0200
 // user32/gdi32 调用已经把它清掉了。syscall 在 Call 内部已经抓下本次调用的
 // last-error 作为 errno 返回，直接用它才有诊断价值（实测 CreateWindowExW 失败时
 // windows.GetLastError() 永远给 0，errno 才有真正的 1410/1400 之类）。
+// logBlitErr 悬浮窗贴图失败的去重日志。贴图一秒数帧，真出问题时逐帧打日志会瞬间
+// 吃掉几百 MB 日志（且日志本身抢磁盘、把浮窗拖得更卡）。同一个错误只打第一遍，
+// 之后只在「间隔超过 30s」时再提醒一次——浮窗在跑就说明还在尝试贴，故障持续可见。
+func (f *floatWin) logBlitErr(msg string) {
+	f.blitLogMu.Lock()
+	defer f.blitLogMu.Unlock()
+	now := time.Now()
+	if f.lastBlitErr == msg && now.Sub(f.lastBlitErrAt) < 30*time.Second {
+		return
+	}
+	f.lastBlitErr, f.lastBlitErrAt = msg, now
+	log.Printf("UpdateLayeredWindow: %s", msg)
+}
 func callErr(err error) string {
 	if err == nil {
 		return "0(nil)"
@@ -1191,8 +1216,12 @@ func (f *floatWin) blit(hwnd uintptr, s float64, w, h int, pixels []byte) {
 		uintptr(unsafe.Pointer(&ptDst)), uintptr(unsafe.Pointer(&sz)),
 		memDC, uintptr(unsafe.Pointer(&ptSrc)),
 		0, uintptr(unsafe.Pointer(&blend)), ulwAlpha)
-	if ferr != nil {
-		log.Printf("UpdateLayeredWindow: %v", callErr(ferr))
+	// 判错必须比 errno 的零值，不能比 nil。syscall.Proc.Call 第三个返回值是具体的
+	// Errno 类型（不是 error 接口）：Errno(0) 作为 interface 与 nil 比较恒为 true，
+	// 于是这一行在**每一帧成功时**都会执行。悬浮窗一秒数帧，desktop.log 就是这样
+	// 被刷成 25 MB / 天的。之前那句 `ferr != nil` 等于「只要在画就报错」。
+	if errno, ok := ferr.(syscall.Errno); !ok || errno != 0 {
+		f.logBlitErr(callErr(ferr))
 	}
 }
 
@@ -1266,8 +1295,28 @@ func applyRoundedAlpha(pixels []byte, w, h, radius int, alpha uint8) {
 	if radius > h/2 {
 		radius = h / 2
 	}
+	// 内缩 feather 像素，让**整圈**边界（不只四角）都有 alpha 过渡。
+	//
+	// 为什么必须这么做：fillAlpha 是 238 而不是 255。若形状边界与窗口矩形
+	// 重合，最外一列/一行就是满的 238 —— 17/255（≈6.7%）的背景从直边整条
+	// 渗出来，而这一跳是 0→238 的**硬切**，屏幕上就是一圈与圆角风格完全不搭的
+	// 直角残边（实测 dump：直边 x=0..5 全是 238，圆角处却 5 像素就从 0 爬满）。
+	//
+	// feather 必须 < 1，且要**四边对称内缩**：像素列 0 覆盖 [0,1]，内缩到 1.5
+	// 会让它整个落在形状内（覆盖 100%，仍是满 alpha，等于没改）。0.5 时边界落在
+	// 这一列正中，覆盖率 50%，alpha ≈ 119 —— 硬切被就地化成一次正常羽化。
+	//
+	// 注意 roundedRectSDF 把形状锚在原点（中心在 fw/2），只把 fw 改小的话
+	// 右边内缩了、左边还贴在 0 上，直边依旧硬。所以采样点也要同步平移，
+	// 让形状真正落在 [feather, w-feather] 这个居中的框里。
+	//
+	// 半径必须**同步加上 feather**，否则圆角会整圈变小、盖不住原来的角，
+	// 缺口就以直角残边的形式露出来。实测（不补半径）：弧线各行起点比理想圆
+	// 整体偏外 0.35~1.76px（均值 0.96px）—— 用户看到的正是这块。补上之后
+	// 外轮廓大小不变，只是边界从「贴边硬切」变成「边缘 1px 羽化」。
+	const feather = 0.5
 	r := float64(radius)
-	fw, fh := float64(w), float64(h)
+	fw, fh := float64(w)-2*feather, float64(h)-2*feather
 	step := 1.0 / float64(alphaSubSamples)
 	// 子采样点在像素内的偏移（取格子中心，避免共边）。
 	var offs [alphaSubSamples]float64
@@ -1279,9 +1328,9 @@ func applyRoundedAlpha(pixels []byte, w, h, radius int, alpha uint8) {
 		for x := 0; x < w; x++ {
 			inside := 0
 			for _, oy := range offs {
-				fy := float64(y) + oy
+				fy := float64(y) + oy - feather
 				for _, ox := range offs {
-					if roundedRectSDF(float64(x)+ox, fy, fw, fh, r) <= 0 {
+					if roundedRectSDF(float64(x)+ox-feather, fy, fw, fh, r) <= 0 {
 						inside++
 					}
 				}

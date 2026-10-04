@@ -68,11 +68,15 @@ func TestGatewayHintImageForms(t *testing.T) {
 			"model deepseek-v3-0324 does not support images; pick one with supports_images=true from /v1/models",
 		},
 		{
-			// 11133 + 带图 + 目录声明支持（图片数据非法撞 11133）→ 中性参数形态。
+			// 11133 + 带图 + 目录声明支持 → 指向「换模型/换会话」，不是中性文案。
+			// 口径 2026-10-04 改：实测 deepseek-v4.1-flash 在 /v1/models 里
+			// supports_images=true，1x1 极小图却稳定 11133（同一模型同一个号换 64px
+			// 正常图又能过），即「账号侧图像能力与目录声明不一致」是一类真实故障。
+			// 旧口径给中性文案，用户只看到「check message format」，怎么改 body 都没用。
 			"11133 带图但目录声明支持",
 			body11133,
 			HintContext{Model: "hy3", HasImage: true, ModelInCatalog: true, ModelSupportsImages: true},
-			"request parameters were rejected by the model provider; check message format and model capabilities",
+			"image was rejected by this account's model backend even though the catalog marks it multimodal; retry with a different model or start a new conversation",
 		},
 		{
 			// 11133 + 带图 + 目录未收录 → 不做「不支持」判定（宁缺勿滥），退中性。

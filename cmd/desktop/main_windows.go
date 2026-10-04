@@ -121,6 +121,18 @@ func main() {
 	floatOwner = d.floatWin
 	go d.syncFloatGateway()
 
+	// 之前开着悬浮窗就把它恢复回来。缺这一步的表现是：设置页开关显示「已开启」，
+	// 但重启桌面程序后小窗不见了 —— 因为 enabled 只在用户点开关（floatApply）时
+	// 被读，从来没在启动路径上被读。配置里写着开，程序却当它关着。
+	if d.floatWin.wantsWindow() {
+		go func() {
+			time.Sleep(1200 * time.Millisecond) // 等网关 SSE 端点就绪
+			if err := d.floatWin.start(); err != nil {
+				log.Printf("按上次的设置恢复悬浮窗失败（可在设置页重开）: %v", err)
+			}
+		}()
+	}
+
 	ctrlAddr, err := serve(d, *ctrlPort)
 	if err != nil {
 		fatal("控制服务起不来: " + err.Error())

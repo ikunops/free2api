@@ -1931,6 +1931,21 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 				st.status = http.StatusBadRequest
 				return
 			}
+			// 11133 model_param_invalid：立即透传上游原文回客户端，不罚号不轮转。
+			// 同一份 body 换任何账号都会被同样拒绝（模型侧能力边界），轮转只会把
+			// 一次请求放大成 MaxRotate 次无效上游调用，最后还兜底成误导性的 503。
+			if kind == upstream.ErrModelParamInvalid {
+				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
+				fail(acct.UID)
+				msg := string(respBody)
+				if strings.TrimSpace(msg) == "" {
+					msg = "request parameters were rejected by the model provider"
+				}
+				writeOpenAIErrorHint(w, http.StatusBadRequest, "model_param_invalid", msg,
+					h.hintOf(upstream.ErrModelParamInvalid, string(respBody), bareModel, reqHasImage, uerr))
+				st.status = http.StatusBadRequest
+				return
+			}
 			// lastErr 携带完整 body（uerr.Msg 在 upstream 侧截断 200 字符，透传语义
 			// 5755fe3 要求原文全量）+ Kind/RetryAfter（末端映射与冷却时长共用）。
 			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody), RetryAfter: uerr.RetryAfter}
@@ -2269,6 +2284,11 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 	case upstream.ErrImageInvalid:
 		// 图片格式/数据无效：请求的问题不是账号的问题（同一 body 换任何号都会
 		// 得到相同解析错误）。零动作，chatCompletions 已 fail-fast 透传。
+	case upstream.ErrModelParamInvalid:
+		// 11133 model_param_invalid：请求参数被模型供应商拒绝，同 ErrImageInvalid
+		// 性质（请求的问题不是账号的问题）。零动作，chatCompletions 已 fail-fast
+		// 透传 400——不落到轮转路径，免得一个确定性错误把 MaxRotate 个号全试一遍
+		// 最后对外报成 503 no_healthy_account。
 	case upstream.ErrBadParams:
 		// 请求体解析失败（400 + Unmarshal chat params failed / 11101）：发给上游的 body
 		// 有问题（网关截断已由 413 消灭，剩余为客户端畸形 JSON）。换了账号照样 400，

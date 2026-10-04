@@ -1279,7 +1279,12 @@ func (h *Handler) statsStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, snap)
 		return
 	}
-	spec := parseRangeSpec(r.URL.Query().Get("range"))
+	// range 只认「今天 / 7 天 / 30 天 / 全部」，但 from 必须**每帧重算**。
+	// 建连时算一次是不够的：SSE 是长连接，跨零点它不会断，于是 from 永远停在
+	// 建连那天的零点 —— 过了 0 点还在推送昨天的桶，而且那个桶仍在被写入，
+	// 表现为「今天请求 1694 而且还在涨」，可实际那是昨天的数据在涨。
+	// 每天零点这一行自然就切到新的一天，不用重连、不用刷新页面。
+	rangeArg := r.URL.Query().Get("range")
 	sig := globalMetrics.changed
 
 	hdr := w.Header()
@@ -1300,7 +1305,7 @@ func (h *Handler) statsStream(w http.ResponseWriter, r *http.Request) {
 
 	// 首帧立即推全量：连上来的瞬间就有东西显示，不用等下一次请求落地。
 	send := func() bool {
-		snap := metricsSnapshotRange(spec)
+		snap := metricsSnapshotRange(parseRangeSpec(rangeArg))
 		h.enrichCredits(&snap)
 		raw, err := json.Marshal(snap)
 		if err != nil {

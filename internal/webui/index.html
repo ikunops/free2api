@@ -260,6 +260,12 @@ button.gh{background:var(--panel)}
 /* .tiny 是页面上最常见的次级动作（复活 / 禁用 / 删除 / 清冷却）。
    原来 padding 5px 11px 让它只有 28px 高，触区偏小且边界几乎不可见。
    加到 7px 12px / 30px 高，边界升到 line3。 */
+/* .tiny 排在 .pri 之后（都是 button.xxx，特异性相同），光靠 .pri{background:var(--dark)}
+   会被下面这条的 background:var(--panel) 覆盖 —— 结果是「选中态」底色被抹成白底，
+   而 .pri 的 color:var(--on-dark) 还是白字，等于选中项白底白字（看着像透明）。
+   组合类必须显式声明，不能指望单类规则的书写顺序。 */
+button.tiny.pri,button.pri.tiny{background:var(--dark);border-color:var(--dark);color:var(--on-dark)}
+button.tiny.pri:hover:not(:disabled),button.pri.tiny:hover:not(:disabled){background:var(--dark-hover);border-color:var(--dark-hover)}
 button.tiny{padding:7px 12px;font-size:12.5px;border-color:var(--line3);background:var(--panel)}
 /* 关键动作（刷新/重扫）用 .rf：带图标 + 主色描边，和一片白底的普通按钮拉开层次。 */
 button.rf{display:inline-flex;align-items:center;gap:6px;color:var(--acc-fg);
@@ -639,7 +645,7 @@ const S = {
   srcTab: "app", cand: null, candKind: "", candNote: "",
   candProbe: false, candBalance: false,
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
-  modelSel: null, modelDirty: false, chanDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false, onlyFree: false,
+  modelSel: null, modelDirty: false, chanDraft: null, codexDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false, onlyFree: false,
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
@@ -770,6 +776,10 @@ function render(opt){
   // keepDraft=true：调用方（新增/删除出口）已经改好了 S.chanDraft，别再拿「重画前的旧 DOM」
   // 回读一遍——否则刚删掉的行会被原样读回来，表现成「点删除没反应」。
   if (S.tab === "output" && !(opt && opt.keepDraft)) captureChanDraft();
+  // Codex 一键接入那两个输入框同理：它们只被 codex-preview 读一次，而后台 30s
+  // 状态轮询会 render() —— 输入框用 suggested_* 重填，用户刚敲的 Base URL 就被
+  // 顶回旧值，于是「预览改动」永远拿旧 URL，看着像改了没生效。
+  if (S.tab === "output") captureCodexDraft();
   // 后台轮询也会走到这里（30s 状态 / 3s 余额）：innerHTML 整页重画会把滚动位置清零，
   // 用户正勾着发布清单就被拽回列表顶部（cn:auto 那一行）。先把两处滚动位置记下来，
   // 画完原样放回去——重画不该动用户的视野。
@@ -2245,7 +2255,7 @@ function codexCard(){
       ? '<select id="codexModel">' + ms.map(function(m){ return '<option value="' + esc(m) + '"' + (m === curModel ? " selected" : "") + ">" + esc(m) + "</option>"; }).join("") + "</select>"
       : '<input id="codexModel" value="' + esc(curModel) + '" placeholder="例如 cn:auto">') +
     '<div class="hint">' + (ms.length ? "来自「发布清单」里已勾选的模型。" : "发布清单为空——先去下面勾模型，或手填一个。") + "</div></div>" +
-    '<div class="field"><label class="f">Base URL</label><input id="codexBase" value="' + esc(c.suggested_base_url || "") + '">' +
+    '<div class="field"><label class="f">Base URL</label><input id="codexBase" value="' + esc(S.codexDraft && S.codexDraft.base_url !== undefined ? S.codexDraft.base_url : (c.suggested_base_url || "")) + '">' +
     '<div class="hint">主口地址（含 /v1）。想给 Codex 单独开出口，就把出口地址填这里。</div></div>' +
     "</div>";
 
@@ -3071,7 +3081,7 @@ function viewSettings(){
 
     if (on || items.length){
       var rows = avail.map(function(it){
-        return floatSwitchItem(it, items.indexOf(it.ID) >= 0, it.ID === floatItemClick ? "eye" : (it.ID === floatItemTopmost ? "layers" : ""));
+        return floatSwitchItem(it, items.indexOf(it.ID) >= 0, it.ID === "passthru" ? "mouse" : (it.ID === "topmost" ? "layers" : ""));
       }).join("");
       html += card("显示哪些内容", "「Token 速度」那一行是真会动的实时值；" +
         "「区间请求数 / 区间 Token」跟随下面选的区间。",
@@ -3719,10 +3729,28 @@ function doPaste(){
   var m = $("#impMethod"), d = $("#impDetail");
   doImport("paste", null, text, (m && m.value) || "file", (d && d.value.trim()) || "");
 }
+/* captureCodexDraft 把 Codex 一键接入那两个输入框的现值收进草稿。
+   为什么必须有：codex-preview 只在点击那一刻读一次 DOM，而后台 30s 一次的状态
+   轮询会 render() 整页 —— 输入框按 suggested_* 重填后，用户敲的 Base URL 就被
+   顶回服务端建议值。症状是「改了 URL，预览里还是旧的那个」，看起来像保存失败，
+   其实改动从来没进过请求。与 captureChanDraft 同一个病根（重画吞掉未保存输入）。 */
+function captureCodexDraft(){
+  var mEl = $("#codexModel"), bEl = $("#codexBase");
+  if (!mEl && !bEl) return;
+  S.codexDraft = {
+    model: mEl ? mEl.value : (S.codexDraft ? S.codexDraft.model : ""),
+    base_url: bEl ? bEl.value : (S.codexDraft ? S.codexDraft.base_url : "")
+  };
+  // 输入框内容与后端建议一致 = 用户没改，草稿不必留着（避免脏值一直盖着服务端的
+  // 新建议值，比如网关换了出口地址之后还卡在旧草稿）。
+  var sug = (S.codex && S.codex.suggested_base_url) || "";
+  if (S.codexDraft.base_url === sug) S.codexDraft.base_url = sug;
+}
 /* codexPreview 拉「改前/改后」全文，不落盘；用户看过再点「确认写入」。 */
 async function codexPreview(){
   var el = $("#codexModel"), baseEl = $("#codexBase");
   S.codexModel = el ? el.value : "";
+  captureCodexDraft();
   try {
     S.codexPlan = await api("/admin/codex/preview", { method: "POST", body: {
       model: S.codexModel, base_url: baseEl ? baseEl.value : ""
@@ -3740,6 +3768,8 @@ async function codexApply(){
       model: S.codexPlan.model, base_url: S.codexPlan.base_url
     }});
     S.codexPlan = null;
+    // 写入后服务端建议值会变（可能就是刚写的那个），草稿留着会把旧值一直盖住。
+    S.codexDraft = null;
     await loadOutput();
     render();
     toast("ok", r && r.message ? r.message : "已写入");
@@ -3782,6 +3812,24 @@ function setModelSel(fn){
   render();
   // 批量勾选只改草稿、不落盘：给一条明确反馈，免得列表已滚到看不见时像没反应。
   toast("info", "已勾 " + draftSelCount() + " / " + entitledOf(avail).length + " 个模型，点「保存发布清单」生效", 3200);
+}
+/* saveMgroupOpen / loadMgroupOpen：把发布清单各来源分组的展开状态存本机。
+   为什么持久化：展开状态原本只活在内存 S.mgroupOpen 里，而后台 30s 一次的状态
+   轮询会 render() 整页。用户点开一个来源、勾选几个模型、切走再回来，后台也
+   render() 了几次，重画后就按一个空的 S.mgroupOpen 画，于是这组自己合上了 ——
+   用户看到的现象是「我明明展开了，怎么又合了」，但其实每次点击都生效了。
+   这类「点了像没反应 / 过一会儿自己变回去」必须靠持久化而不是靠不重画来解决，
+   因为重画还有别的原因（轮询、切页、保存），躲不掉。 */
+function saveMgroupOpen(){
+  try { localStorage.setItem("wb_mgroup_open", JSON.stringify(S.mgroupOpen || {})); } catch (e) {}
+}
+function loadMgroupOpen(){
+  try {
+    var raw = localStorage.getItem("wb_mgroup_open");
+    var j = JSON.parse(raw || "{}");
+    if (j && typeof j === "object") return j;
+  } catch (e) {}
+  return {};
 }
 /* entitledOf 只留「号池真的有额度」的模型（后端 entitled 字段；缺省视为有额度）。
    计数与「全选」都按它走：未授权的行看得见、能勾，但不该混进默认口径。 */
@@ -4103,15 +4151,32 @@ async function actOn(t){
       applyModelFilter(); return;
     }
     if (act === "mgroup-toggle"){
+      // 展开状态持久化到本机 localStorage。之前的实现只放内存 S.mgroupOpen，
+      // 后台 30s 一次的状态轮询会 render() 整页；用户点开一组、勾两个模型，切回
+      // 别的页签或轮询一过，这组就被收起 —— 表现是「我明明展开了，怎么自己合上了」。
       var gk = t.getAttribute("data-g") || "";
       S.mgroupOpen[gk] = !S.mgroupOpen[gk];
       t.classList.toggle("open", !!S.mgroupOpen[gk]);
+      saveMgroupOpen();
+      // 筛选态下 .mlist.searching 用 display:block!important 把所有 mbody 强开，
+      // 这时再点分组头，class 翻了对用户没有任何可见反馈 —— 表现就是「收起没反应」。
+      // 退掉 searching 一层语义即可：筛选期间不允许单独折叠，先退出筛选。
+      var ml = $("#mList");
+      if (ml && ml.classList.contains("searching")){
+        ml.classList.remove("searching");
+        S.mq = ""; S.mfProducer = "all"; S.mfRate = "all";
+        var qi = $("#mq"); if (qi) qi.value = "";
+        var pi = $("#mfProducer"); if (pi) pi.value = "all";
+        var ri = $("#mfRate"); if (ri) ri.value = "all";
+        toast("info", "已退出筛选，现在可以逐组展开 / 收起", 2600);
+      }
       return;
     }
     if (act === "mgroup-all"){
       var open = t.getAttribute("data-open") === "1";
       S.mgroupOpen = {};
       mgroupKeys().forEach(function(k){ S.mgroupOpen[k] = open; });
+      saveMgroupOpen();
       render(); toast("info", open ? "已展开全部来源分组" : "已收起全部来源分组", 2000); return;
     }
     if (act === "credits-refresh") return loadCredits(true);
@@ -4261,6 +4326,7 @@ document.addEventListener("click", function(ev){
   if (logo) logo.innerHTML = svg("swap");
   $("#btnKey").innerHTML = svg("key");
   $("#btnRefresh").innerHTML = svg("refresh");
+  S.mgroupOpen = loadMgroupOpen();
   bind();
   renderNav();
   await loadDesktop();
