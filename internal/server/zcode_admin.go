@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -31,7 +32,10 @@ type zcodeStateView struct {
 	MissingContext int `json:"missing_context"`
 	// Catalog 供前端显示「我们会写什么值」，只含有元数据的模型。
 	Catalog []zcodeCatalogItem `json:"catalog,omitempty"`
-	ReadErr string             `json:"read_error,omitempty"`
+
+	// Formats 网关输出格式 → ZCode 能不能接，供一键接入表单置灰。
+	Formats []zcodeFormatView `json:"formats,omitempty"`
+	ReadErr string            `json:"read_error,omitempty"`
 }
 
 // zcodeCatalogItem 一条模型的上下文 / 输出上限，供前端预览。
@@ -85,6 +89,7 @@ func (h *Handler) adminZCodeGet(w http.ResponseWriter, r *http.Request) {
 	view.Exists = plan.Exists
 	view.Providers = plan.Providers
 	view.MatchedProviders = plan.MatchedProviders
+	view.Formats = zcodeFormatViews(h)
 	view.MissingContext = len(plan.MissingModels)
 	view.Catalog = zcodeCatalogList(meta)
 	if plan.ReadErr != "" {
@@ -93,6 +98,23 @@ func (h *Handler) adminZCodeGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// zcodeFormatViews 从网关格式注册表生成 ZCode 可接入性列表。
+// 直接读注册表而不是在前端硬编码一份：网关加了新格式这里自动跟上，
+// 不会出现"前端能选、后端拒绝"这种不一致。
+func zcodeFormatViews(h *Handler) []zcodeFormatView {
+	var out []zcodeFormatView
+	for _, f := range outputFormatRegistry() {
+		id, _ := f["id"].(string)
+		name, _ := f["name"].(string)
+		regNote, _ := f["note"].(string)
+		note, ok := zcodeFormatNote(id)
+		if !ok {
+			note = regNote + "（" + note + "）"
+		}
+		out = append(out, zcodeFormatView{ID: id, Name: name, Note: note, OK: ok})
+	}
+	return out
+}
 func zcodeCatalogList(meta map[string]ZCodeModelMeta) []zcodeCatalogItem {
 	out := make([]zcodeCatalogItem, 0, len(meta))
 	for id, m := range meta {
@@ -117,6 +139,84 @@ func (h *Handler) adminZCodePreview(w http.ResponseWriter, r *http.Request) {
 	h.zcodePlanHandler(w, r, false)
 }
 
+// zcodeFormatView 一个网关输出格式在 ZCode 侧的可接入性，供前端置灰 + 给说明。
+type zcodeFormatView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Note string `json:"note"`
+	OK   bool   `json:"ok"`
+}
+
+// adminZCodeCreate 一键建供应商：写 providerRules，然后按新写的模型补上下文规则。
+//
+// 分两步而不是合成一个大 diff：建 provider 与同步上下文关心的字段不同
+// （前者 api/baseUrl/access，后者 contextWindow），分开算各自的 diff 更清楚，
+// 出错时也能定位是哪一步坏的。落盘顺序是先 provider 后上下文——
+// 反过来的话，第二步失败会留下一个"有 provider 但上下文全是 200k 兜底"的中间态。
+func (h *Handler) adminZCodeCreate(w http.ResponseWriter, r *http.Request) {
+	path := ZCodeConfigPath(h.cfg.ZCodeConfigPath)
+	var spec ZCodeProviderSpec
+	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+		writeOpenAIErrorHint(w, http.StatusBadRequest, "zcode_create_bad_body", err.Error(),
+			"请求体应是 {name, base_url, api_type, api_key, models[]}")
+		return
+	}
+	// base_url 缺省用网关自己的地址，用户想给 ZCode 单独出口就在表单里改。
+	if strings.TrimSpace(spec.BaseURL) == "" {
+		spec.BaseURL = h.suggestedBaseURL()
+	}
+	// 模型名必须是网关当前真在发的（防手滑填一个 404 的名字进配置）。
+	meta := h.zcodeMetaOf()
+	var valid []string
+	for _, m := range spec.Models {
+		if _, ok := meta[m]; ok {
+			valid = append(valid, m)
+		}
+	}
+	if len(valid) == 0 {
+		writeOpenAIErrorHint(w, http.StatusBadRequest, "zcode_create_no_model",
+			"一个模型都没选，或选的模型都不在网关当前发布清单里",
+			"只勾「模型发布清单」里已勾选的模型；也可以先不选模型、只建供应商，之后再在 ZCode 里挑")
+		return
+	}
+	spec.Models = valid
+
+	// changed=false 表示 provider 已是自己要的样子（幂等重放），照样继续走上下文同步。
+	_, pid, _, err := UpsertZCodeProvider(path, spec)
+	if err != nil {
+		writeOpenAIErrorHint(w, http.StatusBadRequest, "zcode_create_failed", err.Error(),
+			"Base URL 填网关地址（如 127.0.0.1:7864/v1）；providerId 与已有的冲突且指向别处时换个 id")
+		return
+	}
+	// 建完 provider 再算上下文计划（新 provider 的 personalModelIds 已被读进来了）。
+	plan, perr := PlanZCode(path, h.suggestedBaseURL(), meta)
+	if perr != nil || plan == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"created": true, "provider_id": pid, "context_changed": false,
+			"message": "供应商已建；上下文同步这一步没成功，可点「预览改动」重试", "plan": plan,
+		})
+		return
+	}
+	ctxApplied := false
+	if plan.Changed {
+		if aerr := ApplyZCode(plan); aerr == nil {
+			ctxApplied = true
+		}
+	}
+	fresh, _ := PlanZCode(path, h.suggestedBaseURL(), meta)
+	msg := "供应商已建（" + spec.Name + " · " + pid + "）。"
+	if ctxApplied {
+		msg += "上下文已一并写入，重启 ZCode 生效。"
+	} else if plan.Changed {
+		msg += "但上下文同步没成功，点「预览改动」看看。"
+	} else {
+		msg += "上下文已是最新。"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": pid != "", "provider_id": pid, "context_changed": ctxApplied,
+		"models": valid, "message": msg, "plan": fresh,
+	})
+}
 func (h *Handler) adminZCodeApply(w http.ResponseWriter, r *http.Request) {
 	h.zcodePlanHandler(w, r, true)
 }

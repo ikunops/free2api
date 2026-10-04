@@ -678,7 +678,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  zcode: null, zcodePlan: null, zcodeShowAll: false, cardOpen: loadCardOpen(),
+  zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, cardOpen: loadCardOpen(),
   stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
@@ -3874,13 +3874,18 @@ function zcodeCard(){
     : '<span class="tag warn">0 个</span>']);
   body += kv(rows);
 
+  // 「建供应商 + 选模型」表单。原来的卡片只能同步上下文，前提是用户已经在 ZCode 里
+  // 手建过供应商——没有供应商就永远没活干，是条死路。现在把建供应商也收进来。
+  body += zcodeCreateForm(z);
+
   if (!z.exists || !matched){
-    body += '<div class="sep"></div><div class="hint">' + (matched
-      ? "还没有任何 ZCode 供应商指向本网关。先在 ZCode 里「添加供应商」，Base URL 填上面的网关地址，再回来点同步。"
-      : "在 ZCode 的「设置 → 模型供应商」里把某个供应商的 Base URL 填成 <b>" + esc(z.base_url || "") +
-        "</b>，本卡才能认出来并同步上下文窗口。") + "</div>";
-    return card("ZCode 一键接入", "把本网关模型的真实上下文窗口写进 ZCode 的供应商配置。", body,
-                null, { action: "card-toggle", id: "zcode", open: zopen, badge: zcodeBadge(z) });
+    if (matched){
+      body += '<div class="sep"></div><div class="hint">已认出的供应商会在下面列出；填上面那张表还能再建一个。</div>';
+    } else {
+      body += '<div class="sep"></div><div class="hint">还没有任何 ZCode 供应商指向本网关。' +
+        '填上面那张表建一个即可；也可以在 ZCode 里「添加供应商」，把 Base URL 填成 <b>' +
+        esc(z.base_url || "") + '</b>，本卡就能认出它并同步上下文。</div>';
+    }
   }
 
   // provider 清单：一眼看出哪些会被改、哪些不碰
@@ -3940,6 +3945,130 @@ function zcodeCard(){
   return card("ZCode 一键接入",
     "ZCode 不读 /v1/models 的上下文字段，这里把真实值写进它的供应商配置。",
     body, null, { action: "card-toggle", id: "zcode", open: zopen, badge: zcodeBadge(z) });
+}
+/* ZCode 建供应商表单的字段表 + 草稿存读。
+ * 只列文本/下拉类字段；模型勾选走 S.zcodeSel（复选框不需要存草稿，DOM 状态本身就是）。 */
+var ZC_FORM_FIELDS = { zcName: "name", zcId: "provider_id", zcBase: "base_url",
+                       zcFmt: "api_type", zcKey: "api_key" };
+function zcodeFormSet(id, v){
+  S.zcodeForm = S.zcodeForm || {};
+  S.zcodeForm[ZC_FORM_FIELDS[id]] = v;
+}
+function zcodeFormRead(){
+  S.zcodeForm = S.zcodeForm || {};
+  [["zcName","name"],["zcId","provider_id"],["zcBase","base_url"],["zcFmt","api_type"],["zcKey","api_key"]]
+    .forEach(function(p){
+      var el = document.getElementById(p[0]);
+      if (el) S.zcodeForm[p[1]] = el.value;
+    });
+  return S.zcodeForm;
+}
+/* zcodeCreateForm —— 一键建供应商 + 选模型。
+ *
+ * 为什么要有这张表：原来这张卡只做上下文同步，前提是用户已经在 ZCode 里手建过
+ * 指向本网关的供应商。于是「一个都没有」时它只能让用户去别处手动填——名叫一键接入，
+ * 实际一键不了。
+ *
+ * 没有「模型前缀」输入框，这是故意的：ZCode 里显示的就是 personalModelIds 的原样
+ * 名字，而那些名字已经带上网关 /v1/models 输出时加的前缀了。这里再给一个前缀框，
+ * 就是个改了不生效的假字段。
+ *
+ * 模型清单只列「发布清单里已勾选」的（S.models 里带 sel 的），跟下面那张发布清单
+ * 同一个数据源——用户在哪勾的，这里就看到哪。
+ */
+function zcodeCreateForm(z){
+  var fm = S.zcodeForm || {};
+  var fmts = (z.formats || []).filter(function(f){ return f.available !== undefined ? true : true; });
+  var sel = S.zcodeSel || (S.zcodeSel = {});
+  // 只列已勾选的模型；没勾任何东西时退回全部候选（并提示去勾）。
+  var picked = (S.models || []).filter(function(m){ return sel[m.full_id]; });
+  var all = (S.models || []).slice();
+  if (!picked.length) picked = all;
+
+  var fmtOpts = fmts.map(function(f){
+    var ok = f.ok !== false;
+    return '<option value="' + esc(f.id) + '"' + ((fm.api_type || "openai") === f.id ? " selected" : "") +
+      (ok ? "" : " disabled") + '>' + esc(f.name) + (ok ? "" : "（未接入）") + '</option>';
+  }).join("");
+  var curFmt = fmts.filter(function(f){ return f.id === (fm.api_type || "openai"); })[0] || {};
+  var fmtNote = curFmt.note || "";
+
+  var modelRows = picked.map(function(m){
+    var on = !!sel[m.full_id];
+    var bits = [];
+    if (m.suffix) bits.push('<span class="tag ' + (m.suffix === "-free" ? "ok" : "warn") + '">' +
+      esc(String(m.suffix).replace(/^-/, "")) + '</span>');
+    else if (m.free) bits.push('<span class="tag ok">免费</span>');
+    return '<label class="mrow' + (on ? "" : " off") + '" data-msearch="' +
+      esc(((m.full_id||"") + " " + (m.name||"")).toLowerCase()) + '">' +
+      '<input type="checkbox" data-zmodel="' + esc(m.full_id) + '"' + (on ? " checked" : "") + '>' +
+      '<span class="mid mono">' + esc(m.full_id) + '</span>' +
+      '<span class="mname hint">' + esc(m.name || "") + '</span>' +
+      '<span class="mbits">' + bits.join("") + '</span></label>';
+  }).join("");
+
+  return '<div class="sep"></div><div class="f"><label class="f">新建 ZCode 供应商</label>' +
+    '<div class="hint">填名字、挑格式、勾模型，直接写进 ZCode 的 provider_config.json（先自动备份）。' +
+    '同 id 再点一次是覆盖，不会重复追加。</div>' +
+    '<div class="grid2" style="margin-top:7px">' +
+      '<div class="field"><label class="f">供应商名称</label>' +
+        '<input id="zcName" value="' + esc(fm.name || "free2api") + '" placeholder="free2api">' +
+        '<div class="hint">ZCode 里显示的名字，随便起。</div></div>' +
+      '<div class="field"><label class="f">供应商 id</label>' +
+        '<input id="zcId" value="' + esc(fm.provider_id || "") + '" placeholder="留空自动生成">' +
+        '<div class="hint">小写唯一。和已有的 id 撞了且指向别处时会拒绝写入，让你换 id。</div></div>' +
+      '<div class="field"><label class="f">Base URL</label>' +
+        '<input id="zcBase" value="' + esc(fm.base_url !== undefined ? fm.base_url : (z.base_url || "")) + '">' +
+        '<div class="hint">网关地址（含 /v1）。要给 ZCode 单独开出口，就填那个出口。</div></div>' +
+      '<div class="field"><label class="f">API 格式</label><select id="zcFmt">' + fmtOpts + '</select>' +
+        '<div class="hint">' + esc(fmtNote) + '</div></div>' +
+      '<div class="field"><label class="f">密钥</label>' +
+        '<input id="zcKey" value="' + esc(fm.api_key || "free2api-local") + '" placeholder="free2api-local">' +
+        '<div class="hint">ZCode 要求非空（网关不鉴权也要填）。任意占位串即可。</div></div>' +
+    '</div>' +
+    '<div class="field" style="margin-top:9px"><label class="f">选模型（' + picked.length + ' 个）</label>' +
+      (all.length
+        ? (picked.length === all.length && !sel[all[0] && all[0].full_id]
+            ? '<div class="hint">还没在下面「模型发布清单」勾过，先按当前全部对外模型列出来。勾过的会优先列出。</div>' : "")
+        : '<div class="hint">网关当前没有对外模型——号池里需要有健康账号。</div>') +
+      '<div class="mbody" style="max-height:230px;overflow:auto;margin-top:5px">' +
+      (modelRows || '<div class="empty">没有可选模型</div>') + '</div>' +
+    '</div>' +
+    '<div class="row" style="margin-top:8px">' +
+      '<button class="pri withico" data-action="zcode-create" title="写入 provider_config.json，并同步这些模型的上下文窗口（先自动备份）">' +
+        svg("check") + '创建并同步上下文</button>' +
+      '<span class="hint" style="margin:0">写完重启 ZCode 生效。</span></div></div>';
+}
+/* zcodeCreate 提交建供应商。表单值只存在 S.zcodeForm 里（keyup 即时存），
+   这样 render() 重画不会把用户填到一半的内容冲掉——之前 codex 那套就是这么丢输入的。 */
+async function zcodeCreate(){
+  var sel = S.zcodeSel || {};
+  var models = Object.keys(sel).filter(function(k){ return sel[k]; });
+  var fm = S.zcodeForm || {};
+  var spec = {
+    provider_id: (fm.provider_id || "").trim(),
+    name: (fm.name || "free2api").trim(),
+    base_url: (fm.base_url || "").trim(),
+    api_type: fm.api_type || "openai",
+    api_key: (fm.api_key || "free2api-local").trim(),
+    models: models
+  };
+  if (!models.length){
+    toast("warn", "先勾至少一个模型", 3600);
+    return;
+  }
+  try {
+    var r = await api("/admin/zcode/create", { method: "POST", body: spec });
+    toast("ok", (r && r.message) || "已写入", 5200);
+    // 建完必须重拉现状：不然下面那张「识别到的供应商」还是旧的，看着像没生效。
+    S.zcode = await api("/admin/zcode");
+    S.zcodePlan = (r && r.plan) ? r.plan : null;
+    S.zcodeSel = {};
+    S.zcodeForm = null;
+    render();
+  } catch (e){
+    toast("err", "写入失败：" + (e && e.message || e), 6000);
+  }
 }
 /* zcodePreview 拉逐条 diff，不落盘。 */
 async function zcodePreview(){
@@ -4355,6 +4484,7 @@ async function actOn(t){
     if (act === "save-out") return saveOutput();
     if (act === "codex-preview") return codexPreview();
     if (act === "codex-apply") return codexApply();
+    if (act === "zcode-create"){ zcodeFormRead(); return zcodeCreate(); }
     if (act === "zcode-preview") return zcodePreview();
     if (act === "zcode-apply") return zcodeApply();
     if (act === "zcode-toggle-all") { S.zcodeShowAll = !S.zcodeShowAll; return render(); }
@@ -4463,7 +4593,11 @@ document.addEventListener("click", function(ev){
   });
   $("#view").addEventListener("input", function(ev){
     var t = ev.target;
-    if (t && t.id === "mq"){ S.mq = t.value; applyModelFilter(); }
+    if (t && t.id === "mq"){ S.mq = t.value; applyModelFilter(); return; }
+    // ZCode 建供应商表单：输入即时存草稿。render() 会先把 DOM 收进草稿再重画，
+    // 但这里存一份是为了切页/刷新后回来还在——之前 codex 那套就是直接读 DOM，
+    // 任何一次重画（勾个模型、翻个分组）都会把填到一半的输入冲掉。
+    if (t && ZC_FORM_FIELDS[t.id]){ zcodeFormSet(t.id, t.value); }
   });
   $("#view").addEventListener("change", function(ev){
     var t = ev.target;
@@ -4490,6 +4624,14 @@ document.addEventListener("click", function(ev){
     }
     var cw = (t.closest ? t.closest("[data-chan-row]") : null);
     if (cw){ updChanRow(cw.getAttribute("data-chan-row")); }
+    if (t && ZC_FORM_FIELDS[t.id]){ zcodeFormSet(t.id, t.value); return; }
+    if (t.hasAttribute && t.hasAttribute("data-zmodel")){
+      S.zcodeSel = S.zcodeSel || {};
+      S.zcodeSel[t.getAttribute("data-zmodel")] = !!t.checked;
+      var zr = t.closest ? t.closest(".mrow") : null;
+      if (zr) zr.classList.toggle("off", !t.checked);
+      return;
+    }
     if (t.id === "mfProducer"){ S.mfProducer = t.value; applyModelFilter(); return; }
     if (t.id === "mfRate"){ S.mfRate = t.value; applyModelFilter(); return; }
     if (t.id === "realmScoped"){ S.realmScoped = !!t.checked; applyRealmScoped(); return; }

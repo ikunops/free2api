@@ -625,6 +625,27 @@ func (h *Handler) adminOutputPut(w http.ResponseWriter, r *http.Request) {
 }
 
 // outputCfg 当前生效的输出配置（没挂 store 时用 Config 里的静态值兜底）。
+// outputFormatRegistry 网关支持的输出格式注册表（唯一来源）。
+//
+// 抽成函数而不是留在这行字面量里：ZCode 一键接入表单要拿它算「哪些格式 ZCode
+// 接得上」，两处各写一份必然会漂移——网关加了新格式而接入表单还停在旧清单，
+// 就会出现「前端能选、后端拒绝」。
+func outputFormatRegistry() []map[string]any {
+	return []map[string]any{
+		{"id": "openai", "name": "OpenAI 兼容", "available": true,
+			"chat_path": "/v1/chat/completions", "models_path": "/v1/models",
+			"note": "已可用：Chat Completions（含 SSE 流式）+ 模型列表"},
+		{"id": "anthropic", "name": "Anthropic Messages", "available": false,
+			"chat_path": "/v1/messages",
+			"note":      "待接入：需要把请求体与流式事件双向翻译成 Messages 协议"},
+		{"id": "gemini", "name": "Gemini generateContent", "available": false,
+			"chat_path": "/v1beta/models/{model}:generateContent",
+			"note":      "待接入：需要一套 generateContent 的请求/响应结构"},
+		{"id": "responses", "name": "OpenAI Responses", "available": true,
+			"chat_path": "/v1/responses", "models_path": "/v1/models",
+			"note": "已可用：Codex 等 wire_api=responses 客户端直连；与 Chat 出口共用同一号池与轮转"},
+	}
+}
 func (h *Handler) outputCfg() OutputConfig {
 	if h.cfg.Output != nil {
 		return h.cfg.Output.Get()
@@ -648,20 +669,8 @@ func (h *Handler) outputView() map[string]any {
 		// 否则改完端口刷新一下就退回旧值，看着像没改成。
 		"listen":      h.configuredListen(),
 		"config_path": h.cfg.ConfigPath,
-		"formats": []map[string]any{
-			{"id": "openai", "name": "OpenAI 兼容", "available": true,
-				"chat_path": "/v1/chat/completions", "models_path": "/v1/models",
-				"note": "已可用：Chat Completions（含 SSE 流式）+ 模型列表"},
-			{"id": "anthropic", "name": "Anthropic Messages", "available": false,
-				"chat_path": "/v1/messages",
-				"note":      "待接入：需要把请求体与流式事件双向翻译成 Messages 协议"},
-			{"id": "gemini", "name": "Gemini generateContent", "available": false,
-				"chat_path": "/v1beta/models/{model}:generateContent",
-				"note":      "待接入：需要一套 generateContent 的请求/响应结构"},
-			{"id": "responses", "name": "OpenAI Responses", "available": true,
-				"chat_path": "/v1/responses", "models_path": "/v1/models",
-				"note": "已可用：Codex 等 wire_api=responses 客户端直连；与 Chat 出口共用同一号池与轮转"},
-		},
+		"formats":     outputFormatRegistry(),
+
 		"rate_hints": []map[string]any{
 			{"id": "credit", "name": "显示费率（按模型）", "note": "模型名后缀按各自倍率：免费 -free，收费 -x0.11"},
 			{"id": "free", "name": "统一标记免费", "note": "忽略真实倍率，所有模型名一律加 -free"},

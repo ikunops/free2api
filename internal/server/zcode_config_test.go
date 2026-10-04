@@ -361,3 +361,195 @@ func TestZCodePlanMissingFile(t *testing.T) {
 		t.Fatal("ReadErr 为空，前端会显示成「一切正常」")
 	}
 }
+
+// —— 代建供应商 ——
+
+// TestUpsertZCodeProviderCreates 全新 providerId：追加一条，字段与 UI 手建的一致，
+// personalModelIds 与 modelOrder 同内容（实盘 ZCode 就是这样）。
+func TestUpsertZCodeProviderCreates(t *testing.T) {
+	p := writeZCodeFixture(t)
+	spec := ZCodeProviderSpec{
+		ProviderID: "f2a",
+		Name:       "free2api",
+		BaseURL:    "http://127.0.0.1:7864/v1",
+		APIType:    "openai",
+		Models:     []string{"zcode:glm-5.3-flash", "cn:hy3-free"},
+	}
+	changed, pid, _, err := UpsertZCodeProvider(p, spec)
+	if err != nil || !changed || pid != "f2a" {
+		t.Fatalf("建供应商失败 changed=%v pid=%s err=%v", changed, pid, err)
+	}
+	root := decodeZCode(t, string(mustRead(t, p)))
+	rules := providerRulesOf(t, root)
+	pr := findProviderRule(rules, "f2a")
+	if pr == nil {
+		t.Fatal("没写进 providerRules")
+	}
+	if got := strOf(pr["providerName"]); got != "free2api" {
+		t.Errorf("providerName = %q", got)
+	}
+	cfg := mapOf(pr["config"])
+	api := mapOf(cfg["api"])
+	if got := strOf(api["type"]); got != "openai-chat-completions" {
+		t.Errorf("api.type = %q，OpenAI 兼容应映射成 openai-chat-completions", got)
+	}
+	if got := strOf(api["baseUrl"]); got != "http://127.0.0.1:7864/v1" {
+		t.Errorf("baseUrl = %q", got)
+	}
+	// access.apiKey 必填非空：网关不鉴权也要有占位串
+	acc := mapOf(cfg["access"])
+	if strOf(acc["apiKey"]) == "" {
+		t.Error("apiKey 为空 —— ZCode 侧会校验，必须给占位串")
+	}
+	ids := strList(cfg["personalModelIds"])
+	order := strList(cfg["modelOrder"])
+	if len(ids) != 2 || ids[0] != "cn:hy3-free" || ids[1] != "zcode:glm-5.3-flash" {
+		t.Errorf("personalModelIds = %v，应排序去重", ids)
+	}
+	if len(order) != len(ids) {
+		t.Errorf("modelOrder 与 personalModelIds 应等长：%d vs %d", len(order), len(ids))
+	}
+}
+
+// TestUpsertZCodeProviderIdempotent 同参数再跑一次不追加、不改内容。
+func TestUpsertZCodeProviderIdempotent(t *testing.T) {
+	p := writeZCodeFixture(t)
+	spec := ZCodeProviderSpec{ProviderID: "f2a", Name: "free2api",
+		BaseURL: "http://127.0.0.1:7864/v1", APIType: "openai",
+		Models: []string{"zcode:glm-5.3-flash"}}
+	if _, _, _, err := UpsertZCodeProvider(p, spec); err != nil {
+		t.Fatal(err)
+	}
+	after1 := string(mustRead(t, p))
+	changed, _, _, err := UpsertZCodeProvider(p, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("第二次应报未改动")
+	}
+	if after2 := string(mustRead(t, p)); after2 != after1 {
+		t.Error("第二次不该改文件")
+	}
+	// providerId 留空 → 自动生成一个，但不能每次都生成新的（那就变成每次多点一次多一条）
+	_, autoPID, _, aerr := UpsertZCodeProvider(p, ZCodeProviderSpec{Name: "x",
+		BaseURL: "http://127.0.0.1:7864/v1", APIType: "openai",
+		Models: []string{"zcode:glm-5.3-flash"}})
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	if autoPID == "" || len(autoPID) <= len("free2api-") {
+		t.Fatalf("自动生成的 providerId 不合法：%q", autoPID)
+	}
+}
+
+// TestUpsertZCodeProviderRefusesHijack 同一个 providerId 已存在但指向别的地址时必须拒绝。
+// 这是防手滑的关键闸门：悄悄改掉用户正在用的供应商 baseUrl 会把它拉下线。
+func TestUpsertZCodeProviderRefusesHijack(t *testing.T) {
+	p := writeZCodeFixture(t) // 里面有 providerId=ocz，指向 opencode.ai
+	_, _, _, err := UpsertZCodeProvider(p, ZCodeProviderSpec{
+		ProviderID: "ocz", Name: "ocz 改名了",
+		BaseURL: "http://127.0.0.1:7864/v1", APIType: "openai",
+		Models: []string{"zcode:glm-5.3-flash"}})
+	if err == nil {
+		t.Fatal("指向别处的同名 provider 必须拒绝改写")
+	}
+	root := decodeZCode(t, string(mustRead(t, p)))
+	pr := findProviderRule(providerRulesOf(t, root), "ocz")
+	api := mapOf(mapOf(pr["config"])["api"])
+	if got := strOf(api["baseUrl"]); got != "https://opencode.ai/zen/v1" {
+		t.Errorf("原供应商的 baseUrl 被改了：%q", got)
+	}
+}
+
+// TestUpsertZCodeProviderUpdatesSameGateway 同 id 但本来指向本网关 → 允许覆盖
+// （改显示名 / 换 API 格式 / 换模型列表是我们自己的东西，放行）。
+func TestUpsertZCodeProviderUpdatesSameGateway(t *testing.T) {
+	p := writeZCodeFixture(t) // wbhub-agg 指向 7864
+	changed, _, _, err := UpsertZCodeProvider(p, ZCodeProviderSpec{
+		ProviderID: "wbhub-agg", Name: "free2api 聚合",
+		BaseURL: "http://127.0.0.1:7864/v1", APIType: "responses",
+		Models: []string{"zcode:glm-5.3-flash"}})
+	if err != nil || !changed {
+		t.Fatalf("同网关应允许覆盖 changed=%v err=%v", changed, err)
+	}
+	root := decodeZCode(t, string(mustRead(t, p)))
+	rules := providerRulesOf(t, root)
+	if n := countProvider(rules, "wbhub-agg"); n != 1 {
+		t.Fatalf("应就地覆盖不该追加，实际出现 %d 条", n)
+	}
+	pr := findProviderRule(rules, "wbhub-agg")
+	api := mapOf(mapOf(pr["config"])["api"])
+	if got := strOf(api["type"]); got != "openai-responses" {
+		t.Errorf("api.type = %q，responses 应映射成 openai-responses", got)
+	}
+	if got := strOf(pr["providerName"]); got != "free2api 聚合" {
+		t.Errorf("providerName = %q", got)
+	}
+}
+
+// TestUpsertZCodeProviderRejectsUnsupportedFormat 网关侧没接的格式要挡掉。
+func TestUpsertZCodeProviderRejectsUnsupportedFormat(t *testing.T) {
+	p := writeZCodeFixture(t)
+	for _, f := range []string{"anthropic", "gemini", ""} {
+		if _, _, _, err := UpsertZCodeProvider(p, ZCodeProviderSpec{
+			ProviderID: "x", Name: "x", BaseURL: "http://127.0.0.1:7864/v1",
+			APIType: f, Models: []string{"zcode:glm-5.3-flash"}}); err == nil {
+			t.Errorf("格式 %q 未接入却放行了", f)
+		}
+	}
+}
+
+// TestZCodeFormatNoteOpenAIAndResponses 网关格式 → ZCode api.type 的映射口径。
+func TestZCodeFormatNoteOpenAIAndResponses(t *testing.T) {
+	if _, ok := zcodeFormatNote("openai"); !ok {
+		t.Error("OpenAI 兼容应可用")
+	}
+	if _, ok := zcodeFormatNote("responses"); !ok {
+		t.Error("Responses 应可用")
+	}
+	if got := zcodeAPITypeOf("responses"); got != "openai-responses" {
+		t.Errorf("responses → %q", got)
+	}
+	if got := zcodeAPITypeOf("openai"); got != "openai-chat-completions" {
+		t.Errorf("openai → %q", got)
+	}
+}
+
+func mapOf(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	if m == nil {
+		m = map[string]any{}
+	}
+	return m
+}
+
+func strOf(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func providerRulesOf(t *testing.T, root map[string]any) []any {
+	t.Helper()
+	return mapOf(mapOf(root["config"])["providerConfigRules"])["providerRules"].([]any)
+}
+
+func findProviderRule(rules []any, pid string) map[string]any {
+	for _, it := range rules {
+		pr, ok := it.(map[string]any)
+		if ok && strOf(pr["providerId"]) == pid {
+			return pr
+		}
+	}
+	return nil
+}
+
+func countProvider(rules []any, pid string) int {
+	n := 0
+	for _, it := range rules {
+		if pr, ok := it.(map[string]any); ok && strOf(pr["providerId"]) == pid {
+			n++
+		}
+	}
+	return n
+}

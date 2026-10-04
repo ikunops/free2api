@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +38,59 @@ import (
 //     map 增删改，未知字段原样保留。
 //
 // 已实证：ZCode 启动时重建规则表但**不覆盖已存在的规则**，所以写进去就能留住。
+
+// —— 代建 ZCode 供应商 ——
+//
+// 为什么加这个：原来这张卡只做「上下文同步」，前提是用户已经在 ZCode 里手建了供应商
+// 指向本网关。可 provider_config.json 的结构（抓包 + 读本机实证）是完全可写的：
+// providerRules 每条 = {providerId, providerName, config:{group, access:{type,apiKey},
+// api:{type,baseUrl}, personalModelIds, modelOrder}}。字段与 UI 手建的一模一样，
+// 没有隐藏字段。所以「建供应商」和「同步上下文」合成一次写入才是真正的一键。
+//
+// 三条实测约束（都验过，别凭印象改）：
+//  1. access.apiKey 必填且非空 —— 网关不鉴权也要填占位串，否则 ZCode 侧校验不过。
+//  2. providerId 用户可自定义（见过 "wbhub-agg"、"new-provider-4" 这种手写串），
+//     不强制 UUID。留空则生成一个。
+//  3. personalModelIds 与 modelOrder 内容相同（读本机 6 个 provider 全部一致），
+//     ZCode 用前者判「这个 provider 有哪些模型」，后者定显示顺序。
+//
+// 「模型前缀」对 ZCode 不存在：它显示的就是 personalModelIds 里的原样名字，而那些名字
+// 已经带上网关侧 /v1/models 输出时加的前缀了。所以这里不提供前缀输入框——给了就是
+// 一个改了不生效的假字段。
+
+// ZCodeProviderSpec 一键建供应商的入参。前端表单原样传上来。
+type ZCodeProviderSpec struct {
+	ProviderID string `json:"provider_id"`
+	Name       string `json:"name"`
+	BaseURL    string `json:"base_url"`
+	// APIType 网关格式 id（openai / responses）→ ZCode 的 api.type。
+	APIType string   `json:"api_type"`
+	APIKey  string   `json:"api_key"`
+	Models  []string `json:"models"`
+}
+
+// zcodeAPITypeOf 网关格式 id → ZCode api.type。
+// 网关侧 anthropic / gemini 还是「待接入」，这里不映射——给了 ZCode 也发不通。
+func zcodeAPITypeOf(gwFormat string) string {
+	switch gwFormat {
+	case "responses":
+		return "openai-responses"
+	default:
+		return "openai-chat-completions"
+	}
+}
+
+// zcodeFormatNote 某个网关格式在 ZCode 侧能不能用（前端置灰 + 说明用）。
+func zcodeFormatNote(gwFormat string) (note string, ok bool) {
+	switch gwFormat {
+	case "openai":
+		return "ZCode 以 openai-chat-completions 直连本网关。", true
+	case "responses":
+		return "ZCode 以 openai-responses 直连本网关（与 Codex 走同一条路）。", true
+	default:
+		return "网关侧这个格式还没接入（" + gwFormat + "），ZCode 暂时接不上。", false
+	}
+}
 
 // ZCodeConfigPath 解析 ZCode 的 provider_config.json 路径。
 // 优先级：显式覆盖 > ZCODE_HOME > ~/.zcode（Windows 与 Unix 同口径）。
@@ -378,6 +433,173 @@ func PlanZCode(path, baseURL string, meta map[string]ZCodeModelMeta) (*ZCodePlan
 	return p, nil
 }
 
+// UpsertZCodeProvider 在 provider_config.json 里建或更新一个指向本网关的供应商。
+// 返回是否真的改了内容、该 providerId、以及落盘路径。
+//
+// 幂等：同 providerId 再调一次就是覆盖（改名字/换格式/换模型列表），不会重复追加。
+// providerId 已存在但 baseUrl 指向别处时**不覆盖**——那是用户在 ZCode 里正经用的供应商，
+// 悄悄改掉它的地址会把别人拉下线。改名/改格式没问题（是我们自己的东西），改 baseUrl 才拦。
+func UpsertZCodeProvider(path string, spec ZCodeProviderSpec) (bool, string, string, error) {
+	pid := strings.TrimSpace(spec.ProviderID)
+	if pid == "" {
+		// ZCode 允许自定义 id（实例："wbhub-agg"），留空就生成一个短 id。
+		pid = "free2api-" + randHex(6)
+	}
+	name := strings.TrimSpace(spec.Name)
+	if name == "" {
+		name = "free2api"
+	}
+	apiType := zcodeAPITypeOf(spec.APIType)
+	baseURL := strings.TrimSpace(spec.BaseURL)
+	if baseURL == "" {
+		return false, pid, path, fmt.Errorf("Base URL 不能为空")
+	}
+	if _, ok := providerFormatUsable(spec.APIType); !ok {
+		return false, pid, path, fmt.Errorf("网关格式 %s 尚未接入，ZCode 接不上", spec.APIType)
+	}
+	// access.apiKey 必填非空（实测 ZCode 侧会校验），网关不鉴权也要给占位串。
+	apiKey := strings.TrimSpace(spec.APIKey)
+	if apiKey == "" {
+		apiKey = "free2api-local"
+	}
+	models := append([]string(nil), spec.Models...)
+	sortStrings(models)
+	models = dedupStrings(models)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, pid, path, fmt.Errorf("读取 %s 失败：%w", path, err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return false, pid, path, fmt.Errorf("JSON 解析失败：%w", err)
+	}
+	cfg, _ := root["config"].(map[string]any)
+	if cfg == nil {
+		cfg = map[string]any{}
+		root["config"] = cfg
+	}
+	pcr, _ := cfg["providerConfigRules"].(map[string]any)
+	if pcr == nil {
+		pcr = map[string]any{}
+		cfg["providerConfigRules"] = pcr
+	}
+	rules, _ := pcr["providerRules"].([]any)
+
+	found := -1
+	var prevName, prevBase string
+	for i, it := range rules {
+		pr, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, _ := pr["providerId"].(string); id != pid {
+			continue
+		}
+		found = i
+		prevName, _ = pr["providerName"].(string)
+		c, _ := pr["config"].(map[string]any)
+		api, _ := c["api"].(map[string]any)
+		prevBase, _ = api["baseUrl"].(string)
+		break
+	}
+	if found >= 0 && prevBase != "" && !sameGateway(prevBase, baseURL) {
+		return false, pid, path, fmt.Errorf(
+			"供应商 %s（%s）已经存在，但它指向 %s 而不是本网关 %s。为避免改掉你正在用的供应商，已放弃；请换个 providerId。",
+			pid, prevName, prevBase, baseURL)
+	}
+
+	entry := map[string]any{
+		"providerId":   pid,
+		"providerName": name,
+		"config": map[string]any{
+			"group": "standard-personal",
+			"access": map[string]any{
+				"type":   "api-key",
+				"apiKey": apiKey,
+			},
+			"api": map[string]any{
+				"type":    apiType,
+				"baseUrl": baseURL,
+			},
+			"personalModelIds": toAnyList(models),
+			"modelOrder":       toAnyList(models),
+		},
+	}
+	if found >= 0 {
+		rules[found] = entry
+	} else {
+		rules = append(rules, entry)
+		pcr["providerRules"] = rules
+	}
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return false, pid, path, fmt.Errorf("序列化失败：%w", err)
+	}
+	after := string(out) + "\n"
+	if after == string(raw) {
+		return false, pid, path, nil
+	}
+	if err := writeZCodeFile(path, string(raw), after); err != nil {
+		return false, pid, path, err
+	}
+	return true, pid, path, nil
+}
+
+// providerFormatUsable 网关格式 id 在 ZCode 侧能不能用（ok=false 时 note 说明原因）。
+func providerFormatUsable(gwFormat string) (note string, ok bool) {
+	return zcodeFormatNote(gwFormat)
+}
+
+func dedupStrings(in []string) []string {
+	out := in[:0:0]
+	seen := map[string]bool{}
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func toAnyList(in []string) []any {
+	out := make([]any, 0, len(in))
+	for _, s := range in {
+		out = append(out, s)
+	}
+	return out
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "0000"
+	}
+	return hex.EncodeToString(b)
+}
+
+// writeZCodeFile 备份原内容再原子替换。与 ApplyZCode 同一条路径，共用备份格式。
+func writeZCodeFile(path, before, after string) error {
+	if before != "" {
+		bak := fmt.Sprintf("%s.bak-%s", path, time.Now().Format("20060102-150405"))
+		if err := os.WriteFile(bak, []byte(before), 0o600); err != nil {
+			return fmt.Errorf("写备份失败：%w", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("建目录失败：%w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(after), 0o600); err != nil {
+		return fmt.Errorf("写临时文件失败：%w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("替换 %s 失败：%w", path, err)
+	}
+	return nil
+}
 func actionOf(hasRule bool) string {
 	if hasRule {
 		return "update"

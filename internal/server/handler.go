@@ -228,6 +228,7 @@ func NewHandler(cfg Config) *Handler {
 		h.mux.HandleFunc("GET /admin/zcode", h.withLocalOrAuth(h.adminZCodeGet))
 		h.mux.HandleFunc("POST /admin/zcode/preview", h.withLocalOrAuth(h.adminZCodePreview))
 		h.mux.HandleFunc("POST /admin/zcode/apply", h.withLocalOrAuth(h.adminZCodeApply))
+		h.mux.HandleFunc("POST /admin/zcode/create", h.withLocalOrAuth(h.adminZCodeCreate))
 		// 定时任务可见性（读 config.json schedule 段）+ 开关（写回配置，重启生效）。
 		h.mux.HandleFunc("GET /admin/schedule", h.withLocalOrAuth(h.adminScheduleGet))
 		h.mux.HandleFunc("POST /admin/schedule", h.withLocalOrAuth(h.adminSchedulePut))
