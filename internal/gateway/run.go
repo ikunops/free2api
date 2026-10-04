@@ -295,6 +295,8 @@ func Start(opts Options) (*Instance, error) {
 		WbDeskAuthDir:    cfg.Source.WbDeskAuthDir,
 		// Codex 一键接入：config.toml 路径覆盖（空 = $CODEX_HOME / ~/.codex）。
 		CodexConfigPath: cfg.CodexConfigPath,
+		// ZCode 一键接入：provider_config.json 路径覆盖（空 = $ZCODE_HOME / ~/.zcode）。
+		ZCodeConfigPath: cfg.ZCodeConfigPath,
 		// 输出侧：热可改（模型前缀即时作用于 /v1/models 与入站解析；
 		// 费率提示即时作用于模型描述前缀）。
 		Output: outputStore,

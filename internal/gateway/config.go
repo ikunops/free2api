@@ -63,6 +63,10 @@ type Config struct {
 	// 只有 /admin/codex* 用它（Codex 没有「自定义供应商」入口，只能代它改文件）。
 	CodexConfigPath string `json:"codex_config_path"`
 
+	// ZCode 一键接入：provider_config.json 路径覆盖；空 = $ZCODE_HOME/v2/provider_config.json
+	// 或 ~/.zcode/v2/provider_config.json。只有 /admin/zcode* 用它。
+	ZCodeConfigPath string `json:"zcode_config_path"`
+
 	Global struct {
 		// Enabled global realm 路由开关。缺省 true：Realm() 正常把 realm=global/
 		// domain=workbuddy.ai 的账号判为 global 并路由 global base/路径。

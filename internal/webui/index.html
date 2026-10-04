@@ -671,6 +671,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
+  zcode: null, zcodePlan: null, zcodeShowAll: false,
   stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
@@ -2381,6 +2382,7 @@ function viewOutput(){
       '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>');
   html += chanCard();
   html += codexCard();
+  html += zcodeCard();
   var avail = o.available_models || [];
   var entAvail = entitledOf(avail);
   var sel = S.modelSel || {};
@@ -3153,6 +3155,7 @@ async function loadOrigins(){ try { S.origins = await api("/admin/sources/origin
 async function loadOutput(){
   try { S.out = await api("/admin/output"); } catch (e) { S.out = null; }
   try { S.codex = await api("/admin/codex"); } catch (e) { S.codex = null; }
+  try { S.zcode = await api("/admin/zcode"); } catch (e) { S.zcode = null; }
   // 域作用域：新清单（国际版用 global:<裸 id> 自己的键）默认「分开控制」。旧存档没标过
   // 这个键也按勾上显示——面板里国际版该开的行会显示成已勾（后端按旧语义算的 selected），
   // 保存后集合不变，只是从此两域各一把开关。用户取消勾选即回到「裸名字同时管两域」。
@@ -3787,7 +3790,126 @@ async function codexPreview(){
     else toast("info", "配置已是目标状态，无需写入", 3200);
   } catch (e) { toast("err", e.message || String(e)); }
 }
-/* codexApply 落盘（后端先备份）。成功后重新拉一次现状，把「当前值」刷新成新的。 */
+/* zcodeCard —— ZCode 一键接入（上下文窗口同步）。
+   为什么需要这张卡：ZCode **不读** /v1/models 的上下文字段。抓包实证——诊断探针挂在
+   7864 上记录了 10:17~10:18 的全部目录请求，UA 有 Python-urllib（部署自检）、
+   Chrome/134（管理页）、CodexPlusPlus（Codex 客户端）各若干次，**ZCode 一次都没有**。
+   它显示的上下文窗口来自 ~/.zcode/v2/provider_config.json 的
+   config.modelConfigRules.providerModelRules[].config.properties.contextWindow。
+   之前「有的 1M 有的 200K」的原因也在这：cn:deepseek-v4.1-flash-x0.11 是**蒙对的**
+   （ZCode 内置正则 .*deepseek-v4-flash(?:[.\-:/\[].*)? 命中，走它自己那份 models.dev 快照），
+   其余自建 provider 的规则全都没配 contextWindow，于是落进 200000 兜底。
+
+   实测 ZCode 启动时会重写这张表（127 条规范化回 126 条），但**不覆盖已存在的规则**——
+   写入的单条 contextWindow=1000000 在重启后仍在。所以同步一次即可长期生效。 */
+function zcodeCard(){
+  var z = S.zcode;
+  if (!z) return card("ZCode 一键接入", "正在读取 ZCode 配置…", '<div class="empty">读取中…</div>');
+  var body = "";
+  var rows = [
+    ["配置文件", '<span class="mono">' + esc(z.path) + "</span>"],
+    ["状态", z.read_error ? '<span class="tag warn">读取失败</span>' : (z.exists ? '<span class="tag ok">已找到</span>' : '<span class="tag mut">未找到</span>')]
+  ];
+  if (z.read_error) rows.push(["错误", '<span class="tag warn">' + esc(z.read_error) + "</span>"]);
+  rows.push(["网关地址", '<span class="mono">' + esc(z.base_url || "") + "</span>"]);
+  rows.push(["本网关的模型", String(z.catalog_models || 0) + " 个"]);
+  var matched = z.matched_providers || 0;
+  rows.push(["指向本网关的供应商", matched
+    ? '<span class="tag ok">' + matched + " 个</span>"
+    : '<span class="tag warn">0 个</span>']);
+  body += kv(rows);
+
+  if (!z.exists || !matched){
+    body += '<div class="sep"></div><div class="hint">' + (matched
+      ? "还没有任何 ZCode 供应商指向本网关。先在 ZCode 里「添加供应商」，Base URL 填上面的网关地址，再回来点同步。"
+      : "在 ZCode 的「设置 → 模型供应商」里把某个供应商的 Base URL 填成 <b>" + esc(z.base_url || "") +
+        "</b>，本卡才能认出来并同步上下文窗口。") + "</div>";
+    return card("ZCode 一键接入", "把本网关模型的真实上下文窗口写进 ZCode 的供应商配置。", body);
+  }
+
+  // provider 清单：一眼看出哪些会被改、哪些不碰
+  var provs = z.providers || [];
+  var hit = provs.filter(function(p){ return p.matched; });
+  var miss = provs.filter(function(p){ return !p.matched; });
+  var provRows = hit.map(function(p){
+    return "<tr><td>" + esc(p.name || p.id) + '</td><td class="mono">' + esc(p.base_url) + "</td>" +
+      '<td class="num">' + p.model_count + "</td>" +
+      '<td><span class="tag ok">会同步</span></td></tr>';
+  });
+  if (miss.length){
+    provRows.push('<tr><td colspan="4" class="dim" style="padding-top:8px">以下供应商直连官方上游，不动：' +
+      esc(miss.map(function(p){ return p.name || p.id; }).join("、")) + "</td></tr>");
+  }
+  body += '<div class="sep"></div><div class="f"><label class="f">识别到的供应商</label>' +
+    '<div class="hint">按 <b>Base URL</b> 认，不按名字——你可以给它们起任意名字。</div>' +
+    '<div class="tablewrap"><table><thead><tr><th>名称</th><th>Base URL</th><th class="num">模型</th><th>处理</th></tr></thead>' +
+    "<tbody>" + provRows.join("") + "</tbody></table></div></div>";
+
+  // 预览
+  if (S.zcodePlan){
+    var pl = S.zcodePlan;
+    if (pl.changed){
+      var chg = pl.changes || [];
+      var rows2 = chg.slice(0, S.zcodeShowAll ? chg.length : 12).map(function(c){
+        return "<tr><td class='mono'>" + esc(c.model_id) + "</td><td>" + esc(c.field) + "</td>" +
+          '<td class="num dim">' + (c.before === null || c.before === undefined ? "—" : esc(String(c.before))) + "</td>" +
+          '<td class="num">' + esc(String(c.after)) + "</td>" +
+          '<td>' + (c.action === "create" ? '<span class="tag mut">新建</span>' : '<span class="tag warn">改</span>') + "</td></tr>";
+      });
+      body += '<div class="sep"></div><div class="f"><label class="f">改动预览</label>' +
+        '<div class="hint">共 ' + chg.length + " 处改动（ZCode 读不到 /v1/models 的上下文字段，只能写它的配置）。" +
+        (pl.backup_path ? "落盘前会备份到 " + esc(pl.backup_path) : "") + "</div>" +
+        '<div class="tablewrap"><table><thead><tr><th>模型</th><th>字段</th><th class="num">改前</th><th class="num">改后</th><th>动作</th></tr></thead>' +
+        "<tbody>" + rows2.join("") +
+        (chg.length > 12 ? '<tr><td colspan="5" class="dim"><button class="gh" data-action="zcode-toggle-all" style="margin-top:6px">' +
+          (S.zcodeShowAll ? "收起" : "展开全部 " + chg.length + " 处") + "</button></td></tr>" : "") +
+        "</tbody></table></div></div>";
+    } else {
+      body += '<div class="sep"></div><div class="hint">已是最新，所有模型的上下文窗口都与网关一致。</div>';
+    }
+  }
+
+  var planState = S.zcodePlan
+    ? (S.zcodePlan.changed ? '<span class="tag warn">改动预览已生成，待确认写入</span>'
+                           : '<span class="tag ok">已是最新，无需写入</span>')
+    : "";
+  body += '<div class="sep"></div><div class="row">' +
+    '<button class="gh withico" data-action="zcode-preview" title="算出逐条改动，不落盘">' + svg("refresh") + "预览改动</button>" +
+    (S.zcodePlan && S.zcodePlan.changed
+      ? '<button class="pri withico" data-action="zcode-apply" title="写入 provider_config.json（先自动备份）">' + svg("check") + "确认写入</button>"
+      : "") +
+    planState +
+    '<span class="hint" style="margin:0">写完重启 ZCode 生效。已存在的规则不会被 ZCode 覆盖。</span></div>';
+
+  return card("ZCode 一键接入",
+    "ZCode 不读 /v1/models 的上下文字段，这里把真实值写进它的供应商配置。",
+    body);
+}
+/* zcodePreview 拉逐条 diff，不落盘。 */
+async function zcodePreview(){
+  try {
+    S.zcodePlan = await api("/admin/zcode/preview", { method: "POST", body: {} });
+    S.zcodeShowAll = false;
+    render();
+    if (S.zcodePlan && S.zcodePlan.changed) toast("ok", "已生成改动预览，确认无误后点「确认写入」", 4200);
+    else toast("info", "上下文已是最新，无需写入", 3200);
+  } catch (e) { toast("err", e.message || String(e)); }
+}
+/* zcodeApply 落盘（后端先备份）。成功后重拉现状，「当前值」立刻变新。 */
+async function zcodeApply(){
+  if (!S.zcodePlan) return;
+  try {
+    var r = await api("/admin/zcode/apply", { method: "POST", body: {} });
+    // 别把计划置 null：卡片靠 S.zcodePlan 判断「已是最新 / 待确认」，置 null 会让状态行
+    // 整个消失，用户只能靠硬刷新才知道写成功了（这正是之前反复出现的那个刺头）。
+    // 后端 apply 会回一份最新的 plan（changed=false），留着它就地显示「已是最新」。
+    S.zcodePlan = (r && r.plan) ? r.plan : { changed: false, changes: [] };
+    S.zcodeShowAll = false;
+    await loadOutput();
+    render();
+    toast("ok", r && r.message ? r.message : "已写入");
+  } catch (e) { toast("err", e.message || String(e)); }
+}/* codexApply 落盘（后端先备份）。成功后重新拉一次现状，把「当前值」刷新成新的。 */
 async function codexApply(){
   if (!S.codexPlan) return;
   try {
@@ -4163,6 +4285,9 @@ async function actOn(t){
     if (act === "save-out") return saveOutput();
     if (act === "codex-preview") return codexPreview();
     if (act === "codex-apply") return codexApply();
+    if (act === "zcode-preview") return zcodePreview();
+    if (act === "zcode-apply") return zcodeApply();
+    if (act === "zcode-toggle-all") { S.zcodeShowAll = !S.zcodeShowAll; return render(); }
     if (act === "save-models") return saveModels();
     if (act === "model-all") return setModelSel(function(){ return true; });
     if (act === "model-none") return setModelSel(function(){ return false; });

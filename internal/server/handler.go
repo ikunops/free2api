@@ -79,6 +79,9 @@ type Config struct {
 	// CodexConfigPath Codex config.toml 路径覆盖；空 = $CODEX_HOME/config.toml
 	// 或 ~/.codex/config.toml。只被 /admin/codex* 用来「一键写入 Codex 配置」。
 	CodexConfigPath string
+	// ZCodeConfigPath ZCode provider_config.json 路径覆盖；空 = $ZCODE_HOME/v2/provider_config.json
+	// 或 ~/.zcode/v2/provider_config.json。只被 /admin/zcode* 用。
+	ZCodeConfigPath string
 
 	// ModelPrefix / RateHint 输出侧默认值：只在没挂 Output 存储时生效
 	// （嵌入形态、单元测试）。正常启动走 Output（可热改）。
@@ -219,6 +222,12 @@ func NewHandler(cfg Config) *Handler {
 		h.mux.HandleFunc("POST /admin/codex/apply", h.withLocalOrAuth(h.adminCodexApply))
 		// Codex 反向操作：还原官方默认（删顶层 model_provider，网关模型名一并删）。
 		h.mux.HandleFunc("POST /admin/codex/detach", h.withLocalOrAuth(h.adminCodexDetach))
+		// ZCode 一键接入：ZCode 不读 /v1/models 的上下文字段（抓包实证它一次都没请求过），
+		// 显示值来自 ~/.zcode/v2/provider_config.json 的 modelConfigRules。
+		// 所以只能代它把 contextWindow / maxOutputTokens 写进去。
+		h.mux.HandleFunc("GET /admin/zcode", h.withLocalOrAuth(h.adminZCodeGet))
+		h.mux.HandleFunc("POST /admin/zcode/preview", h.withLocalOrAuth(h.adminZCodePreview))
+		h.mux.HandleFunc("POST /admin/zcode/apply", h.withLocalOrAuth(h.adminZCodeApply))
 		// 定时任务可见性（读 config.json schedule 段）+ 开关（写回配置，重启生效）。
 		h.mux.HandleFunc("GET /admin/schedule", h.withLocalOrAuth(h.adminScheduleGet))
 		h.mux.HandleFunc("POST /admin/schedule", h.withLocalOrAuth(h.adminSchedulePut))
