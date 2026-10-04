@@ -232,6 +232,9 @@ func NewHandler(cfg Config) *Handler {
 		// 定时任务可见性（读 config.json schedule 段）+ 开关（写回配置，重启生效）。
 		h.mux.HandleFunc("GET /admin/schedule", h.withLocalOrAuth(h.adminScheduleGet))
 		h.mux.HandleFunc("POST /admin/schedule", h.withLocalOrAuth(h.adminSchedulePut))
+		// 改网关密钥（生成/设置/清空）：落盘 config.json，重启生效。
+		// 必须 withLocalOrAuth 而不是 withAuth —— 一把还没生效的密钥无法鉴权自己。
+		h.mux.HandleFunc("POST /admin/api-key", h.withLocalOrAuth(h.adminAPIKeyPut))
 		// 优雅停机（桌面控制台的「停止网关」按钮走这里）。
 		// 只在注入了 Shutdown 时才注册：嵌入式用法没生命周期可停，不该暴露这个口子。
 		if h.cfg.Shutdown != nil {

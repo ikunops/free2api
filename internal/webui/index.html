@@ -130,6 +130,27 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+/* 接入信息四格：比 kv 行距小一点，四列才不显得散；每格给个左框线做视觉分隔，
+ * 免得四个 URL 竖排下来看着像一长条流水账。 */
+/* 加工设置 / 接入信息 左右分栏。左栏是"要改的东西"，右栏是"改完的结果"。
+   1.25fr 让左栏略宽——左栏有 4 个可编辑控件，右栏是只读展示。 */
+.out2col{display:grid;grid-template-columns:1.25fr 1fr;gap:22px;align-items:start}
+@media(max-width:1100px){.out2col{grid-template-columns:1fr;gap:16px}}
+.kvgrid{gap:14px 0;margin-bottom:0}
+.kvgrid .kvcell{padding:2px 16px 2px 0;min-width:0}
+.kvgrid .kvcell+.kvcell{border-left:1px solid var(--line);padding-left:16px}
+.kvcell .k{font-size:11px;color:var(--dim);letter-spacing:.3px;margin-bottom:3px}
+.kvcell .v{font-size:13px;word-break:break-all;line-height:1.5}
+@media(max-width:1000px){
+  .kvgrid{grid-template-columns:repeat(2,1fr);gap:12px 0}
+  .kvgrid .kvcell:nth-child(odd){padding-left:0}
+  .kvgrid .kvcell:nth-child(even){padding-left:16px}
+}
+@media(max-width:720px){
+  .kvgrid{grid-template-columns:1fr;gap:10px}
+  .kvgrid .kvcell{border-left:0;padding:0 0 10px!important}
+  .kvgrid .kvcell+.kvcell{border-top:1px solid var(--line);padding-top:10px}
+}
 @media(max-width:1000px){.grid4,.grid3,.grid2{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.grid4,.grid3,.grid2{grid-template-columns:1fr}
   .app{grid-template-columns:1fr}.side{position:static;height:auto}.main{padding:20px}}
@@ -678,7 +699,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, cardOpen: loadCardOpen(),
+  zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, fmtHelp: false, cardOpen: loadCardOpen(),
   stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
@@ -740,6 +761,32 @@ function producerRealms(p){
     cnt[r] = (cnt[r] || 0) + 1;
   }
   return REALM_ORDER.filter(function(r){ return cnt[r]; }).map(function(r){ return { id: r, n: cnt[r] }; });
+}
+/* gwKeySet 生成/清空网关密钥。
+ *
+ * 落盘 ≠ 生效：后端写的是 config.json，当前进程仍用启动时的旧值。所以成功后
+ * 一定要说清"重启后生效"，并把新值先存进 S.apiKey（否则这一页的其它请求还会
+ * 按旧口径发头）。不清 S.apiKey 的话，用户点完看着没反应，再试请求拿到 401，
+ * 会以为按钮坏了。
+ */
+async function gwKeySet(body){
+  var gen = !!body.generate;
+  var msg = gen ? "生成一把新密钥？" : "清空密钥，回到本机免密钥直连？";
+  if (!confirm(msg)) return;
+  try {
+    var r = await api("/admin/api-key", { method: "POST", body: body });
+    S.apiKey = (r && r.api_key) || "";
+    S.keyReveal = gen;                 // 刚生成的直接显示，省一次点击
+    toast("ok", gen ? "已生成并写入 config.json，重启网关后生效" : "已清空，重启网关后生效", 6000);
+    render();
+  } catch (e){
+    toast("err", "设置失败：" + (e && e.message || e), 6000);
+  }
+}
+/* copyBtn 一个独立的复制按钮（copySpan 是行内文字链接，这里要的是带文案的小按钮）。 */
+function copyBtn(msg, text){
+  return '<button class="gh tiny" data-action="copy" data-copy="' + esc(text) + '" title="复制到剪贴板">' +
+    svg("copy") + "复制</button>";
 }
 function copySpan(text, label){
   return '<span class="mono copy" data-copy="' + esc(text) + '">' + esc(label || text) + ' ' + svg("copy") + '</span>';
@@ -884,6 +931,43 @@ function mstrip(pairs){
       (p[4] === "avg" ? '<span class="avgmark">均值</span>' : '') +
       '</div><div class="mv">' + v + (p[3] ? liveDelta(p[3]) : '') + '</div></div>';
   }).join('') + '</div>';
+}
+/* kvcell 竖排单格（标题在上、值在下、说明再下），给"接入信息"这类要横排展示的信息用。
+ * 不用 kv() 的两列行内写法：行内排版每格高度被内容顶得参差不齐，四列并排时
+ * 说明文字会互相错位。竖排每格独立对齐，横排才整齐。 */
+/* gwKeyCell 网关密钥格：空态给「生成」，有值给复制/查看/清空。
+ *
+ * 为什么密钥这一格不一样：其它三格是**推导出来的**（跟着格式与端口自动变），
+ * 只有密钥是**要用户做决定**的——不设 = 本机直连免密钥，设了 = 客户端必须带。
+ * 空态写「未设置」只是个描述，用户想开启鉴权时不知道从哪下手，所以直接给按钮。
+ *
+ * 注意落盘 ≠ 生效：后端写的是 config.json，当前进程还在用启动时的旧值，
+ * 所以操作后必须提示「重启网关后生效」，否则用户点完立刻试请求拿到 401，
+ * 会以为按钮是坏的。 */
+function gwKeyCell(k){
+  var has = !!(S.apiKey && S.apiKey.length);
+  var val = has
+    ? '<span class="mono" style="word-break:break-all">' + esc(S.keyReveal ? S.apiKey : S.apiKey.slice(0, 6) + "••••••" + S.apiKey.slice(-4)) + "</span>"
+    : '<span class="dim">未设置</span>';
+  var acts = has
+    ? '<div class="row" style="gap:6px;margin-top:5px">' +
+        '<button class="gh tiny" data-action="gwkey-reveal" title="显示 / 隐藏">' + (S.keyReveal ? "隐藏" : "显示") + '</button>' +
+        '<button class="gh tiny warn-gh" data-action="gwkey-clear" title="清空 api_key，回到本机免密钥直连">清空</button>' +
+        copyBtn("已复制密钥", S.apiKey) +
+      "</div>"
+    : '<div class="row" style="gap:6px;margin-top:5px">' +
+        '<button class="gh tiny" data-action="gwkey-gen" title="生成一把随机密钥写进 config.json，重启网关后客户端需要带它">' +
+          svg("key") + '生成密钥</button></div>';
+  return '<div class="kvcell"><div class="k">' + esc(k) + "</div>" +
+         '<div class="v">' + val + "</div>" + acts +
+         '<div class="hint" style="margin:4px 0 0">' +
+         (has ? "客户端需带 Authorization: Bearer &lt;密钥&gt;" : "本机直连默认免密钥；远程访问时再生成。") +
+         "</div></div>";
+}function kvcell(k, v, hint){
+  return '<div class="kvcell"><div class="k">' + esc(k) + "</div>" +
+         '<div class="v">' + v + "</div>" +
+         (hint ? '<div class="hint" style="margin:2px 0 0">' + hint + "</div>" : "") +
+         "</div>";
 }
 function kv(pairs){
   return '<div class="kv">' + pairs.map(function(p){
@@ -2408,28 +2492,44 @@ function viewOutput(){
   var rateOpts = rateOptions(cfg.rate_hint);
   var cur = (o.formats || []).filter(function(f){ return f.id === cfg.format; })[0] || {};
   var html = head("输出 API", "网关对外长什么样由这里决定：格式、端口、模型前缀、费率后缀。");
-  html += card("接入信息", "这两项填进客户端即可；改端口需要重启网关生效。",
-    kv([
-      ["Base URL", copySpan(base + "/v1"), true],
-      ["对话接口", copySpan(base + (cur.chat_path || "/v1/chat/completions")), true],
-      ["模型列表", copySpan(base + "/v1/models"), true],
-      ["网关密钥", S.apiKey ? S.apiKey : "未设置（默认本机直连免密钥）"]
-    ]));
-  html += card("加工设置", "选了格式、端口、后缀之后保存，前缀与费率后缀立即生效（热更新，不用重启）。",
-    '<div class="grid2">' +
-      '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select>' +
-        '<div class="hint">' + esc(cur.note || "") + fmtHintAll() + '</div>' +
-        '<div class="hint" style="margin-top:5px">客户端怎么选：<b>Codex</b>（v0.151 起只认 Responses，' +
-          'wire_api="chat" 已被官方下线）→ <b>OpenAI Responses</b>；' +
-          '<b>Qoder / Cursor / Cline</b> 等 → <b>OpenAI 兼容</b>；<b>Claude Code</b> → Anthropic（未接入）。</div></div>' +
-      '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7863">' +
-        '<div class="hint">写入 config.json 的 listen 键，需要重启网关生效；当前进程仍听在原端口。</div></div>' +
-      '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-">' +
-        '<div class="hint">给模型名加个前缀，方便在客户端里区分来自哪个网关；冒号会被自动剔除。</div></div>' +
-      '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select>' +
-        '<div class="hint">后缀直接加在对外模型名尾巴上：免费模型 -free、收费模型 -x0.11；' +
-          '在客户端的模型选择器里看名字就能分辨，不影响计费。</div></div>' +
+  // 「加工设置 + 接入信息」合成一张卡、左右分栏。
+  //
+  // 为什么左右而不是上下：这两组是**同一次操作的两面**——左边改格式/前缀/后缀，
+  // 右边那三个 URL 和密钥就跟着变。上下排会让人以为要先改完左边、再去右边看，
+  // 而且左边字段的说明文字长、两栏并排时总宽度利用率反而更高（原来单栏时
+  // 「输出格式」下面塞了三段解释，把整张卡撑得横跨半屏，右边全空着）。
+  // 输出格式的说明已精简成一句 + 一个可展开的「怎么选」，不再糊满一列。
+  html += card("加工设置 · 接入信息", "左边改格式与命名，右边的地址与密钥立刻跟着变；保存后前缀与费率后缀热更新，端口需重启。",
+    '<div class="out2col">' +
+      '<div>' +
+        '<div class="grid3">' +
+          '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select>' +
+            '<div class="hint">' + esc(cur.note || "") + '</div></div>' +
+          '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-">' +
+            '<div class="hint">给模型名加前缀，便于在客户端区分来自哪个网关；冒号会自动剔除。</div></div>' +
+          '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select>' +
+            '<div class="hint">免费 -free、收费 -x0.11，直接显示在模型名尾巴上。</div></div>' +
+        '</div>' +
+        '<div class="sep"></div>' +
+        '<div class="grid2">' +
+          '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7864">' +
+            '<div class="hint">写进 config.json 的 listen，<b>需重启</b>生效；当前进程仍听在原端口。</div></div>' +
+          '<div class="field"><label class="f">客户端怎么选格式</label>' +
+            '<div class="hint" style="margin:0"><b>Codex</b> → OpenAI Responses（v0.151 起只认它）；' +
+            '<b>Qoder / Cursor / Cline</b> → OpenAI 兼容。' +
+            '<button class="gh tiny" data-action="fmt-help" style="margin-left:4px">' + svg("eye") + '更多</button></div></div>' +
+        '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="grid2 kvgrid">' +
+          kvcell("Base URL", copySpan(base + "/v1"), "客户端里填这个（含 /v1）。") +
+          kvcell("对话接口", copySpan(base + (cur.chat_path || "/v1/chat/completions")), "随格式自动切换。") +
+          kvcell("模型列表", copySpan(base + "/v1/models"), "客户端一般会自己拉。") +
+          gwKeyCell("网关密钥") +
+        '</div>' +
+      '</div>' +
     '</div>' +
+    (S.fmtHelp ? '<div class="sep"></div><div class="hint">' + fmtHintAll() + '</div>' : "") +
     '<div class="sep"></div>' +
     '<div class="row"><button class="pri" data-action="save-out">保存设置</button>' +
       '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>');
@@ -4543,6 +4643,15 @@ async function actOn(t){
     if (act === "stats-sort") return statsSortSet(t.getAttribute("data-key"));
     if (act === "sched-toggle") return schedToggle(t.getAttribute("data-key"), t.getAttribute("data-next") === "1");
     if (act === "open-key") return $("#btnKey").click();
+    // 按钮上的 data-copy（copyBtn 造的）；行内文字版走 change 里的 data-copy 分支。
+    if (act === "copy"){
+      var cp = t.getAttribute("data-copy");
+      if (cp){ copyText(cp); return; }
+    }
+    if (act === "gwkey-gen")   return gwKeySet({ generate: true });
+    if (act === "gwkey-clear") return gwKeySet({ api_key: "" });
+    if (act === "gwkey-reveal"){ S.keyReveal = !S.keyReveal; return render(); }
+    if (act === "fmt-help"){ S.fmtHelp = !S.fmtHelp; return render(); }
     if (act === "float-main") return floatToggle(t.getAttribute("data-next") === "1");
     if (act === "float-item") return floatItemToggle(t.getAttribute("data-id"), t.getAttribute("data-next") === "1");
     if (act === "float-range") return floatApply({ range: t.getAttribute("data-range") });
