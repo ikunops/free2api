@@ -869,7 +869,11 @@ function card(title, sub, body, extra, tog){
       (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") + '</div>') +
     (extra || "") + '</div>';
   var cls = "card" + (tog ? " fold" + (tog.open ? " open" : "") : "");
-  return '<div class="' + cls + '">' + head + '<div class="mbody">' + body + '</div></div>';
+  // **只有**折叠卡才把 body 包进 .mbody。普通卡片必须原样直出 body：.mbody 是
+  // display:none 的全局类，一旦给所有卡片都套上，整页就只剩卡片标题（这是上一版的
+  // 回归——「接入信息 / 加工设置 / 出口 / 发布清单」全被收起，而我的测试只查了标题
+  // 还在、没查 body 可见，于是漏过去了）。
+  return '<div class="' + cls + '">' + head + (tog ? '<div class="mbody">' + body + '</div>' : body) + '</div>';
 }
 /* mstrip 一行紧凑指标：值里可带 HTML 时传 true（第四个参数）。
    p[3] 非空 = 该格的 key，值可局部更新。 */
