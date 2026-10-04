@@ -3,6 +3,7 @@ package scheduler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -44,23 +45,37 @@ func TestGlobalAccountsSkipCheckinTravel(t *testing.T) {
 	}
 }
 
-// TestGlobalAccountSkippedListedWithStatus 门控跳过的 global 账号在 CheckinAll
-// 回执里以 skipped(global) 呈现——手动触发时结果可读，不再是"未覆盖"的空白。
+// TestGlobalAccountSkippedListedWithStatus global 账号在 CheckinAll 回执里以
+// skipped 呈现，且**不打 daily-checkin**——但余额仍要读（见下方注释）。
+//
+// 口径变更（原本断言「global 一条上游请求都不发」）：余额只由 CheckinAll 这条路径
+// 写进 pool，global 整段跳过就永远 credits=0，选号时余额因子恒为 0，而
+// /admin/credits 却能实时显示真实余额——自相矛盾。所以现在是「不签到、但读余额」。
 func TestGlobalAccountSkippedListedWithStatus(t *testing.T) {
 	fastTravel(t)
 	fastActivity(t)
 
-	var calls atomic.Int32
+	var checkinCalls, resourceCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		http.Error(w, "no upstream call expected for global", 404)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/daily-checkin"):
+			checkinCalls.Add(1)
+			http.Error(w, "global must not check in", 500)
+		case strings.HasSuffix(r.URL.Path, "/get-user-resource"):
+			resourceCalls.Add(1)
+			w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,` +
+				`"CycleCapacityRemain":606,"CycleCapacityUsed":0}]}}}}`))
+		default:
+			http.Error(w, "unexpected", 404)
+		}
 	}))
 	defer srv.Close()
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "g1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999,
 		Domain: "www.workbuddy.ai"})
-	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL,
+		BillingBaseGlobal: srv.URL, GlobalEnabled: true}
 	s := New(Config{Pool: p, Upstream: up})
 
 	out, err := s.CheckinAll()
@@ -73,11 +88,18 @@ func TestGlobalAccountSkippedListedWithStatus(t *testing.T) {
 	if out[0].Status != CheckinSkipped {
 		t.Errorf("status=%q want skipped（global 门控回执）", out[0].Status)
 	}
-	if out[0].Detail != "global" {
-		t.Errorf("detail=%q want global", out[0].Detail)
+	if !strings.HasPrefix(out[0].Detail, "global") {
+		t.Errorf("detail=%q want 以 global 开头", out[0].Detail)
 	}
-	if calls.Load() != 0 {
-		t.Errorf("upstream calls=%d want 0", calls.Load())
+	if checkinCalls.Load() != 0 {
+		t.Errorf("daily-checkin calls=%d want 0（global 无签到体系）", checkinCalls.Load())
+	}
+	if resourceCalls.Load() != 1 {
+		t.Errorf("get-user-resource calls=%d want 1（余额必须读，否则选号余额因子恒为 0）",
+			resourceCalls.Load())
+	}
+	if out[0].Credits == nil || *out[0].Credits != 606 {
+		t.Errorf("回执应带上读到的余额，实际 %+v", out[0].Credits)
 	}
 }
 

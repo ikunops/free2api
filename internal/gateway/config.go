@@ -231,7 +231,9 @@ func Default() *Config {
 	c.Pool.DegradeCooldownMax = "2h"
 	c.Pool.IdleWeightPerHour = 0.5
 	c.Pool.IdleWeightMax = 5.0
-	c.Pool.ExpiringSoon = "168h" // 快过期窗口默认 7 天：官方活动奖励积分多在两周内过期
+	c.Pool.ExpiringSoon = "336h" // 快过期窗口默认 14 天：官方活动奖励积分多在两周内过期。
+	// 7 天（168h）实测偏窄——CN 版奖励包常在 10-20 天后到期，落在窗口外就
+	// 不参与优先消耗，临期临头才想起来，已经来不及规划用量。14 天能提前一轮排期。
 	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
 	// 在途占满时的排队等待默认 30s：单账号池高并发下的背压（0 可显式关闭）。
@@ -415,9 +417,9 @@ func (c *Config) normalize() error {
 	if c.Pool.IdleWeightMax <= 0 {
 		c.Pool.IdleWeightMax = 5.0
 	}
-	// 快过期窗口：空值回落默认 168h（Default 已置；此兜底覆盖显式 ""）；显式 "0"/负值 = 禁用分桶。
+	// 快过期窗口：空值回落默认 336h（Default 已置；此兜底覆盖显式 ""）；显式 "0"/负值 = 禁用分桶。
 	if c.Pool.ExpiringSoon == "" {
-		c.Pool.ExpiringSoon = "168h"
+		c.Pool.ExpiringSoon = "336h"
 	}
 	if c.ExpiringSoonDur, err = time.ParseDuration(c.Pool.ExpiringSoon); err != nil {
 		return fmt.Errorf("pool.expiring_soon: %w", err)

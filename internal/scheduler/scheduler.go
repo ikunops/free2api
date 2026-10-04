@@ -325,12 +325,26 @@ func (s *Scheduler) CheckinAll() ([]CheckinOutcome, error) {
 			out = append(out, oc)
 			continue
 		}
-		// D4 门控：realm=global 账号无签到体系/任务中心，直接跳过（不发起任何上游调用，避免风控）。
-		// 经 auth.Realm() 统一判定：逃生门（global.enabled=false）下 global 账号被降级为 cn、
-		// 按 CN 处理——这是 D5 逃生门的刻意语义（纯 CN 部署锁死一切 global），与引用处一致。
+		// D4 门控：realm=global 账号**无签到体系**，跳过 daily-checkin（不发起该上游调用，
+		// 避免风控）。经 auth.Realm() 统一判定：逃生门（global.enabled=false）下 global
+		// 账号被降级为 cn、按 CN 处理——这是 D5 逃生门的刻意语义。
+		//
+		// 但**不能连余额一起跳过**（曾经就是这个 bug）：余额只由这条路径写进号池，
+		// global 号跳过整段就永远 credits=0，于是 weightOf 的余额因子恒为 0、
+		// ReenableIfCredits 也永远不会因余额恢复而解冻——「查得到余额却不参与选号」
+		// 的自相矛盾状态。实测 4 个 global 号 /admin/credits 实时显示 606/546，
+		// state.json 里却是 0。所以拆成两步：global 只跳签到，照样读余额。
 		if a.IsGlobal() {
-			oc.Status, oc.Detail = CheckinSkipped, "global"
+			oc.Status, oc.Detail = CheckinSkipped, "global（无签到体系，仅读余额）"
 			skipN++
+			if s.refreshBalance(st.UID, a, &oc) {
+				switch oc.Status {
+				case CheckinOK, CheckinAlready:
+					alreadyN++
+				default:
+					failN++
+				}
+			}
 			out = append(out, oc)
 			continue
 		}
@@ -374,20 +388,12 @@ func (s *Scheduler) CheckinAll() ([]CheckinOutcome, error) {
 		} else {
 			oc.Status = CheckinOK
 		}
-		// 分桶查余额：快过期窗口内的积分单独标记，pool 优先消耗（issue:积分过期）。
-		// ExpiringSoonWindow<=0 时退化为纯总量（与引入前一致）。
-		remain, buckets, err := s.cfg.Upstream.UserResourceDetailed(a, s.cfg.ExpiringSoonWindow)
-		if err != nil {
-			log.Printf("user-resource %s: %v", logfmt.Label(st.UID, st.Nickname), err)
-			oc.Status = CheckinFail
-			oc.Detail = joinDetail(oc.Detail, "resource: "+err.Error())
+		// 分桶查余额（与 global 分支共用 refreshBalance，避免两处漂移）。
+		if !s.refreshBalance(st.UID, a, &oc) {
 			failN++
 			out = append(out, oc)
 			continue
 		}
-		s.cfg.Pool.ReenableIfCredits(st.UID, remain)
-		s.cfg.Pool.SetCreditsDetailed(st.UID, remain, buckets.Expiring)
-		oc.Credits = &remain
 		switch oc.Status {
 		case CheckinOK:
 			okN++
@@ -401,6 +407,28 @@ func (s *Scheduler) CheckinAll() ([]CheckinOutcome, error) {
 	log.Printf("checkin done: total=%d ok=%d already=%d fail=%d skipped=%d",
 		len(statuses), okN, alreadyN, failN, skipN)
 	return out, nil
+}
+
+// refreshBalance 查一个号的积分余额并写回号池（总量 + 快过期分桶），返回是否成功。
+//
+// 抽出来的原因：global 号没有签到体系，CheckinAll 里对它们跳过 daily-checkin，
+// 但**余额必须照读**——余额只由这条路径写进 pool，global 号整段跳过就永远
+// credits=0，weightOf 的余额因子恒为 0、ReenableIfCredits 永不触发。
+// 两边共用同一个实现，免得以后只改一处又漂移。
+//
+// ExpiringSoonWindow<=0 时退化为纯总量（与引入分桶前一致）。
+func (s *Scheduler) refreshBalance(uid string, a *auth.Auth, oc *CheckinOutcome) bool {
+	remain, buckets, err := s.cfg.Upstream.UserResourceDetailed(a, s.cfg.ExpiringSoonWindow)
+	if err != nil {
+		log.Printf("user-resource %s: %v", logfmt.Label(uid, oc.Nickname), err)
+		oc.Status = CheckinFail
+		oc.Detail = joinDetail(oc.Detail, "resource: "+err.Error())
+		return false
+	}
+	s.cfg.Pool.ReenableIfCredits(uid, remain)
+	s.cfg.Pool.SetCreditsDetailed(uid, remain, buckets.Expiring)
+	oc.Credits = &remain
+	return true
 }
 
 // joinDetail 拼接多段原因，避免后一段覆盖前一段的失败信息。

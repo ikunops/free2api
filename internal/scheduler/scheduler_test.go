@@ -261,6 +261,65 @@ func TestRunCheckinReenablesCoolingAccount(t *testing.T) {
 	}
 }
 
+// TestCheckinGlobalSkipsCheckinButRefreshesBalance 锁住 global 号的余额写入。
+//
+// 曾经的 bug：CheckinAll 对 global 账号整段 continue（它们无签到体系），而余额
+// 只由这条路径写进 pool，于是 global 号 credits 永远 0——/admin/credits 实时能
+// 读到 606/546，选号时 weightOf 的余额因子却是 0。修复后 global 只跳 daily-checkin，
+// 余额照读。
+func TestCheckinGlobalSkipsCheckinButRefreshesBalance(t *testing.T) {
+	f := &fakeUpstream{resourceRemain: 606}
+	srv := f.server()
+	defer srv.Close()
+
+	p := pool.New("")
+	a := &auth.Auth{UID: "g1", AccessToken: "at", RefreshToken: "rt",
+		ExpiresAt: 9999999999, Domain: "www.workbuddy.ai"}
+	p.Add(a)
+
+	// global 号的余额走 BillingBaseGlobal，CN 那个不设——留着空会打到真实网络
+	// （测试第一次跑就是这么 401 的）。
+	up := &upstream.Client{
+		HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL,
+		BillingBaseGlobal: srv.URL, GlobalEnabled: true,
+	}
+	s := New(Config{Pool: p, Upstream: up, CheckinHours: []int{9, 21}})
+	s.RunCheckinNow()
+
+	if n := f.checkinCalls.Load(); n != 0 {
+		t.Errorf("global 号不该打 daily-checkin，实际 %d 次", n)
+	}
+	st, _ := p.Status("g1")
+	if st.Credits != 606 {
+		t.Errorf("global 号余额应写进号池，credits=%d want 606（不写则选号余额因子恒为 0）", st.Credits)
+	}
+}
+
+// TestCheckinGlobalBalanceReenablesCoolingAccount global 号余额恢复也应解冻冷却账号——
+// ReenableIfCredits 与签到无关，拆出refreshBalance 后两条路径都保留该行为。
+func TestCheckinGlobalBalanceReenablesCoolingAccount(t *testing.T) {
+	f := &fakeUpstream{resourceRemain: 500}
+	srv := f.server()
+	defer srv.Close()
+
+	p := pool.New("")
+	a := &auth.Auth{UID: "g1", AccessToken: "at", RefreshToken: "rt",
+		ExpiresAt: 9999999999, Domain: "www.workbuddy.ai"}
+	p.Add(a)
+	p.Cooldown("g1", pool.CoolHard, time.Hour, "余额不足")
+
+	up := &upstream.Client{
+		HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL,
+		BillingBaseGlobal: srv.URL, GlobalEnabled: true,
+	}
+	s := New(Config{Pool: p, Upstream: up, CheckinHours: []int{9, 21}})
+	s.RunCheckinNow()
+
+	st, _ := p.Status("g1")
+	if st.Cooling {
+		t.Errorf("global 号余额恢复后应解冻：%+v", st)
+	}
+}
 func TestRunKeepaliveRefreshesTokens(t *testing.T) {
 	f := &fakeUpstream{}
 	srv := f.server()
