@@ -76,9 +76,9 @@ nav{padding:6px 8px;overflow:auto;flex:1}
 
 /* min-width:0：grid 子项默认 min-width:auto，会被内容顶宽（表格一宽整页就横向滚动），
    显式归零后宽度由网格列决定，宽表交给 .tablewrap 卡内滚动。 */
-.main{padding:22px 32px 56px;width:100%;min-width:0}
-@media(min-width:1600px){.main{padding-left:48px;padding-right:48px}}
-@media(min-width:2200px){.main{padding-left:72px;padding-right:72px}}
+.main{padding:22px 24px 56px;width:100%;min-width:0}
+@media(min-width:1600px){.main{padding-left:32px;padding-right:32px}}
+@media(min-width:2200px){.main{padding-left:48px;padding-right:48px}}
 .toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px}
 .ic{width:34px;height:34px;border-radius:var(--r3);border:1px solid var(--line3);
   background:var(--panel);color:var(--fg2);cursor:pointer;display:flex;align-items:center;
@@ -124,6 +124,7 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
   padding:15px 18px;box-shadow:var(--sh);margin-bottom:12px}
 .card.pad0{padding:14px 20px}
 .card-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:11px}
+.card-head h2{line-height:1.35}
 .card-head .grow{flex:1}
 .sep{height:1px;background:var(--line2);margin:16px 0}
 
@@ -133,12 +134,25 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 /* 加工设置 / 接入信息：两张独立的卡左右并排。左卡是"要改的东西"，右卡是"改完的结果"。
    1.25fr 让左卡略宽——左卡有 4 个可编辑控件，右卡是只读展示。
    两张卡各自有 margin-bottom，进网格后要清零，否则左右底边对不齐。 */
-.out2col{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;align-items:start}
-.out2col>.card{margin-bottom:0}
+.out2col{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+.out2col>.card{margin-bottom:0;min-width:0}
+/* 加工设置里第二行：模型前缀 + 费率后缀。费率后缀的选项文案很短
+   （「显示费率（按模型）」），给它半张卡是浪费，收窄到刚够放下最长选项。 */
+.outgrid2{grid-template-columns:minmax(0,1fr) minmax(0,190px)}
+.outgrid2 .field{margin-bottom:0}
 @media(max-width:1100px){.out2col{grid-template-columns:1fr;gap:12px}}
 /* 密钥那一行单独用 .kvrow：栅格与 .kv 一致（标签列同宽 96px，四行才对齐），
    行距松一档——那行要塞按钮，紧贴着上面的 URL 会显得挤。 */
-.kvrow{display:grid;grid-template-columns:96px 1fr;gap:7px 14px;font-size:13px;align-items:start;margin-top:9px}
+.kvrow{display:grid;grid-template-columns:96px minmax(0,1fr);gap:7px 14px;font-size:13px;
+  align-items:start;margin-top:9px}
+.kvrow>div:last-child{min-width:0}
+.kvrow .row{row-gap:6px}
+/* 密钥行：密钥本体吃掉剩余宽度并省略，操作按钮钉在右边。
+   不这么做的话，48 字符的明文密钥会把按钮挤到下一行——「清空」单独掉在下面。 */
+.kvgw{display:flex;flex-wrap:nowrap;gap:8px;align-items:center;min-width:0}
+.kvgw .kvgw-val{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.kvgw .kvgw-acts{display:flex;gap:8px;flex:0 0 auto}
 .kvrow>div:first-child{color:var(--dim);font-size:12px;padding-top:3px}
 @media(max-width:1000px){.grid4,.grid3,.grid2{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.grid4,.grid3,.grid2{grid-template-columns:1fr}
@@ -317,6 +331,9 @@ button.gh.warn-gh:hover:not(:disabled){border-color:var(--danger);background:var
 
 input,select,textarea{border:1px solid var(--line);border-radius:var(--r3);
   padding:7px 10px;font-size:13px;color:var(--fg);background:var(--panel);width:100%}
+/* select 与 input 在部分内核下高度差 2px（select 走 UA 默认高度），同一行两个
+   控件底边就会错开。固定高度 + 行高，让两者在任意浏览器下都同高。 */
+input:not([type=checkbox]):not([type=radio]),select{height:35px;line-height:1.35}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-bg)}
 input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 textarea{min-height:104px;resize:vertical;font-family:Consolas,"Cascadia Mono",monospace;
@@ -760,8 +777,10 @@ function producerRealms(p){
  */
 async function gwKeySet(body){
   var gen = !!body.generate;
-  var msg = gen ? "生成一把新密钥？" : "清空密钥，回到本机免密钥直连？";
-  if (!confirm(msg)) return;
+  // 生成不弹确认：这个按钮只在「当前没有密钥」时才出现（有密钥时显示的是
+  // 隐藏/复制/清空），没有会被误覆盖的东西，确认框只是白挡一下。
+  // 清空仍然要确认——那会立刻让已经配上密钥的客户端全部 401。
+  if (!gen && !confirm("清空密钥，回到本机免密钥直连？")) return;
   try {
     var r = await api("/admin/api-key", { method: "POST", body: body });
     S.apiKey = (r && r.api_key) || "";
@@ -934,20 +953,21 @@ function mstrip(pairs){
 function gwKeyInline(key){
   var has = !!(key && key.length);
   if (!has){
-    return '<span class="row" style="gap:8px">' +
-      '<span class="dim">未设置（默认本机直连免密钥）</span>' +
-      '<button class="gh tiny" data-action="gwkey-gen" ' +
+    return '<span class="kvgw">' +
+      '<span class="kvgw-val">未设置（默认本机直连免密钥）</span>' +
+      '<span class="kvgw-acts"><button class="gh tiny" data-action="gwkey-gen" ' +
         'title="生成一把随机密钥写进 config.json，重启网关后客户端需要带上它">' +
-        svg("key") + "生成密钥</button></span>";
+        svg("key") + "生成密钥</button></span></span>";
   }
   var shown = S.keyReveal ? key : key.slice(0, 6) + "••••••" + key.slice(-4);
-  return '<span class="row" style="gap:8px">' +
-    '<span class="mono">' + esc(shown) + "</span>" +
-    '<button class="gh tiny" data-action="gwkey-reveal">' + (S.keyReveal ? "隐藏" : "显示") + "</button>" +
-    copyBtn("已复制密钥", key) +
-    '<button class="gh tiny warn-gh" data-action="gwkey-clear" ' +
-      'title="清空 api_key，回到本机免密钥直连">清空</button>' +
-    "</span>";
+  return '<span class="kvgw">' +
+    '<span class="mono kvgw-val" title="' + esc(key) + '">' + esc(shown) + "</span>" +
+    '<span class="kvgw-acts">' +
+      '<button class="gh tiny" data-action="gwkey-reveal">' + (S.keyReveal ? "隐藏" : "显示") + "</button>" +
+      copyBtn("已复制密钥", key) +
+      '<button class="gh tiny warn-gh" data-action="gwkey-clear" ' +
+        'title="清空 api_key，回到本机免密钥直连">清空</button>' +
+    "</span></span>";
 }
 function kv(pairs){
   return '<div class="kv">' + pairs.map(function(p){
@@ -2471,6 +2491,8 @@ function viewOutput(){
         '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select></div>' +
         '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7864">' +
           '<div class="hint">改动后需重启网关生效。</div></div>' +
+      '</div>' +
+      '<div class="grid2 outgrid2" style="margin-top:13px">' +
         '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-"></div>' +
         '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select></div>' +
       '</div>' +
