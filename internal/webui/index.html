@@ -471,6 +471,13 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .mgroup.open .mcaret{transform:rotate(90deg)}
 .mbody{display:none}
 .mgroup.open + .mbody{display:block}
+/* 折叠卡片（Codex / ZCode 一键接入）：open 类挂在 .card.fold 自己身上，
+   语义与 .mgroup.open 完全一致，只是不依赖「相邻兄弟」这个选择器。 */
+.card.fold > .mbody{display:none}
+.card.fold.open > .mbody{display:block}
+.card.fold > .card-head:hover{background:var(--hover2)}
+.card.fold h2 .mcaret{color:var(--fg3);transition:transform .12s ease}
+.card.fold.open h2 .mcaret{transform:rotate(90deg)}
 @media(max-width:860px){.mrow{grid-template-columns:18px minmax(0,1fr) auto}.mrow .mname{display:none}}
 /* 多出口：每个出口一块；「服务来源」用圆角标签勾选 */
 .chan{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;margin-bottom:12px}
@@ -671,7 +678,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  zcode: null, zcodePlan: null, zcodeShowAll: false,
+  zcode: null, zcodePlan: null, zcodeShowAll: false, cardOpen: loadCardOpen(),
   stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
@@ -848,9 +855,21 @@ function updateSvcDot(){
 function head(title, sub){
   return '<h1>' + esc(title) + '</h1><div class="meta"><span class="vbar"></span><span>' + esc(sub) + '</span></div>';
 }
-function card(title, sub, body, extra){
-  return '<div class="card"><div class="card-head"><div class="grow"><h2>' + esc(title) + '</h2>' +
-    (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") + '</div>' + (extra || "") + '</div>' + body + '</div>';
+function card(title, sub, body, extra, tog){
+  // tog：给「一键接入」这类**低频、且内容长**的卡片做折叠。传 {action, id, open, badge}
+  // 则 card-head 整体可点、body 默认收起——折叠件复用发布清单那套 .mgroup/.mbody 的视觉
+  // 与状态机（同一个 CSS、同一套 open 类），不新造第二套控件，免得两处样式各自漂移。
+  var head = '<div class="card-head">' +
+    (tog ? '<div class="grow" style="cursor:pointer;user-select:none" data-action="' + tog.action +
+      '" data-tog="' + esc(tog.id) + '" title="点击展开 / 收起">' +
+      '<h2><span class="mcaret">' + (tog.open ? "\u25BE" : "\u25B8") + '</span> ' + esc(title) + '</h2>' +
+      (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") +
+      (tog.badge ? '<div style="margin-top:5px">' + tog.badge + "</div>" : "") +
+      '</div>' : '<div class="grow"><h2>' + esc(title) + '</h2>' +
+      (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") + '</div>') +
+    (extra || "") + '</div>';
+  var cls = "card" + (tog ? " fold" + (tog.open ? " open" : "") : "");
+  return '<div class="' + cls + '">' + head + '<div class="mbody">' + body + '</div></div>';
 }
 /* mstrip 一行紧凑指标：值里可带 HTML 时传 true（第四个参数）。
    p[3] 非空 = 该格的 key，值可局部更新。 */
@@ -2250,9 +2269,39 @@ function chanCard(){
    这张卡片负责：读现状 → 预览改前改后 → 用户确认后落盘（先备份）。
    其它客户端（ZCode / OpenCode / Qoder / Cherry Studio）有 UI 入口，只需抄上面
    「接入信息」里的 Base URL，不走这张卡。 */
+/* codexBadge 折叠头摘要。Codex 这张卡片的操作频率极低（基本装一次写一次），但
+   「到底接上了没」是必须一眼能判的事，所以状态摘要挂在折叠头上，展开与否都看得见。 */
+function codexBadge(){
+  var c = S.codex;
+  if (!c) return "";
+  var bits = [];
+  if (c.read_error) bits.push('<span class="tag warn">读取失败</span>');
+  else if (c.has_our_section) bits.push('<span class="tag ok">已接入</span>');
+  else if (c.exists) bits.push('<span class="tag mut">尚未接入</span>');
+  else bits.push('<span class="tag mut">未安装</span>');
+  if (c.current_base_url) bits.push('<span class="mono" style="font-size:11px;opacity:.75">' + esc(c.current_base_url) + "</span>");
+  return bits.join(" ");
+}
+/* zcodeBadge 同理：认出几个指向本网关的供应商、有没有待同步的上下文。 */
+function zcodeBadge(z){
+  if (!z || z.read_error) return "";
+  var m = z.matched_providers || 0;
+  var bits = [];
+  if (!m) bits.push('<span class="tag mut">没有供应商指向本网关</span>');
+  else {
+    bits.push('<span class="tag ok">' + m + " 个供应商指向本网关</span>");
+    if (S.zcodePlan && S.zcodePlan.changed)
+      bits.push('<span class="tag warn">待同步 ' + (S.zcodePlan.changes || []).length + " 处</span>");
+    else if (S.zcodePlan && !S.zcodePlan.changed)
+      bits.push('<span class="tag ok">上下文已同步</span>');
+  }
+  return bits.join(" ");
+}
 function codexCard(){
   var c = S.codex;
-  if (!c) return card("Codex 一键接入", "正在读取 Codex 配置…", '<div class="empty">读取中…</div>');
+  var copen = cardTog("codex");
+  if (!c) return card("Codex 一键接入", "正在读取 Codex 配置…", '<div class="empty">读取中…</div>',
+                      null, { action: "card-toggle", id: "codex", open: copen });
   var body = "";
   // 现状
   var rows = [
@@ -2343,7 +2392,7 @@ function codexCard(){
 
   return card("Codex 一键接入",
     "Codex 没有「自定义供应商」入口，只能改它的 config.toml。这里代你改，并且只动我们那一段。",
-    body);
+    body, null, { action: "card-toggle", id: "codex", open: copen, badge: codexBadge() });
 }
 function viewOutput(){
   var o = S.out;
@@ -3804,7 +3853,9 @@ async function codexPreview(){
    写入的单条 contextWindow=1000000 在重启后仍在。所以同步一次即可长期生效。 */
 function zcodeCard(){
   var z = S.zcode;
-  if (!z) return card("ZCode 一键接入", "正在读取 ZCode 配置…", '<div class="empty">读取中…</div>');
+  var zopen = cardTog("zcode");
+  if (!z) return card("ZCode 一键接入", "正在读取 ZCode 配置…", '<div class="empty">读取中…</div>',
+                      null, { action: "card-toggle", id: "zcode", open: zopen });
   var body = "";
   var rows = [
     ["配置文件", '<span class="mono">' + esc(z.path) + "</span>"],
@@ -3824,7 +3875,8 @@ function zcodeCard(){
       ? "还没有任何 ZCode 供应商指向本网关。先在 ZCode 里「添加供应商」，Base URL 填上面的网关地址，再回来点同步。"
       : "在 ZCode 的「设置 → 模型供应商」里把某个供应商的 Base URL 填成 <b>" + esc(z.base_url || "") +
         "</b>，本卡才能认出来并同步上下文窗口。") + "</div>";
-    return card("ZCode 一键接入", "把本网关模型的真实上下文窗口写进 ZCode 的供应商配置。", body);
+    return card("ZCode 一键接入", "把本网关模型的真实上下文窗口写进 ZCode 的供应商配置。", body,
+                null, { action: "card-toggle", id: "zcode", open: zopen, badge: zcodeBadge(z) });
   }
 
   // provider 清单：一眼看出哪些会被改、哪些不碰
@@ -3883,7 +3935,7 @@ function zcodeCard(){
 
   return card("ZCode 一键接入",
     "ZCode 不读 /v1/models 的上下文字段，这里把真实值写进它的供应商配置。",
-    body);
+    body, null, { action: "card-toggle", id: "zcode", open: zopen, badge: zcodeBadge(z) });
 }
 /* zcodePreview 拉逐条 diff，不落盘。 */
 async function zcodePreview(){
@@ -3972,6 +4024,20 @@ function setModelSel(fn){
 function saveMgroupOpen(){
   try { localStorage.setItem("wb_mgroup_open", JSON.stringify(S.mgroupOpen || {})); } catch (e) {}
 }
+/* cardOpen：Codex / ZCode 两张「一键接入」卡片的展开状态。
+   为什么存 localStorage 而不是只放内存：后台 30s 一次的状态轮询会 render() 整页，
+   重画后就按一个空的 S.cardOpen 画，于是用户刚点开的卡片自己合上了——和发布清单分组
+   那次（mgroupOpen）是同一个病，所以同样持久化。默认**收起**：这两张卡片是低频操作，
+   而「输出 API」页上方还有接入信息、加工设置、多出口清单、发布清单，全展开会把要扫的
+   内容挤到屏幕外。 */
+function loadCardOpen(){
+  try { return JSON.parse(localStorage.getItem("wb_card_open") || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function saveCardOpen(){
+  try { localStorage.setItem("wb_card_open", JSON.stringify(S.cardOpen || {})); } catch (e) {}
+}
+function cardTog(id){ return !!((S.cardOpen || {})[id]); }
 function loadMgroupOpen(){
   try {
     var raw = localStorage.getItem("wb_mgroup_open");
@@ -4288,6 +4354,11 @@ async function actOn(t){
     if (act === "zcode-preview") return zcodePreview();
     if (act === "zcode-apply") return zcodeApply();
     if (act === "zcode-toggle-all") { S.zcodeShowAll = !S.zcodeShowAll; return render(); }
+    if (act === "card-toggle"){
+      var cid = t.getAttribute("data-tog");
+      if (cid){ S.cardOpen[cid] = !cardTog(cid); saveCardOpen(); }
+      return render();
+    }
     if (act === "save-models") return saveModels();
     if (act === "model-all") return setModelSel(function(){ return true; });
     if (act === "model-none") return setModelSel(function(){ return false; });
