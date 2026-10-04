@@ -699,7 +699,7 @@ const S = {
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
-  zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, fmtHelp: false, cardOpen: loadCardOpen(),
+  zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, cardOpen: loadCardOpen(),
   stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
@@ -2502,22 +2502,19 @@ function viewOutput(){
   html += card("加工设置 · 接入信息", "左边改格式与命名，右边的地址与密钥立刻跟着变；保存后前缀与费率后缀热更新，端口需重启。",
     '<div class="out2col">' +
       '<div>' +
-        '<div class="grid3">' +
+        '<div class="grid2">' +
           '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select>' +
-            '<div class="hint">' + esc(cur.note || "") + '</div></div>' +
+            '<div class="hint">' + esc(cur.note || "") + fmtHintAll() + '</div>' +
+            '<div class="hint" style="margin-top:5px"><b>Codex</b>（v0.151 起只认 Responses，' +
+              'wire_api="chat" 已下线）→ <b>OpenAI Responses</b>；' +
+              '<b>Qoder / Cursor / Cline</b> 等 → <b>OpenAI 兼容</b>；' +
+              '<b>Claude Code</b> → Anthropic（未接入）。</div></div>' +
+          '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7864">' +
+            '<div class="hint">写进 config.json 的 listen，<b>需重启</b>生效；当前进程仍听在原端口。</div></div>' +
           '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-">' +
             '<div class="hint">给模型名加前缀，便于在客户端区分来自哪个网关；冒号会自动剔除。</div></div>' +
           '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select>' +
-            '<div class="hint">免费 -free、收费 -x0.11，直接显示在模型名尾巴上。</div></div>' +
-        '</div>' +
-        '<div class="sep"></div>' +
-        '<div class="grid2">' +
-          '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7864">' +
-            '<div class="hint">写进 config.json 的 listen，<b>需重启</b>生效；当前进程仍听在原端口。</div></div>' +
-          '<div class="field"><label class="f">客户端怎么选格式</label>' +
-            '<div class="hint" style="margin:0"><b>Codex</b> → OpenAI Responses（v0.151 起只认它）；' +
-            '<b>Qoder / Cursor / Cline</b> → OpenAI 兼容。' +
-            '<button class="gh tiny" data-action="fmt-help" style="margin-left:4px">' + svg("eye") + '更多</button></div></div>' +
+            '<div class="hint">免费 -free、收费 -x0.11，直接显示在模型名尾巴上，不影响计费。</div></div>' +
         '</div>' +
       '</div>' +
       '<div>' +
@@ -2529,7 +2526,6 @@ function viewOutput(){
         '</div>' +
       '</div>' +
     '</div>' +
-    (S.fmtHelp ? '<div class="sep"></div><div class="hint">' + fmtHintAll() + '</div>' : "") +
     '<div class="sep"></div>' +
     '<div class="row"><button class="pri" data-action="save-out">保存设置</button>' +
       '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>');
@@ -4651,7 +4647,6 @@ async function actOn(t){
     if (act === "gwkey-gen")   return gwKeySet({ generate: true });
     if (act === "gwkey-clear") return gwKeySet({ api_key: "" });
     if (act === "gwkey-reveal"){ S.keyReveal = !S.keyReveal; return render(); }
-    if (act === "fmt-help"){ S.fmtHelp = !S.fmtHelp; return render(); }
     if (act === "float-main") return floatToggle(t.getAttribute("data-next") === "1");
     if (act === "float-item") return floatItemToggle(t.getAttribute("data-id"), t.getAttribute("data-next") === "1");
     if (act === "float-range") return floatApply({ range: t.getAttribute("data-range") });
