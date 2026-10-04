@@ -355,9 +355,31 @@ tr:last-child td{border-bottom:none}
 tr.dim td{opacity:.55}
 td.num{font-variant-numeric:tabular-nums}
 /* 可排序表头：默认不抢眼，悬停/当前排序列才上强调色 */
-th.sorth{cursor:pointer;user-select:none}
+/* 可排序表：table-layout:fixed 让列宽只由 <col>/首行 th 的 width 决定，
+   与内容无关。配合 .sorth{position:relative} 绝对定位箭头，切换排序时
+   任何一列的宽度都不会变 —— 表格整体零位移。首列（模型）不设 width，
+   由 fixed 布局把剩余空间全给它，所以长模型名有富余空间可伸展。 */
+table.sortable{table-layout:fixed;min-width:940px}
+table.sortable th,table.sortable td{overflow:hidden;text-overflow:ellipsis}
+table.sortable th.num,table.sortable td.num{width:76px}
+/* Tokens（38,158,041 这类 10 位数）与缓存命中（96.8%）比别的数字列宽一档。
+   用 class 定位而不是 nth-child：这张表的列序一旦调整，nth-child 会静默指错列，
+   而 class 是跟着列语义走的。 */
+table.sortable th.wtok,table.sortable td.wtok{width:104px}
+table.sortable th.wrate,table.sortable td.wrate{width:88px}
+table.sortable th.wcache,table.sortable td.wcache{width:92px}
+table.sortable th.wtime,table.sortable td.wtime{width:120px}
+th.sorth{cursor:pointer;user-select:none;position:relative;padding-right:16px}
 th.sorth:hover{color:var(--fg)}
 th.sorth.on{color:var(--fg)}
+/* 排序箭头绝对定位：**不能**跟着文字走。把箭头拼进文本节点（旧的
+   `label + arrow`）会让它在排序瞬间参与排版，把这一列撑宽、其余列整体左移 ——
+   左边模型列明明有富余空间，整张表还是会横向抖一下。改成绝对定位后，
+   箭头挂在 padding-right 预留出的那 16px 里，列宽恒定，切换排序零位移。 */
+th.sorth .sar{position:absolute;right:4px;top:50%;transform:translateY(-50%);
+  font-size:9px;line-height:1;opacity:0;transition:opacity .12s}
+th.sorth:hover .sar{opacity:.4}
+th.sorth.on .sar{opacity:1}
 .mono{font-family:Consolas,"Cascadia Mono",monospace;font-size:12px}
 
 .tag{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:999px;
@@ -2673,13 +2695,17 @@ function statsSortList(list){
   });
 }
 /* statsTh 可点排序表头：点一下切排序键，再点一下翻转方向。 */
-function statsTh(label, key, numeric){
+function statsThCls(label, key, numeric, extra){
+  return statsTh(label, key, numeric, extra);
+}
+function statsTh(label, key, numeric, extra){
   var so = S.statsSort || {};
   var on = so.key === key;
-  var arrow = on ? (so.dir === 1 ? " ▲" : " ▼") : "";
-  return '<th class="' + (numeric ? "num " : "") + 'sorth' + (on ? " on" : "") + '" ' +
+  // 箭头走独立 span（绝对定位），不拼进文本节点 —— 理由见 CSS 里那段注释。
+  return '<th class="' + (numeric ? "num " : "") + 'sorth' + (on ? " on " : " ") +
+    (extra || "") + '" ' +
     'data-action="stats-sort" data-key="' + key + '" title="点击按此列排序（再点翻转方向）">' +
-    esc(label) + arrow + '</th>';
+    esc(label) + '<span class="sar">' + (on ? (so.dir === 1 ? "▲" : "▼") : "▲") + '</span></th>';
 }
 /* partialNote 输入侧缺失的提示文案：说清楚为什么总量只是下限。 */
 function partialNote(){
@@ -2793,21 +2819,22 @@ function viewStats(){
         '<td class="num">' + ((Number(m.requests) || 0) ? fmtPct((Number(m.success) || 0) / Number(m.requests)) : "—") + '</td>' +
         '<td class="num">' + fmtDur(m.avg_ttfb_ms) + '</td>' +
         '<td class="num">' + fmtDur(m.avg_latency_ms) + '</td>' +
-        '<td class="num">' + fmtInt(m.total_tokens) + '</td>' +
-        '<td class="num">' + fmtPct(m.cache_hit_rate) + '</td>' +
-        '<td>' + (rate ? '<span class="tag mut">' + esc(rate) + '</span>' : "—") + '</td>' +
-        '<td class="hint" style="white-space:nowrap">' + esc(fmtTime(m.last_seen)) + '</td></tr>';
+        '<td class="num wtok">' + fmtInt(m.total_tokens) + '</td>' +
+        '<td class="num wcache">' + fmtPct(m.cache_hit_rate) + '</td>' +
+        '<td class="wrate">' + (rate ? '<span class="tag mut">' + esc(rate) + '</span>' : "—") + '</td>' +
+        '<td class="hint wtime" style="white-space:nowrap">' + esc(fmtTime(m.last_seen)) + '</td></tr>';
     }).join("");
     html += card("按模型（" + models.length + " 个）",
       "默认按请求数降序；点表头可改排序。token 与缓存数来自上游 usage；缺观测的请求不计入均值分母。" +
         (partialNote() ? (" " + partialNote()) : ""),
-      '<div class="tablewrap"><table><thead><tr>' +
+      '<div class="tablewrap"><table class="sortable"><thead><tr>' +
       statsTh("模型", "model", false) + statsTh("请求", "requests", true) +
       statsTh("成功", "success", true) + '<th class="num">失败</th>' +
       statsTh("成功率", "success_rate", true) +
       statsTh("TTFB", "avg_ttfb_ms", true) + statsTh("延迟", "avg_latency_ms", true) +
-      statsTh("Tokens", "total_tokens", true) + statsTh("缓存命中", "cache_hit_rate", true) +
-      '<th>费率</th><th>最近</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
+      statsThCls("Tokens", "total_tokens", true, "wtok") +
+      statsThCls("缓存命中", "cache_hit_rate", true, "wcache") +
+      '<th class="wrate">费率</th><th class="wtime">最近</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
   }
   // 原来这里只有一张 4 行 kv（提示词/生成/合计/缓存写入），竖着占一整张卡。
   // 后端 snapshot 里还有 credit、credit_per_req、缓存命中/未命中这些真算了但没画的值，

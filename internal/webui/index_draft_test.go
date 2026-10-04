@@ -21,6 +21,34 @@ func scriptBody(t *testing.T) string {
 	return body
 }
 
+// extractCSS 把页面里所有 <style> 块拼起来返回，供样式层断言用。
+// 为什么要这个辅助：样式断言如果只 grep 整个 HTML，<script> 里的字符串字面量
+// （比如 CSS 类名出现在 JS 拼接里）会造成假阳性 —— 命中了但样式其实没生效。
+// 只取 <style> 内容才是样式层的事实来源。
+func extractCSS(t *testing.T) string {
+	t.Helper()
+	html := string(Page())
+	var b strings.Builder
+	rest := html
+	for {
+		i := strings.Index(rest, "<style>")
+		if i < 0 {
+			break
+		}
+		rest = rest[i+len("<style>"):]
+		j := strings.Index(rest, "</style>")
+		if j < 0 {
+			break
+		}
+		b.WriteString(rest[:j])
+		b.WriteString("\n")
+		rest = rest[j+len("</style>"):]
+	}
+	if b.Len() == 0 {
+		t.Fatal("index.html 里找不到 <style> 块")
+	}
+	return b.String()
+}
 // TestCodexInputsAreDraftBacked Codex 一键接入的输入框必须走草稿，否则后台轮询
 // render() 会把用户敲的值顶回 suggested_*。
 //
