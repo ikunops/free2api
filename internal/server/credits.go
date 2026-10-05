@@ -369,7 +369,11 @@ func (h *Handler) poolHasZCode() bool {
 // 「什么时候尝试去刷过」——主口与出口可能同时来问，靠它保证一个 TTL 内只打一次上游。
 var zcodeEntitledCache struct {
 	sync.RWMutex
-	set     map[string]bool
+	set map[string]bool
+	// byUID 每个 zcode 号自己**有没有**至少一个可用模型（uid → true/false）。
+	// 并集 set 只能回答「这些号整体能跑哪些模型」，回答不了「哪个号能跑」——
+	// 概览页的「可用」列（健康 且 至少能跑一个模型）要的正是后者，故单独存一份。
+	byUID   map[string]bool
 	known   bool
 	fetched time.Time
 	triedAt time.Time
@@ -381,8 +385,9 @@ var zcodeEntitledPath string
 
 // zcodeEntitledSnapshot 收敛快照的落盘形态：模型并集 + 读到它的时刻。
 type zcodeEntitledSnapshot struct {
-	Models  []string `json:"models"`
-	Fetched int64    `json:"fetched_at"`
+	Models  []string        `json:"models"`
+	ByUID   map[string]bool `json:"by_uid,omitempty"`
+	Fetched int64           `json:"fetched_at"`
 }
 
 // SetZCodeEntitledPath 接线快照落盘路径（起服务前调用一次）。
@@ -424,8 +429,15 @@ func LoadZCodeEntitled() {
 	if snap.Fetched > 0 {
 		fetched = time.Unix(snap.Fetched, 0)
 	}
+	byUID := make(map[string]bool, len(snap.ByUID))
+	for uid, ok := range snap.ByUID {
+		if uid != "" {
+			byUID[uid] = ok
+		}
+	}
 	zcodeEntitledCache.Lock()
 	zcodeEntitledCache.set = set
+	zcodeEntitledCache.byUID = byUID
 	zcodeEntitledCache.known = true
 	zcodeEntitledCache.fetched = fetched
 	zcodeEntitledCache.Unlock()
@@ -434,7 +446,7 @@ func LoadZCodeEntitled() {
 // saveZCodeEntitledLocked 原子落盘（tmp + rename，pool state.json / model.json 同模式）。
 // 调用方须持 zcodeEntitledCache 锁（路径也在锁内读）。空路径 / 写失败 → 静默
 // （内存缓存仍生效，只是这次重启要重新问一遍上游）。
-func saveZCodeEntitledLocked(set map[string]bool) {
+func saveZCodeEntitledLocked(set, byUID map[string]bool) {
 	path := zcodeEntitledPath
 	if path == "" {
 		return
@@ -444,7 +456,7 @@ func saveZCodeEntitledLocked(set map[string]bool) {
 		models = append(models, m)
 	}
 	sort.Strings(models)
-	raw, err := json.MarshalIndent(zcodeEntitledSnapshot{Models: models, Fetched: time.Now().Unix()}, "", "  ")
+	raw, err := json.MarshalIndent(zcodeEntitledSnapshot{Models: models, ByUID: byUID, Fetched: time.Now().Unix()}, "", "  ")
 	if err != nil {
 		return
 	}
@@ -473,6 +485,7 @@ func saveZCodeEntitledLocked(set map[string]bool) {
 // 池里一个 zcode 号都没有 → 清掉（别拿旧集合去收敛人家的模型表）。
 func storeZCodeEntitled(rows []creditRow) {
 	set := map[string]bool{}
+	byUID := map[string]bool{}
 	sawZCode := false
 	readOK := false // 至少有一行真的从上游读回来了
 	for _, r := range rows {
@@ -481,19 +494,25 @@ func storeZCodeEntitled(rows []creditRow) {
 		}
 		sawZCode = true
 		if !r.OK {
+			// 这一行读不到：不给它下「没有模型」的结论（byUID 里不放 false），
+			// 概览的「可用」判定会把它当作未知而不是不可用。
 			continue
 		}
 		readOK = true
+		entitled := false
 		for _, m := range r.EntitledModels {
 			if m != "" {
 				set[m] = true
+				entitled = true
 			}
 		}
+		byUID[r.UID] = entitled
 	}
 	zcodeEntitledCache.Lock()
 	defer zcodeEntitledCache.Unlock()
 	if !sawZCode {
 		zcodeEntitledCache.set = nil
+		zcodeEntitledCache.byUID = nil
 		zcodeEntitledCache.known = false
 		zcodeEntitledCache.fetched = time.Now()
 		return
@@ -503,11 +522,32 @@ func storeZCodeEntitled(rows []creditRow) {
 		return
 	}
 	zcodeEntitledCache.set = set
+	zcodeEntitledCache.byUID = byUID
 	zcodeEntitledCache.known = len(set) > 0
 	zcodeEntitledCache.fetched = time.Now()
 	if zcodeEntitledCache.known {
-		saveZCodeEntitledLocked(set)
+		saveZCodeEntitledLocked(set, byUID)
 	}
+}
+
+// zcodeAccountUsable 报告某个 zcode 号**现在是否至少能跑一个模型**（供概览「可用」列）。
+// 返回 (usable, known)：known=false 表示还没问到过这个号的额度，调用方不要据此判死。
+// 判据是该号自己的套餐 capabilities（byUID），不是号池并集——周末活动只发一个号时，
+// 并集有模型不代表每个号都能跑。
+func zcodeAccountUsable(uid string) (bool, bool) {
+	zcodeEntitledCache.RLock()
+	defer zcodeEntitledCache.RUnlock()
+	if !zcodeEntitledCache.known {
+		return false, false
+	}
+	if zcodeEntitledCache.byUID == nil {
+		return false, false
+	}
+	ok, present := zcodeEntitledCache.byUID[uid]
+	if !present {
+		return false, false
+	}
+	return ok, true
 }
 
 // zcodeEntitledModels 号池里 zcode 账号**真正能用**的模型并集，以及「是否问到过」。

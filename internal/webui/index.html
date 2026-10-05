@@ -1081,7 +1081,9 @@ function ovHealthCard(){
   return card("账号监测", "池子共 " + total + " 个号，各状态占比。环心是数量，颜色占比按全池算。",
     '<div class="donuts">' + cells + '</div>');
 }
-/* ovProducersCard 按客户端：账号数来自号池，请求 / token 来自区间统计。 */
+/* ovProducersCard 按客户端：账号 / 可用来自号池，请求 / token 来自区间统计。
+   账号列 = 健康号（总量作后缀保留）；可用列 = 健康且至少能跑一个模型——两列刻意分开，
+   状态机健康不等于真能出流量（zcode 套餐只发部分号，上游目录是整家厂商的）。 */
 function ovProducersCard(){
   var st = S.status;
   var list = (st && st.producer_totals) || [];
@@ -1098,11 +1100,16 @@ function ovProducersCard(){
     var realmRow = realms.length > 1 ? ' <span class="hint" style="margin:0">' + realms.map(function(r){
       return esc(REALM_LABEL[r.id] || r.id) + " " + r.n;
     }).join(" · ") + '</span>' : "";
+    var accCell = fmtInt(x.healthy) +
+      (x.total !== x.healthy ? ' <span class="hint" style="margin:0">/ ' + fmtInt(x.total) + '</span>' : '');
+    var usable = Number(x.usable) || 0;
+    var usableCell = (x.servable
+      ? (usable > 0 ? fmtInt(usable) : '<span style="color:var(--danger)">0</span>')
+      : '<span class="hint" style="margin:0">—</span>');
     return '<tr>' +
       '<td>' + producerTag({ producer: x.producer }) + (x.servable ? "" : ' <span class="tag warn">只读</span>') + realmRow + '</td>' +
-      '<td class="num">' + fmtInt(x.total) + '</td>' +
-      '<td class="num">' + (x.healthy === x.total ? fmtInt(x.healthy)
-        : '<span style="color:var(--warn)">' + fmtInt(x.healthy) + '</span>') + '</td>' +
+      '<td class="num">' + accCell + '</td>' +
+      '<td class="num">' + usableCell + '</td>' +
       '<td class="num">' + fmtInt(req) + '</td>' +
       '<td class="num">' + (req ? fmtPct((Number(p.success) || 0) / req) : "—") + '</td>' +
       '<td class="num">' + fmtInt(p.total_tokens) + '</td>' +
@@ -1110,7 +1117,7 @@ function ovProducersCard(){
       '</tr>';
   }).join("");
   return card("按客户端（" + list.length + " 家）",
-    "账号数来自号池；请求 / token 来自「" + ovRangeName() + "」区间统计。",
+    "账号 = 健康号（后缀为池内总量）；可用 = 健康且至少有一个模型可用；请求 / token 来自「" + ovRangeName() + "」区间统计。",
     '<div class="tablewrap"><table><thead><tr><th>客户端</th><th class="num">账号</th><th class="num">可用</th>' +
     '<th class="num">请求</th><th class="num">成功率</th><th class="num">Tokens</th><th>请求占比</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>');

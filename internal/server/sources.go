@@ -59,21 +59,82 @@ func methodLabels() map[string]string {
 // producerTotalsView /status 的「按客户端分组」计数：pool 只给 (producer,total,healthy)，
 // 显示名在这里补——前端不各写一份枚举，加客户端时只改 internal/source 一处。
 // name 对空 producer 显示「未标注」（历史上没有台账标注的凭证），不是「未知」。
+//
+// usable = 「健康 且 至少能跑一个模型」的号数，与 healthy 是两回事：zcode 的号状态机
+// 全健康，但套餐只给其中一个号发了 glm-5.3-flash，真正能出流量的只有 1 个。判定需要
+// 「这个号自己有没有模型」这类 server 侧数据（zcode 权益 / 各家免费目录），所以不在
+// pool 里算，放在这里。
 func (h *Handler) producerTotalsView() []map[string]any {
 	stats := h.cfg.Pool.ProducerTotals()
+	usable := h.usableCountsByProducer()
 	out := make([]map[string]any, 0, len(stats))
 	for _, s := range stats {
 		name := source.ProducerLabel(s.Producer)
 		if s.Producer == "" {
 			name = "未标注"
 		}
+		u := 0
+		if s.Servable {
+			u = usable[s.Producer]
+		}
 		out = append(out, map[string]any{
 			"producer": s.Producer,
 			"name":     name,
 			"total":    s.Total,
 			"healthy":  s.Healthy,
+			"usable":   u,
 			"servable": s.Servable,
 		})
+	}
+	return out
+}
+
+// usableCountsByProducer 统计每个来源「健康 且 至少能跑一个模型」的账号数。
+//
+// 口径按来源分（用户确认）：
+//   - workbuddy：目录里有免费模型（-free）→ 健康号即可用（号之间对免费模型可互换）；
+//     没有免费模型时才看 credits > 0。
+//   - zcode：看该号自己的套餐权益（entitled_models 非空）——免费额度按账号发，号池
+//     并集有模型不代表每个号都能跑。
+//   - opencode / kilo：匿名免费层，健康即可用。
+//   - 未接反代的来源（qoder 等）：0（进不了选号候选）。
+func (h *Handler) usableCountsByProducer() map[string]int {
+	out := map[string]int{}
+	if h.cfg.Pool == nil {
+		return out
+	}
+	// workbuddy 免费目录：CN / 国际任一份里有 -free 模型，健康号就算可用。
+	wbFree := false
+	for _, mi := range cachedModelsSnapshot() {
+		if mi.Free {
+			wbFree = true
+			break
+		}
+	}
+	if !wbFree && h.cfg.Upstream != nil {
+		for _, mi := range h.cfg.Upstream.GlobalModelInfosSnapshot() {
+			if mi.Free {
+				wbFree = true
+				break
+			}
+		}
+	}
+	for _, st := range h.cfg.Pool.List() {
+		if st.Disabled || st.ManualDisabled || st.Cooling {
+			continue
+		}
+		switch st.Producer {
+		case source.ProducerWorkbuddy:
+			if wbFree || st.Credits > 0 {
+				out[st.Producer]++
+			}
+		case source.ProducerZCode:
+			if ok, present := zcodeAccountUsable(st.UID); present && ok {
+				out[st.Producer]++
+			}
+		case source.ProducerOpenCode, source.ProducerKilo:
+			out[st.Producer]++
+		}
 	}
 	return out
 }
