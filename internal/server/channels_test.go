@@ -423,3 +423,44 @@ func TestOutputStoreFoldsLegacyChannelsOnLoad(t *testing.T) {
 		t.Fatalf("重写丢了通道身份字段：%+v", ch)
 	}
 }
+
+// TestChannelRunnerRetriesFailedBind 启动瞬间端口被占（旧进程没退、TIME_WAIT 等）时，
+// 通道不能永久挂在「未运行」：后台重试循环要等端口一释放就自动补起。
+// 这正是线上 7870/7871 重启后一直未运行、点一次保存才恢复的根因。
+func TestChannelRunnerRetriesFailedBind(t *testing.T) {
+	addr := freeAddr(t)
+	blocker, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("blocker listen: %v", err)
+	}
+
+	// 50ms 重试间隔：把「等端口释放」压缩到单测可承受的时长。
+	r := newChannelRunner(Config{Pool: testPoolWith()}, 50*time.Millisecond)
+	defer r.Close()
+	r.Reconcile(OutputConfig{Channels: []OutputChannel{{ID: "late", Listen: addr, Producers: []string{"zcode"}}}})
+	if sts := r.Status(); len(sts) != 1 || sts[0].Running || sts[0].Error == "" {
+		t.Fatalf("端口被占时应报未运行：%+v", sts)
+	}
+
+	// 旧进程退出 = 端口释放。此后不再动配置，只靠后台重试自愈。
+	_ = blocker.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		sts := r.Status()
+		if len(sts) == 1 && sts[0].Running && sts[0].Error == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("端口释放后通道没有自动恢复：%+v", sts)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 恢复后的监听器必须真能服务：能建 TCP + 完成一次 HTTP 往返即可（404 也算活着）。
+	cl := &http.Client{Timeout: 3 * time.Second}
+	resp, err := cl.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("恢复后端口不可服务: %v", err)
+	}
+	_ = resp.Body.Close()
+}

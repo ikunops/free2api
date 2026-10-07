@@ -14,6 +14,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sort"
@@ -60,12 +61,76 @@ type ChannelRunner struct {
 	base  Config
 	insts map[string]*channelInst
 	stat  map[string]ChannelStatus
+	// want 最近一次 Reconcile 的目标配置。后台重试循环靠它知道「哪些通道该在
+	// 但没起来」——启动瞬间旧进程端口尚未释放时 bind 失败，之后没人再动配置，
+	// 通道就永远挂在「未运行」（实测坑：重启后 7870/7871 一直 bind 失败，
+	// 点一次保存才恢复）。
+	want map[string]OutputChannel
+	// stop 关闭后台重试循环（Close 时 close 一次）。
+	stop chan struct{}
+	// stopOnce 保证 Close/Stop 对 stop 的关闭只发生一次；字面量构造（含测试）
+	// 没有初始化 stop 时，closeOnce 也保证不会对 nil channel 误操作。
+	stopOnce sync.Once
 }
+
+// channelRetryInterval 通道 bind 失败后的后台重试间隔。保守取 3s：端口释放
+// （旧进程退出、TIME_WAIT 清理）通常在这一量级；失败重试本身只做一次 bind，
+// 对已被他人永久占用的端口不会造成可感知开销（失败静默、成功才记一行日志）。
+const channelRetryInterval = 3 * time.Second
 
 // NewChannelRunner 建管理器。base 是主处理器用的同一份 Config：通道处理器由它复制而来，
 // 只有输出参数与 producer 范围不同。
 func NewChannelRunner(base Config) *ChannelRunner {
-	return &ChannelRunner{base: base, insts: map[string]*channelInst{}, stat: map[string]ChannelStatus{}}
+	return newChannelRunner(base, channelRetryInterval)
+}
+
+// newChannelRunner 带自定义重试间隔：单测把间隔压到毫秒级验证「bind 失败后
+// 端口释放能自愈」；生产路径始终走 NewChannelRunner 的 3s。
+func newChannelRunner(base Config, retryEvery time.Duration) *ChannelRunner {
+	if retryEvery <= 0 {
+		retryEvery = channelRetryInterval
+	}
+	r := &ChannelRunner{
+		base:  base,
+		insts: map[string]*channelInst{},
+		stat:  map[string]ChannelStatus{},
+		want:  map[string]OutputChannel{},
+		stop:  make(chan struct{}),
+	}
+	go r.retryLoop(retryEvery)
+	return r
+}
+
+// retryLoop 后台重试「该在但没起来」的通道（见 want 字段注释）。
+// 只补起，不停任何已运行通道——停/改仍由 Reconcile 负责，两者互不干扰。
+func (r *ChannelRunner) retryLoop(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-t.C:
+			r.retryFailed()
+		}
+	}
+}
+
+// retryFailed 对 want 中存在、insts 中没有的通道重试 start。持锁执行与 Reconcile
+// 串行，避免与配置变更的启停竞态（重复 bind 同一端口会有一个失败，但失败方
+// 只写 status 不动别的通道，重试循环下一轮自然收敛）。
+func (r *ChannelRunner) retryFailed() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, ch := range r.want {
+		if _, ok := r.insts[id]; ok {
+			continue
+		}
+		if inst := r.start(ch); inst != nil {
+			r.insts[id] = inst
+			log.Printf("[channels] 出口 %s 已在 %s 上恢复监听（后台重试）", id, ch.Listen)
+		}
+	}
 }
 
 // Reconcile 把当前运行的通道对齐到 cfg.Channels：新增/改动的重建，删掉/改名的停掉。
@@ -77,6 +142,7 @@ func (r *ChannelRunner) Reconcile(cfg OutputConfig) {
 	for _, ch := range cfg.Channels {
 		want[ch.ID] = ch
 	}
+	r.want = want // 后台重试循环的目标快照（见 retryLoop）
 	// 停：不需要了，或配置变了（端口/参数任一不同 → 重建，避免半新半旧）
 	for id, inst := range r.insts {
 		next, ok := want[id]
@@ -183,8 +249,16 @@ func (r *ChannelRunner) Status() []ChannelStatus {
 
 // Close 停掉所有通道（进程退出时调用）。
 func (r *ChannelRunner) Close() {
+	// 先停后台重试循环：否则 Close 清空 insts 后，retryLoop 可能刚好醒来又把
+	// 通道拉起来，进程退出流程里多出一批要收的 listener。
+	r.stopOnce.Do(func() {
+		if r.stop != nil {
+			close(r.stop)
+		}
+	})
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.want = map[string]OutputChannel{} // 重试目标也清空（双保险）
 	for id, inst := range r.insts {
 		inst.stop()
 		delete(r.insts, id)
