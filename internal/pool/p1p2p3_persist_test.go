@@ -157,7 +157,7 @@ func TestCreditsExpiringPersistRoundTrip(t *testing.T) {
 	fp := dir + "/state.json"
 	p := New(fp)
 	p.Add(&auth.Auth{UID: "u1"})
-	p.SetCreditsDetailed("u1", 1000, 500) // credits=1000, creditsExpiring=500
+	p.SetCreditsDetailed("u1", 1000, 500, 0) // credits=1000, creditsExpiring=500
 	p.Flush()
 
 	// 重启：creditsExpiring 应恢复。
@@ -192,7 +192,7 @@ func TestCreditsExpiringPersistWritesZero(t *testing.T) {
 	fp := dir + "/state.json"
 	p := New(fp)
 	p.Add(&auth.Auth{UID: "u1"})
-	p.SetCreditsDetailed("u1", 1000, 0) // creditsExpiring=0
+	p.SetCreditsDetailed("u1", 1000, 0, 0) // creditsExpiring=0
 	p.Flush()
 
 	raw, _ := os.ReadFile(fp)

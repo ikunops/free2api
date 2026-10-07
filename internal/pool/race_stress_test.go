@@ -54,7 +54,7 @@ func TestCooldownAccountingConcurrent(t *testing.T) {
 				case 3:
 					p.NoteSuccess(uid)
 				case 4:
-					p.SetCreditsDetailed(uid, 500, 100)
+					p.SetCreditsDetailed(uid, 500, 100, 50)
 				}
 				// 同 goroutine 族读状态（CountsDetailed/List 只读路径）。
 				_, _, _, _, _ = p.CountsDetailed()

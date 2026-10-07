@@ -59,7 +59,7 @@ func TestNoteModelCostDeductClampsAtZero(t *testing.T) {
 func TestNoteModelCostDeductsExpiring(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	p.SetCreditsDetailed("u1", 100, 50) // 50 快过期
+	p.SetCreditsDetailed("u1", 100, 50, 0) // 50 快过期
 	p.NoteModelCost("u1", "m", 20, 1000)
 	p.mu.RLock()
 	e := p.byUID["u1"]
@@ -77,7 +77,7 @@ func TestNoteModelCostDeductsExpiring(t *testing.T) {
 func TestNoteModelCostExpiringClampsAtZero(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	p.SetCreditsDetailed("u1", 100, 5)
+	p.SetCreditsDetailed("u1", 100, 5, 0)
 	p.NoteModelCost("u1", "m", 50, 1000) // 消耗 50 > expiring 5
 	p.mu.RLock()
 	e := p.byUID["u1"]

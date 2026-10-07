@@ -204,10 +204,19 @@ func (p *Pool) NoteModelCost(uid, model string, credit float64, tokens int) {
 		}
 		e.credits -= d
 		if e.creditsExpiring > 0 {
-			if d > e.creditsExpiring {
-				d = e.creditsExpiring
+			dd := d
+			if dd > e.creditsExpiring {
+				dd = e.creditsExpiring
 			}
-			e.creditsExpiring -= d
+			e.creditsExpiring -= dd
+			// 紧急档是临近档的子集，同比例扣减并保持 urgent <= expiring。
+			if e.creditsUrgent > 0 {
+				du := dd
+				if du > e.creditsUrgent {
+					du = e.creditsUrgent
+				}
+				e.creditsUrgent -= du
+			}
 		}
 	}
 	if e.modelCost == nil {
@@ -394,18 +403,20 @@ func (p *Pool) PickByUIDForModel(uid, model string) *auth.Auth {
 
 // ExpiringPreferredElsewhere 报告粘性绑定号 uid 是否应让位给「带快过期积分」的候选。
 //
-// 语义（仅收费模型）：reqModel 非空且 freeModel=false 时，若池中存在同 producer/realm、
-// 在该模型上 healthy 且未占满在途、且 creditsExpiring>0 的候选账号，而绑定号自身
-// creditsExpiring==0，返回 true。
+// 语义（仅收费模型）：reqModel 非空且 freeModel=false 时，对池中同 producer/realm、
+// 在该模型上 healthy 且未占满在途的候选账号做两级判定：
+//   - 候选中存在紧急档（creditsUrgent>0）：绑定号自己 creditsUrgent==0 就让位
+//     （即使绑定号带临近档也让位——先烧更紧急的）；
+//   - 否则候选中存在临近档（creditsExpiring>0）：绑定号自身 creditsExpiring==0 才让位
+//     （同档不让位，避免多号都有临近档时会话在号之间抖动）。
 //
-// 为什么需要：pick 的快过期积分硬分层（见 pick.go 的 anyExpiring）只在**重新选号**时
-// 生效；粘性命中路径（PickByUIDForModel）直接复用旧绑定、根本不进 pick，于是长期会话
-// 一旦在「绑定号还没快过期积分」时建立，就被永久钉在那个号上——即使此后别的号拿到了
-// 快过期奖励积分，也永远轮不到，绕过硬分层直到积分到期作废。让位一次即可：本请求解绑后
-// 由 pick 重选，落到带快过期积分的号并在流末重新绑定，后续恢复稳定。
+// 为什么需要：pick 的快过期积分硬分层（见 pick.go）只在**重新选号**时生效；粘性命中
+// 路径（PickByUIDForModel）直接复用旧绑定、根本不进 pick，于是长期会话一旦在「绑定号
+// 还没快过期积分」时建立，就被永久钉在那个号上——即使此后别的号拿到了快过期奖励积分，
+// 也永远轮不到，绕过硬分层直到积分到期作废。让位一次即可：本请求解绑后由 pick 重选，
+// 落到对应档位的号并在流末重新绑定，后续恢复稳定。
 //
-// 只判「有 / 无快过期」这一硬边界，不做层内排序或占比比较，避免多个号都带快过期时
-// 会话在号之间来回抖动。freeModel=true 时不参与（免费调用不扣积分，无烧额度诉求）。
+// freeModel=true 时不参与（免费调用不扣积分，无烧额度诉求）。
 // 空 reqModel 无法做模型级健康判定，直接返回 false（保守让绑定继续生效）。
 // 调用方无需持 p.mu。
 func (p *Pool) ExpiringPreferredElsewhere(uid, reqModel, realm, producer string, freeModel bool) bool {
@@ -415,10 +426,14 @@ func (p *Pool) ExpiringPreferredElsewhere(uid, reqModel, realm, producer string,
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	self, ok := p.byUID[uid]
-	if !ok || self.creditsExpiring > 0 {
+	if !ok {
 		return false
 	}
 	now := time.Now()
+	// 两级让位：先看有没有「紧急档」候选（urgent>0），没有再看「临近档」候选
+	// （expiring>0）。只对**合格候选**（同 realm/producer、该模型 healthy、
+	// 在途未满）算档位，避免被不可用号误导。
+	bestTier := 0 // 0=无 / 1=仅临近档 / 2=有紧急档
 	for oid, e := range p.byUID {
 		if oid == uid || e.creditsExpiring <= 0 {
 			continue
@@ -438,7 +453,19 @@ func (p *Pool) ExpiringPreferredElsewhere(uid, reqModel, realm, producer string,
 		if p.inFlightFull(e) {
 			continue
 		}
-		return true
+		if e.creditsUrgent > 0 {
+			bestTier = 2
+			break
+		}
+		bestTier = 1
+	}
+	switch bestTier {
+	case 2:
+		// 池里有紧急档候选：绑定号只要自己不够紧急（无紧急档），就让位。
+		return self.creditsUrgent == 0
+	case 1:
+		// 池里最高只有临近档：绑定号连临近档都没有，才让位。
+		return self.creditsExpiring == 0
 	}
 	return false
 }
@@ -650,6 +677,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		// 快过期积分子集 + access token 到期：管理页要能回答「余额里有多少快作废」
 		// 与「这号还能用到什么时候」。ExpiresAt 走加锁取值（RefreshToken 会改写它）。
 		CreditsExpiring: e.creditsExpiring,
+		CreditsUrgent:   e.creditsUrgent,
 		ExpiresAt:       e.a.ExpiresAtValue(),
 		// Cooling 口径含连败降权（degradeUntil）：降权期账号不可选，运维在 /status
 		// 应看到它处于非健康态（CoolRemaining 取三截止最远者，与 healthy 或门同口径）。

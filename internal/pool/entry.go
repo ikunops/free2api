@@ -32,8 +32,8 @@ const degradeReason = "consecutive failures"
 
 // Status 单个账号对外暴露的状态（脱敏）。
 type Status struct {
-	UID      string `json:"uid"`
-	Realm    string `json:"realm,omitempty"`
+	UID   string `json:"uid"`
+	Realm string `json:"realm,omitempty"`
 	// Producer 该号归属哪个 AI 客户端（workbuddy / zcode / ...），来自来源台账
 	// auths/.origins.json。与 Realm 正交：Producer 说「谁的号」，Realm 说
 	// 「走哪个域的上游」。管理页据此按客户端分组；路由也按它分域（不同客户端的
@@ -44,6 +44,10 @@ type Status struct {
 	// CreditsExpiring 快过期积分子集（credits 的子集，见 entry.creditsExpiring）。
 	// 管理页据此提示「这批积分优先消耗、不用就作废」——只看总量会误判账号余量。
 	CreditsExpiring int64 `json:"credits_expiring"`
+	// CreditsUrgent 紧急过架子集（creditsExpiring 的子集）：到期时间落在更短的
+	// 紧急窗口内（config pool.expiring_urgent，默认 7 天），选号时优先于只落入
+	// 临近档（14 天）的部分。见 entry.creditsUrgent。
+	CreditsUrgent int64 `json:"credits_urgent"`
 	// ExpiresAt access token 到期（Unix 秒，来自号池里的 auth 文件；0 = 未知）。
 	// 与 chat 路径同源（auth.ExpiresAtValue），管理页显示「这号还能用到什么时候」。
 	ExpiresAt     int64     `json:"expires_at,omitempty"`
@@ -122,7 +126,12 @@ type entry struct {
 	// 签到之间快过期权重项（weightOf 的 expiringWeight）不应失忆——签到 09:00/21:00 定期刷新，
 	// 窗口外重启会丢快过期积分偏好，可能让奖励积分到期作废。
 	creditsExpiring int64
-	successCount    int64 // 累计成功
+	// creditsUrgent 紧急过架子集（是 creditsExpiring 的子集）：签到时按更短的
+	// expiringUrgent 窗口判定，选号时构成两级硬分层的第一级——紧急档还有号可用
+	// 就只在紧急号里选；紧急档全空才退到临近档（creditsExpiring）。持久化同
+	// CreditsUrgent（stateAccount.CreditsUrgent）。
+	creditsUrgent int64
+	successCount  int64 // 累计成功
 	// errTotal 累计错误（终身累计，仅状态展示用；选号权重不消费——原「成功率」
 	// 因子已删，见 pick.weightOf 注释与 success-ema-review）。
 	errTotal    int64     // 累计错误（终身累计，供状态展示；选号权重不消费，原成功率因子已删）
@@ -288,7 +297,7 @@ func (e *entry) healthyForModel(now time.Time, reqModel string) bool {
 // 从不回收——即「map 只增不减」。而 entry.modelCost 的注释明确声称
 // 「落盘/恢复按 modelCostTTL 惰性过滤，陈旧观测不复活（同 modelCooldowns 口径）」，
 // 模型级冷却表正是靠 pruneExpiredModelCooldowns 在 pick 写锁路径做真正删除的
-//（见 pick.go「map 不无限膨胀」）。两者口径不一致：一旦某模型的观测过期，它就会
+// （见 pick.go「map 不无限膨胀」）。两者口径不一致：一旦某模型的观测过期，它就会
 // 永久占据一条内存（进程重启才清），并在后续每一轮 pick 的遍历、每次 status 遍历里
 // 被反复判定为过期（只是没人删）。
 //
@@ -405,6 +414,9 @@ type stateAccount struct {
 	// （weightOf 的 expiringWeight 项）的快过期积分偏好——重启后到下次签到之间不应失忆。
 	// 零值也显式写出（运维口径，见 err_total 注释）。
 	CreditsExpiring int64 `json:"credits_expiring"`
+	// CreditsUrgent 紧急过架子集（creditsExpiring 的子集）。与 CreditsExpiring 同步
+	// 持久化/恢复，重启后两级偏好不失忆。
+	CreditsUrgent int64 `json:"credits_urgent"`
 	// ModelCooldowns 6004 模型级独立冷却表（model → 冷却记录）。持久化：
 	// PR #96 把 6004 改成精确对齐上游重置墙钟后，单模型冷却可长达数小时，
 	// 跨重启是常态；不持久化导致每次重启 healthyForModel 失忆、重新踩一遍

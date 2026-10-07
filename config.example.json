@@ -78,7 +78,8 @@
     "degrade_cooldown_max": "2h",
     "idle_weight_per_hour": 0.5,
     "idle_weight_max": 5.0,
-    "expiring_soon": "168h",
+    "expiring_soon": "336h",
+    "expiring_urgent": "168h",
     "cost_explore_interval": "30m",
     "slot_wait": "30s"
   },

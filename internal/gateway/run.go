@@ -207,22 +207,23 @@ func Start(opts Options) (*Instance, error) {
 	up.GlobalEnabled = cfg.Global.Enabled
 
 	sch := scheduler.New(scheduler.Config{
-		Pool:                p,
-		Upstream:            up,
-		CheckinHours:        cfg.Schedule.CheckinHours,
-		TravelHours:         cfg.Schedule.TravelHours,
-		ActivityHours:       cfg.Schedule.ActivityHours,
-		KeepaliveHours:      cfg.Schedule.KeepaliveHours,
-		SchoolHours:         cfg.Schedule.SchoolHours,
-		CatHours:            cfg.Schedule.CatHours,
-		ActivityReportCount: cfg.Schedule.ActivityReportCount,
-		ExpiringSoonWindow:  cfg.ExpiringSoonDur, // 快过期积分优先消耗（issue:积分过期）
-		CheckinDisabled:     !cfg.Schedule.CheckinEnabled,
-		TravelDisabled:      !cfg.Schedule.TravelEnabled,
-		ActivityDisabled:    !cfg.Schedule.ActivityEnabled,
-		KeepaliveDisabled:   !cfg.Schedule.KeepaliveEnabled,
-		SchoolDisabled:      !cfg.Schedule.SchoolEnabled,
-		CatDisabled:         !cfg.Schedule.CatEnabled,
+		Pool:                 p,
+		Upstream:             up,
+		CheckinHours:         cfg.Schedule.CheckinHours,
+		TravelHours:          cfg.Schedule.TravelHours,
+		ActivityHours:        cfg.Schedule.ActivityHours,
+		KeepaliveHours:       cfg.Schedule.KeepaliveHours,
+		SchoolHours:          cfg.Schedule.SchoolHours,
+		CatHours:             cfg.Schedule.CatHours,
+		ActivityReportCount:  cfg.Schedule.ActivityReportCount,
+		ExpiringSoonWindow:   cfg.ExpiringSoonDur,   // 临近档（14d）优先消耗（issue:积分过期）
+		ExpiringUrgentWindow: cfg.ExpiringUrgentDur, // 紧急档（7d）优先于临近档
+		CheckinDisabled:      !cfg.Schedule.CheckinEnabled,
+		TravelDisabled:       !cfg.Schedule.TravelEnabled,
+		ActivityDisabled:     !cfg.Schedule.ActivityEnabled,
+		KeepaliveDisabled:    !cfg.Schedule.KeepaliveEnabled,
+		SchoolDisabled:       !cfg.Schedule.SchoolEnabled,
+		CatDisabled:          !cfg.Schedule.CatEnabled,
 	})
 	switch {
 	case !cfg.Schedule.CheckinEnabled:
@@ -271,17 +272,18 @@ func Start(opts Options) (*Instance, error) {
 	// 两项不同（见 internal/server/channels.go）。抽成变量是为了让主口与通道口共用一份，
 	// 避免两处各写一遍漏字段。
 	baseCfg := server.Config{
-		ExpiringSoon: cfg.ExpiringSoonDur, // /admin/credits 的快过期分桶窗口
-		Pool:         p,
-		Upstream:     up,
-		APIKey:       cfg.APIKey,
-		Session:      sessRouter,
-		StickyCount:  sessCount,
-		RedisMode:    redisMode,
-		SoftCooldown: cfg.SoftRateDur,
-		SlotWait:     cfg.SlotWaitDur, // 在途占满时的排队等待（pool.slot_wait，默认 30s）
-		PromptMode:   cfg.Prompt.Mode,
-		PromptText:   cfg.PromptText,
+		ExpiringSoon:   cfg.ExpiringSoonDur,   // /admin/credits 的临近分桶窗口
+		ExpiringUrgent: cfg.ExpiringUrgentDur, // /admin/credits 的紧急分桶窗口
+		Pool:           p,
+		Upstream:       up,
+		APIKey:         cfg.APIKey,
+		Session:        sessRouter,
+		StickyCount:    sessCount,
+		RedisMode:      redisMode,
+		SoftCooldown:   cfg.SoftRateDur,
+		SlotWait:       cfg.SlotWaitDur, // 在途占满时的排队等待（pool.slot_wait，默认 30s）
+		PromptMode:     cfg.Prompt.Mode,
+		PromptText:     cfg.PromptText,
 		// global realm 开关（handler 侧第三道闸：modelList 据此决定是否列 global 名单）。
 		GlobalEnabled: cfg.Global.Enabled,
 		// 运维管理端点开关（config admin.enabled，默认 false）。

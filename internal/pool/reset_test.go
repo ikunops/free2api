@@ -27,7 +27,7 @@ func resetTestEntry(t *testing.T, p *Pool, uid string) *entry {
 func TestResetRuntimeClearsAllRuntimeState(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	p.SetCreditsDetailed("u1", 4242, 42)
+	p.SetCreditsDetailed("u1", 4242, 42, 0)
 
 	now := time.Now()
 	e := resetTestEntry(t, p, "u1")

@@ -164,6 +164,14 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 		if expiring > s.Credits {
 			expiring = s.Credits
 		}
+		// creditsUrgent 恢复时钳到 [0, expiring]（与 SetCreditsDetailed 写入钳制对称）。
+		urgent := s.CreditsUrgent
+		if urgent < 0 {
+			urgent = 0
+		}
+		if urgent > expiring {
+			urgent = expiring
+		}
 		// （旧文件的 success_ema/error_ema 字段在 stateAccount 已删除，读取时被
 		// JSON 解码自然忽略——无害遗留，不反推不迁移；成功率 EMA 因子已删。）
 		e := &entry{
@@ -183,6 +191,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			sessionDeadFails: s.SessionDeadFails,
 			consecutiveFails: s.ConsecutiveFails,
 			creditsExpiring:  expiring,
+			creditsUrgent:    urgent,
 		}
 		// 恢复熔断器：breakerUntil 在未来才恢复（惰性过滤过期/零值，与落盘同口径）。
 		// retryCount 仅在 breakerUntil 未过期时恢复——已过期则归零（不保留无用退避指数）。
@@ -430,6 +439,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			BreakerUntil:     breakerUntil,
 			RetryCount:       retryCount,
 			CreditsExpiring:  e.creditsExpiring,
+			CreditsUrgent:    e.creditsUrgent,
 			ModelCooldowns:   mcs,
 			ModelCosts:       mcosts,
 		}

@@ -48,9 +48,11 @@ type creditRow struct {
 	// 「逃生门」（config global.enabled=false）强制按 CN 路由——这时的上游失败
 	// 不是余额问题，是路由/网络问题，必须让运维一眼看出来，故单独透出。
 	RealmStored string `json:"realm_stored,omitempty"`
-	// Remain 当前可花余额（上游权威），Expiring 其中在快过期窗口内、不用就作废的部分。
+	// Remain 当前可花余额（上游权威），Expiring 其中在临近窗口内、不用就作废的部分，
+	// Urgent 是 Expiring 里更紧急（更短窗口）的子集。
 	Remain   int64 `json:"remain"`
 	Expiring int64 `json:"expiring"`
+	Urgent   int64 `json:"urgent,omitempty"`
 	// Total 套餐总量 / Used 已用量 / Packages 套餐数；上游不给就省略（不编造 0）。
 	Total    *int64 `json:"total,omitempty"`
 	Used     *int64 `json:"used,omitempty"`
@@ -147,7 +149,7 @@ func (h *Handler) collectCredits() []creditRow {
 	list := h.cfg.Pool.List()
 	out := make([]creditRow, len(list))
 	var wg sync.WaitGroup
-	soon := h.cfg.ExpiringSoon
+	soon, urgent := h.cfg.ExpiringSoon, h.cfg.ExpiringUrgent
 	// zcode 号的额度要靠 (zcodejwttoken, device mid) 这对凭据去读，而这对凭据不在
 	// 反代凭据里——所以先把池里所有 zcode 号的凭据按三层兜底解析好；池里没有
 	// zcode 号就完全不读盘。
@@ -176,7 +178,7 @@ func (h *Handler) collectCredits() []creditRow {
 			wg.Add(1)
 			go func(i int, plan zcodeCredPlan) {
 				defer wg.Done()
-				h.fillZCodeCredit(&out[i], plan, soon)
+				h.fillZCodeCredit(&out[i], plan, soon, urgent)
 			}(i, plan)
 			continue
 		}
@@ -190,7 +192,7 @@ func (h *Handler) collectCredits() []creditRow {
 		wg.Add(1)
 		go func(i int, a *auth.Auth) {
 			defer wg.Done()
-			remain, used, size, packs, expiring, err := h.cfg.Upstream.UserResourceFull(a, soon)
+			remain, used, size, packs, expiring, urgentCredit, err := h.cfg.Upstream.UserResourceFull(a, soon, urgent)
 			if err != nil {
 				msg := humanizeUpstreamErr(err.Error())
 				if globalForcedCN {
@@ -201,6 +203,7 @@ func (h *Handler) collectCredits() []creditRow {
 			}
 			out[i].Remain = remain
 			out[i].Expiring = expiring
+			out[i].Urgent = urgentCredit
 			out[i].Packages = packs
 			if size > 0 {
 				s, u := size, used
@@ -290,7 +293,7 @@ func (h *Handler) resolveZCodeCreds(list []pool.Status) map[string]zcodeCredPlan
 //
 // 凭据从 plan 里来（已在 collectCredits 里按三层兜底解析好）；plan.note 非空 =
 // 没解析到凭据，如实报「读不到」，不返回空行让人误以为这号没额度。
-func (h *Handler) fillZCodeCredit(row *creditRow, plan zcodeCredPlan, soon time.Duration) {
+func (h *Handler) fillZCodeCredit(row *creditRow, plan zcodeCredPlan, soon, urgent time.Duration) {
 	if plan.note != "" {
 		row.Error = plan.note
 		return
@@ -312,7 +315,7 @@ func (h *Handler) fillZCodeCredit(row *creditRow, plan zcodeCredPlan, soon time.
 	row.Unit = "token"
 	row.EntitledModels = bal.EntitledModels()
 	row.PlanSummary = bal.PlanSummary()
-	var total, used, remain, expiring, expires int64
+	var total, used, remain, expiring, urgentRemain, expires int64
 	now := time.Now()
 	for _, g := range bal.Balances {
 		t, u := int64(g.TotalUnits), int64(g.UsedUnits)
@@ -327,10 +330,13 @@ func (h *Handler) fillZCodeCredit(row *creditRow, plan zcodeCredPlan, soon time.
 			}
 			if soon > 0 && time.Unix(e, 0).Sub(now) <= soon {
 				expiring += avail
+				if urgent > 0 && time.Unix(e, 0).Sub(now) <= urgent {
+					urgentRemain += avail
+				}
 			}
 		}
 	}
-	row.Remain, row.Expiring, row.ExpiresAt = remain, expiring, expires
+	row.Remain, row.Expiring, row.Urgent, row.ExpiresAt = remain, expiring, urgentRemain, expires
 	if total > 0 {
 		tv, uv := total, used
 		row.Total, row.Used = &tv, &uv

@@ -61,13 +61,13 @@ func TestFillZCodeCreditExplainsMissingCred(t *testing.T) {
 	h := &Handler{}
 
 	var row creditRow
-	h.fillZCodeCredit(&row, zcodeCredPlan{note: "号池文件与 zcode 账本里都没有这个号的 zcodejwttoken"}, 0)
+	h.fillZCodeCredit(&row, zcodeCredPlan{note: "号池文件与 zcode 账本里都没有这个号的 zcodejwttoken"}, 0, 0)
 	if row.OK || row.Error == "" || !strings.Contains(row.Error, "zcodejwttoken") {
 		t.Fatalf("缺凭据时必须报错并点明 zcodejwttoken，得到 ok=%v err=%q", row.OK, row.Error)
 	}
 
 	var row2 creditRow
-	h.fillZCodeCredit(&row2, zcodeCredPlan{}, 0)
+	h.fillZCodeCredit(&row2, zcodeCredPlan{}, 0, 0)
 	if row2.OK || !strings.Contains(row2.Error, "zcodejwttoken") {
 		t.Fatalf("空凭据时必须报 zcodejwttoken，得到 ok=%v err=%q", row2.OK, row2.Error)
 	}

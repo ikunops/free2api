@@ -161,23 +161,39 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm, producer string, fre
 			ws = append(ws, weighted{e: e, w: p.weightOf(e, maxCredits, now), tier: ti, cost1k: ci})
 		}
 	}
-	// 快过期积分硬分层（收费模型分支，层内）：本层只要有一个号带快过期积分，就只在
-	// 「带快过期积分」的号里挑。为什么从软加成升级为硬过滤：creditsExpiring 是 credits
-	// 的子集，而 credits 项（×10）量级远大于 expiring 项，实测 A(100 积分全快过期) 权重
-	// 8.35 仍输给 B(2889 积分、无快过期) 的 11.00 —— 快过期积分永远排不上号、到期作废。
-	// 修成硬分层后 A 类号必胜；层内再按 expiringWeight 拉开号与号的差距（不把流量全压一个号）。
+	// 快过期积分两级硬分层（收费模型分支，层内）：
+	//   紧急档（urgent，默认 7 天）> 临近档（expiring，默认 14 天，含紧急档）。
+	// 本层只要有一个号带紧急积分，就只在紧急号里挑；紧急档全空才轮到临近档；
+	// 两级都空则不过滤（ws 保持不变）。
+	// 为什么从软加成升级为硬过滤：creditsExpiring 是 credits 的子集，而 credits 项
+	// （×10）量级远大于 expiring 项，实测 A(100 积分全快过期) 权重 8.35 仍输给
+	// B(2889 积分、无快过期) 的 11.00 —— 快过期积分永远排不上号、到期作废。
+	// 修成硬分层后 A 类号必胜；层内再按 expiringWeight/urgentWeight 拉开号与号差距。
 	// 放在成本层**之内**：成本层（免费 > 未知 > 收费）仍是外层语义，本过滤只会让
 	// 「同价位里先用快过期的」，不会把实测便宜的号换成为烧积分而用的贵号。
-	// 本层全部无快过期积分时不过滤（ws 保持不变），空集不可能出现（过滤条件自身非空）。
 	if !freeModel && len(ws) > 1 {
-		anyExpiring := false
+		// 两级：先看紧急档（urgent，默认 7 天）——有号带紧急积分就只在紧急号里选；
+		// 紧急档全空再看临近档（expiring，默认 14 天）。两级都空则不过滤。
+		urgent, expiring := false, false
 		for _, we := range ws {
-			if we.e.creditsExpiring > 0 {
-				anyExpiring = true
+			if we.e.creditsUrgent > 0 {
+				urgent = true
 				break
 			}
+			if we.e.creditsExpiring > 0 {
+				expiring = true
+			}
 		}
-		if anyExpiring {
+		switch {
+		case urgent:
+			kept := ws[:0]
+			for _, we := range ws {
+				if we.e.creditsUrgent > 0 {
+					kept = append(kept, we)
+				}
+			}
+			ws = kept
+		case expiring:
 			kept := ws[:0]
 			for _, we := range ws {
 				if we.e.creditsExpiring > 0 {
@@ -351,6 +367,11 @@ type weighted struct {
 // 硬分层（anyExpiring）保证，本常量负责让层内多个带快过期积分的号不要平均分摊。
 const expiringWeight = 30.0
 
+// urgentWeight 紧急档（比临近档更短窗口）积分占比的额外权重系数。两级判定下
+// 硬分层已经保证「有紧急档先烧紧急档」，本常量负责在多个紧急号之间继续拉开差距，
+// 避免平均分摊；取值与 expiringWeight 同量级（它是子集，两项叠加不冲突）。
+const urgentWeight = 30.0
+
 // pickWeighted 三因子加权随机（claude-api selectWeightedRandom 参考口径）：
 //
 //		weight = credits 比例 × 10 + 快过期积分占比 × expiringWeight + idleWeight
@@ -421,6 +442,11 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 	// 与成本分层（costTier 优先免费）正交：那是按"实测扣费"分层，这是按"过期紧迫度"。
 	if e.credits > 0 && e.creditsExpiring > 0 {
 		w += float64(e.creditsExpiring) / float64(e.credits) * expiringWeight
+	}
+	// 1c. 紧急档加成（两级判定的第二因子）：urgent ⊆ expiring，占总量比例越高，
+	// 越该在这层里被优先烧掉。
+	if e.credits > 0 && e.creditsUrgent > 0 {
+		w += float64(e.creditsUrgent) / float64(e.credits) * urgentWeight
 	}
 	// 2. 闲置补偿。
 	if e.lastUsed.IsZero() {

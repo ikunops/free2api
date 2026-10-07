@@ -33,10 +33,14 @@ type Config struct {
 	// 默认 5 条同一 conversationId 内多轮上报把 chat_5 刷满；0/缺省=1 兼容旧行为。
 	ActivityReportCount int
 
-	// ExpiringSoonWindow 快过期积分窗口：签到查余额时，把到期时间 <= now+window 的
-	// 套餐余额标记为"快过期"（pool 据此优先消耗，见 entry.creditsExpiring）。
-	// <=0 时禁用分桶（全部归长期，行为与引入前一致）。默认建议 7*24h。
+	// ExpiringSoonWindow 临近过期窗口：签到查余额时，把到期时间 <= now+window 的
+	// 套餐余额标记为"临近过期"，选号时优先消耗（见 entry.creditsExpiring）。
+	// <=0 时禁用分桶（全部归长期，行为与引入前一致）。
 	ExpiringSoonWindow time.Duration
+	// ExpiringUrgentWindow 两级判定的第一级（紧急，默认 7 天）：到期时间 <= now+window 的
+	// 积分是 ExpiringSoonWindow 的子集，选号时优先于仅落入临近档的积分
+	// （见 entry.creditsUrgent 与 pool.pick 的两级硬分层）。<=0 = 关闭紧急级。
+	ExpiringUrgentWindow time.Duration
 
 	// CheckinDisabled 显式关闭签到排程（对应 config 的 schedule.checkin_enabled=false）。
 	// 禁用后不再有任何签到时点。旅行不再搭签到便车（已剥离为独立排程）。
@@ -418,7 +422,8 @@ func (s *Scheduler) CheckinAll() ([]CheckinOutcome, error) {
 //
 // ExpiringSoonWindow<=0 时退化为纯总量（与引入分桶前一致）。
 func (s *Scheduler) refreshBalance(uid string, a *auth.Auth, oc *CheckinOutcome) bool {
-	remain, buckets, err := s.cfg.Upstream.UserResourceDetailed(a, s.cfg.ExpiringSoonWindow)
+	remain, buckets, err := s.cfg.Upstream.UserResourceDetailed(
+		a, s.cfg.ExpiringSoonWindow, s.cfg.ExpiringUrgentWindow)
 	if err != nil {
 		log.Printf("user-resource %s: %v", logfmt.Label(uid, oc.Nickname), err)
 		oc.Status = CheckinFail
@@ -426,7 +431,7 @@ func (s *Scheduler) refreshBalance(uid string, a *auth.Auth, oc *CheckinOutcome)
 		return false
 	}
 	s.cfg.Pool.ReenableIfCredits(uid, remain)
-	s.cfg.Pool.SetCreditsDetailed(uid, remain, buckets.Expiring)
+	s.cfg.Pool.SetCreditsDetailed(uid, remain, buckets.Expiring, buckets.Urgent)
 	oc.Credits = &remain
 	return true
 }

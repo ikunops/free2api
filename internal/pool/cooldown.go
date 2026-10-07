@@ -24,9 +24,10 @@ func (p *Pool) SetCredits(uid string, credits int64) {
 	}
 }
 
-// SetCreditsDetailed 更新账号余额总量 + 快过架子集（签到时调用，供优先消耗快过期积分）。
-// expiring 会被钳到 [0, credits]：上游分桶异常时不污染权重。
-func (p *Pool) SetCreditsDetailed(uid string, credits, expiring int64) {
+// SetCreditsDetailed 更新账号余额总量 + 临近/紧急两级快过架子集（签到时调用）。
+// expiring 钳到 [0, credits]，urgent 钳到 [0, expiring]（urgent ⊆ expiring）：
+// 上游分桶异常时不污染权重。
+func (p *Pool) SetCreditsDetailed(uid string, credits, expiring, urgent int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
@@ -36,8 +37,15 @@ func (p *Pool) SetCreditsDetailed(uid string, credits, expiring int64) {
 		if expiring > credits {
 			expiring = credits
 		}
+		if urgent < 0 {
+			urgent = 0
+		}
+		if urgent > expiring {
+			urgent = expiring
+		}
 		e.credits = credits
 		e.creditsExpiring = expiring
+		e.creditsUrgent = urgent
 		p.dirty.Store(true)
 	}
 }

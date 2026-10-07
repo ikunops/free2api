@@ -155,9 +155,13 @@ type Config struct {
 		DegradeCooldownMax string  `json:"degrade_cooldown_max"` // 降权时长的上限钳制，默认 "2h"（仅当 cooldown 超该值才钳制）
 		IdleWeightPerHour  float64 `json:"idle_weight_per_hour"` // 闲置补偿：每小时未用 +0.5 权重
 		IdleWeightMax      float64 `json:"idle_weight_max"`      // 闲置补偿封顶，默认 5.0
-		// ExpiringSoon 快过期积分窗口（如 "168h"=7天）：签到查余额时，到期时间在此窗口内
-		// 的积分被标记为"快过期"，选号优先消耗（issue:积分过期）。空/0 = 禁用分桶。
+		// ExpiringSoon 临近过期窗口（如 "336h"=14天）：签到查余额时，到期时间在此窗口内
+		// 的积分被标记为"临近过期"，选号时优先消耗（issue:积分过期）。空/0 = 禁用分桶。
 		ExpiringSoon string `json:"expiring_soon"`
+		// ExpiringUrgent 紧急过期窗口（如 "168h"=7天）：是 ExpiringSoon 的子集，两级判定
+		// 的第一级——先烧紧急档，紧急档空了再烧临近档（见 pool.pick 的两级硬分层）。
+		// 空值回落默认 168h；0/负 = 关闭紧急级（退回单级）；大于 soon 时钳到 soon。
+		ExpiringUrgent string `json:"expiring_urgent"`
 		// CostExploreInterval costTier 条件探索窗口（issue #136 方案 a′）：tier 0
 		// 垄断层存在且 tier 1 有成员时，距上次探索 ≥ 窗口则本次 pick 生效层切
 		// tier 1-only（探索=搭车改道，零新增上游请求；成功即毕业，失败走既有
@@ -185,6 +189,8 @@ type Config struct {
 	SessionTTL          time.Duration `json:"-"`
 	SessionGCInterval   time.Duration `json:"-"`
 	ExpiringSoonDur     time.Duration `json:"-"`
+	// ExpiringUrgentDur 解析后的紧急窗口（0 = 关闭紧急级；恒 <= ExpiringSoonDur）。
+	ExpiringUrgentDur time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
 	// SlotWaitDur 解析后的排队等待时长（pool.slot_wait，默认 30s；0 = 不排队）。
@@ -231,7 +237,8 @@ func Default() *Config {
 	c.Pool.DegradeCooldownMax = "2h"
 	c.Pool.IdleWeightPerHour = 0.5
 	c.Pool.IdleWeightMax = 5.0
-	c.Pool.ExpiringSoon = "336h" // 快过期窗口默认 14 天：官方活动奖励积分多在两周内过期。
+	c.Pool.ExpiringSoon = "336h"   // 临近窗口默认 14 天：官方活动奖励积分多在两周内过期。
+	c.Pool.ExpiringUrgent = "168h" // 紧急窗口默认 7 天：14 天档里再分出一档先烧的。
 	// 7 天（168h）实测偏窄——CN 版奖励包常在 10-20 天后到期，落在窗口外就
 	// 不参与优先消耗，临期临头才想起来，已经来不及规划用量。14 天能提前一轮排期。
 	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
@@ -334,6 +341,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_EXPIRING_SOON"); v != "" {
 		c.Pool.ExpiringSoon = v
 	}
+	if v := os.Getenv("WB2A_EXPIRING_URGENT"); v != "" {
+		c.Pool.ExpiringUrgent = v
+	}
 	if v := os.Getenv("WB2A_ADMIN_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Admin.Enabled = b
@@ -426,6 +436,20 @@ func (c *Config) normalize() error {
 	}
 	if c.ExpiringSoonDur < 0 {
 		c.ExpiringSoonDur = 0 // 负值视为禁用，避免 upstream 判定窗口反转
+	}
+	// 紧急窗口（两级判定的第一级）：空值回落默认 168h；0/负 = 关闭紧急级；
+	// 大于 soon 时钳到 soon（urgent 必须是 soon 的子集），soon 关闭时一并关闭。
+	if c.Pool.ExpiringUrgent == "" {
+		c.Pool.ExpiringUrgent = "168h"
+	}
+	if c.ExpiringUrgentDur, err = time.ParseDuration(c.Pool.ExpiringUrgent); err != nil {
+		return fmt.Errorf("pool.expiring_urgent: %w", err)
+	}
+	if c.ExpiringUrgentDur < 0 {
+		c.ExpiringUrgentDur = 0
+	}
+	if c.ExpiringUrgentDur > c.ExpiringSoonDur {
+		c.ExpiringUrgentDur = c.ExpiringSoonDur
 	}
 	// costTier 探索窗口（issue #136）：空值回落默认 30m（Default 已置；此兜底覆盖
 	// 显式 ""）；"0" 是合法值（关停，完全回到现状行为），不回落；负值钳 0 同关停

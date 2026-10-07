@@ -1197,12 +1197,13 @@ function ovCreditsCard(){
   var groups = {};
   list.forEach(function(x){
     var k = x.producer || "none";
-    var g = groups[k] || (groups[k] = { n: 0, ok: 0, credit: 0, token: 0, expiring: 0 });
+    var g = groups[k] || (groups[k] = { n: 0, ok: 0, credit: 0, token: 0, expiring: 0, urgent: 0 });
     g.n++;
     if (x.ok) g.ok++;
     if (x.unit === "token") g.token += Number(x.remain) || 0;
     else g.credit += Number(x.remain) || 0;
     g.expiring += Number(x.expiring) || 0;
+    g.urgent += Number(x.urgent) || 0;
   });
   var rows = Object.keys(groups).map(function(k){
     var g = groups[k];
@@ -1213,7 +1214,9 @@ function ovCreditsCard(){
     return '<tr><td>' + producerTag({ producer: k }) + '</td>' +
       '<td class="num">' + g.ok + ' / ' + g.n + '</td>' +
       '<td class="num">' + esc(parts.join(" · ")) + '</td>' +
-      '<td class="num">' + (g.expiring ? '<span style="color:var(--warn)">' + esc(fmtInt(Math.round(g.expiring))) + '</span>' : "0") + '</td></tr>';
+      '<td class="num">' + (g.expiring ? '<span style="color:var(--warn)">' + esc(fmtInt(Math.round(g.expiring))) +
+        (g.urgent ? '<div class="hint" style="margin:2px 0 0">紧急 ' + esc(fmtInt(Math.round(g.urgent))) + '</div>' : "") +
+        '</span>' : "0") + '</td></tr>';
   }).join("");
   var warn = list.filter(function(x){
     if (!x.ok) return true;
@@ -1777,6 +1780,7 @@ function creditCell(a){
     if (c.total) sub.push("总量 " + fmtNum(c.total, c.unit));
     if (c.used) sub.push("已用 " + fmtNum(c.used, c.unit));
     if (c.expiring) sub.push("快过期 " + fmtNum(c.expiring, c.unit));
+    if (c.urgent) sub.push("紧急 " + fmtNum(c.urgent, c.unit));
     // 读到额度用的是哪一层凭据（号池文件 / zcode 账本 / ZCode 应用登录态）。
     // 后两层是兜底，运维要知道这个数字是不是随号池文件走的那一份。
     if (c.cred_source) sub.push("凭据 " + c.cred_source);

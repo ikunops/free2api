@@ -103,9 +103,12 @@ type Config struct {
 	ChannelID     string
 	ChannelStatus func() []ChannelStatus
 
-	// ExpiringSoon 快过期积分窗口（config expiring_soon_days，与调度器签到用同一值）。
+	// ExpiringSoon 临近过期窗口（config pool.expiring_soon，与调度器签到用同一值）。
 	// 仅供 /admin/credits 把余额里「窗口内就要作废」的部分单独标出来；0 = 不分桶。
 	ExpiringSoon time.Duration
+	// ExpiringUrgent 紧急过期窗口（两级判定的第一级，是 ExpiringSoon 的子集）；
+	// /admin/credits 据此额外标出「更紧急」的部分；0 = 不算紧急档。
+	ExpiringUrgent time.Duration
 
 	// Shutdown 触发进程优雅停机（由 cmd/server 注入 ctx 的 cancel）。
 	//

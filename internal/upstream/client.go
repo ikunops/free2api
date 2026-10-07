@@ -1561,7 +1561,7 @@ func (c *Client) billingMeterJSON(a *auth.Auth, paths []string, method string, b
 
 // UserResource 查询账号当前可花费积分余额（所有套餐 CycleCapacity 聚合，负值钳 0）。
 func (c *Client) UserResource(a *auth.Auth) (remain int64, err error) {
-	remain, _, err = c.UserResourceDetailed(a, 0)
+	remain, _, err = c.UserResourceDetailed(a, 0, 0)
 	return remain, err
 }
 
@@ -1570,7 +1570,10 @@ func (c *Client) UserResource(a *auth.Auth) (remain int64, err error) {
 // remain 会让"明天就作废"的积分与"30 天后才过期"的积分被无差别选号，
 // 导致快过期积分没优先用掉、白白作废。拆桶后选号可优先消耗 Expiring。
 type CreditBuckets struct {
-	// Expiring 在 soon 窗口内（<= now+soon）即将过期的可用积分。
+	// Urgent 在 urgent 窗口内（<= now+urgent）即将过期的可用积分，是 Expiring 的子集。
+	// 两级判定第一级：优先烧 Urgent，Urgent 空了再烧 Expiring 的其余部分。
+	Urgent int64
+	// Expiring 在 soon 窗口内（<= now+soon）即将过期的可用积分（含 Urgent）。
 	Expiring int64
 	// Stable 其余有效积分（到期时间更远或无到期时间）。
 	Stable int64
@@ -1583,7 +1586,8 @@ func (b CreditBuckets) Total() int64 { return b.Expiring + b.Stable }
 const packageEndLayout = "2006-01-02 15:04:05"
 
 // UserResourceDetailed 同 UserResource，但按到期时间把余额拆成 CreditBuckets。
-// soon>0 时把到期时间 <= now+soon 的套餐余额计入 Expiring；soon<=0 时全部归 Stable。
+// soon>0 时把到期时间 <= now+soon 的套餐余额计入 Expiring；其中 <= now+urgent 的
+// 子集再计入 Urgent（两级判定：先烧紧急、再烧临近）。soon<=0 时全部归 Stable。
 // 到期时间判据是 CycleEndTime（R-A/R-B 实测：CN/global 两域字段全集均无 PackageEndTime，
 // 旧判据恒 miss 致 Expiring 恒 0；CycleEndTime 是上游真实下发的到期时刻——
 // global Bonus Pack 14 天赠送积分的到期时间即此字段）。解析失败/缺失的套餐保守
@@ -1591,7 +1595,7 @@ const packageEndLayout = "2006-01-02 15:04:05"
 // 单套餐取数统一调 packageRemainUsed（与 ResourceSummary/cmd/credit 同一事实来源，
 // 含 remain 钳 [0,size] 与 used 修正；A/B 口径在 remain 维度实测一致，此改动消除
 // 双份逻辑漂移——旧中间 switch 只钳负值，上游脏数据 CycleRemain>Size 时会高估）。
-func (c *Client) UserResourceDetailed(a *auth.Auth, soon time.Duration) (remain int64, buckets CreditBuckets, err error) {
+func (c *Client) UserResourceDetailed(a *auth.Auth, soon, urgent time.Duration) (remain int64, buckets CreditBuckets, err error) {
 	now := time.Now()
 	resp, err := c.getUserResourceBody(a)
 	if err != nil {
@@ -1616,6 +1620,9 @@ func (c *Client) UserResourceDetailed(a *auth.Auth, soon time.Duration) (remain 
 			if end, perr := time.ParseInLocation(packageEndLayout, acct.CycleEndTime, softRateResetLoc); perr == nil {
 				if !end.After(now.Add(soon)) {
 					buckets.Expiring += r
+					if urgent > 0 && !end.After(now.Add(urgent)) {
+						buckets.Urgent += r
+					}
 					continue
 				}
 			}
@@ -1711,16 +1718,16 @@ func (c *Client) ResourceSummary(a *auth.Auth) (remain, used, size int64, packs 
 }
 
 // UserResourceFull 一次 get-user-resource 请求给出余额全貌：remain/used/size/packs
-// 与「快过期子集」expiring（soon 窗口内到期的可花部分）。
+// 与「快过期子集」expiring（soon 窗口内到期的可花部分）及其子集 urgent（urgent 窗口内）。
 //
 // 为什么需要它：ResourceSummary 与 UserResourceDetailed 各自会打同一个接口（两套解析
 // 口径历史不同）。运维面板既想要总量又想标出快过期部分，走两次等于把上游调用量翻倍。
 // 本方法把两套聚合口径合并进一次请求，数值与两个旧方法逐字一致（remain 的负值钳零
 // 沿用 UserResourceDetailed 口径）。soon<=0 = 不算快过期桶（expiring 恒 0）。
-func (c *Client) UserResourceFull(a *auth.Auth, soon time.Duration) (remain, used, size int64, packs int, expiring int64, err error) {
+func (c *Client) UserResourceFull(a *auth.Auth, soon, urgent time.Duration) (remain, used, size int64, packs int, expiring, urgentOut int64, err error) {
 	resp, err := c.getUserResourceBody(a)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
 	now := time.Now()
 	for _, acct := range resp.Response.Data.Accounts {
@@ -1744,6 +1751,9 @@ func (c *Client) UserResourceFull(a *auth.Auth, soon time.Duration) (remain, use
 			if end, perr := time.ParseInLocation(packageEndLayout, acct.CycleEndTime, softRateResetLoc); perr == nil {
 				if !end.After(now.Add(soon)) {
 					expiring += r
+					if urgent > 0 && !end.After(now.Add(urgent)) {
+						urgentOut += r
+					}
 				}
 			}
 		}
@@ -1761,7 +1771,7 @@ func (c *Client) UserResourceFull(a *auth.Auth, soon time.Duration) (remain, use
 			used = derived
 		}
 	}
-	return remain, used, size, packs, expiring, nil
+	return remain, used, size, packs, expiring, urgentOut, nil
 }
 
 // respAccount 供 packageRemainUsed 解析的套餐字段（与 cmd/credit resourcePackage 同构）。

@@ -8,7 +8,7 @@
 // 刻意**不动**的字段（与 transition.go 的迁移矩阵保持一致的正交性）：
 //   - disabled / manualDisabled：一个是「系统判定这号坏了」的终态，一个是运维意图。
 //     复位不是解禁（解禁是 revive / enable 的活）——顺手清掉会把坏号静默放回选号池。
-//   - credits / creditsExpiring：上游事实，不是本进程的运行时观测。
+//   - credits / creditsExpiring / creditsUrgent：上游事实，不是本进程的运行时观测。
 //   - modelCost：历史成本观测（选号权重用），与「失败了」无关。
 package pool
 
