@@ -129,3 +129,38 @@ func TestSetCreditsLeavesExpiringUnchanged(t *testing.T) {
 	}
 	p.mu.RUnlock()
 }
+
+// TestExpiringPreferredElsewhere 粘性绑定号无快过期积分、池中存在带快过期积分的可用号时，
+// 报告「应让位」；绑定号自身带快过期、或候选都无快过期时不让位。
+// 回归锚点：长期会话被粘性钉在无快过期号上，绕过硬分层导致快过期积分到期作废。
+func TestExpiringPreferredElsewhere(t *testing.T) {
+	p := New("")
+	p.SetProducerOf(func(string) string { return "workbuddy" })
+	p.Add(&auth.Auth{UID: "pinned"})
+	p.Add(&auth.Auth{UID: "expiring"})
+	p.SetCreditsDetailed("pinned", 5000, 0)    // 绑定号：积分多但无快过期
+	p.SetCreditsDetailed("expiring", 100, 100) // 有快过期
+
+	// pinned 无快过期，池中存在 expiring（带快过期）→ 应让位。
+	if !p.ExpiringPreferredElsewhere("pinned", "m", "", "", false) {
+		t.Fatalf("pinned(无快过期) 应让位给带快过期积分的号")
+	}
+	// 免费模型：不参与让位（免费调用不扣积分）。
+	if p.ExpiringPreferredElsewhere("pinned", "m", "", "", true) {
+		t.Fatalf("freeModel=true 时不应让位")
+	}
+	// 绑定号自身带快过期 → 不让位。
+	if p.ExpiringPreferredElsewhere("expiring", "m", "", "", false) {
+		t.Fatalf("绑定号自身带快过期积分时不应让位")
+	}
+	// 空 reqModel → 无法做模型级健康判定，保守不让位。
+	if p.ExpiringPreferredElsewhere("pinned", "", "", "", false) {
+		t.Fatalf("空模型名不应让位")
+	}
+
+	// 候选也无快过期 → 不让位。
+	p.SetCreditsDetailed("expiring", 100, 0)
+	if p.ExpiringPreferredElsewhere("pinned", "m", "", "", false) {
+		t.Fatalf("候选都无快过期积分时不应让位")
+	}
+}

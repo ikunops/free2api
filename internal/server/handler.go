@@ -1768,6 +1768,8 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 	}
 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
 
+	// freeModel 只读目录缓存，循环外算一次：既供选号成本分层分支，也供粘性让位判定。
+	freeModel := h.modelFree(realm, producer, bareModel)
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
@@ -1780,6 +1782,13 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 				(producer != "" && acct.Producer() != producer) {
 				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑。
 				unbindSticky()
+			} else if h.cfg.Pool.ExpiringPreferredElsewhere(stickyUID, bareModel, realm, producer, freeModel) {
+				// 绑定号自身无快过期积分，而池中存在同来源、该模型可用且带快过期积分的号：
+				// 让位一次——解绑后由下方 pick 重新选号（快过期硬分层随之上生效），
+				// 流末再把会话重绑到新号。只让位一次（本请求内），避免多号都有
+				// 快过期积分时会话在号之间来回抖动。
+				unbindSticky()
+				acct = nil
 			}
 		}
 		if acct == nil {
@@ -1789,7 +1798,7 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 			// pool.weightOfFree）——免费调用不扣积分，按余额加权只会把流量堆到
 			// 余额高的号上白耗它的上游限额。判定只读目录缓存，每轮多一次线性查找。
 			acct = h.cfg.Pool.PickExcludingForProducerRealmFree(
-				tried, bareModel, producer, realm, h.modelFree(realm, producer, bareModel))
+				tried, bareModel, producer, realm, freeModel)
 		}
 		// 选号失败分两种：池里真没号（冷却/禁用/来源不符）→ 立即 503；有健康号只是被并发
 		// 占满在途名额 → 短暂排队等名额释放（单账号池突发并发不再成片 503）。
