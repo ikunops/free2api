@@ -76,9 +76,10 @@ nav{padding:6px 8px;overflow:auto;flex:1}
 
 /* min-width:0：grid 子项默认 min-width:auto，会被内容顶宽（表格一宽整页就横向滚动），
    显式归零后宽度由网格列决定，宽表交给 .tablewrap 卡内滚动。 */
-.main{padding:22px 24px 56px;width:100%;min-width:0}
-@media(min-width:1600px){.main{padding-left:32px;padding-right:32px}}
-@media(min-width:2200px){.main{padding-left:48px;padding-right:48px}}
+/* 主区不设 max-width、不居中：窗口多宽就用多宽，避免两侧留出固定空带。
+   「别把空白摊进每一列」由卡片内部按内容收缩来保证：小表用 .tfit、模型行按内容紧排、
+   概览摘要卡用 .ovflow 双列排布——宽的是容器，内容各自占各自需要的宽度。 */
+.main{padding:22px 24px 56px;width:100%;min-width:0;margin:0}
 .toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px}
 .ic{width:34px;height:34px;border-radius:var(--r3);border:1px solid var(--line3);
   background:var(--panel);color:var(--fg2);cursor:pointer;display:flex;align-items:center;
@@ -131,14 +132,24 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
-/* 加工设置 / 接入信息：两张独立的卡左右并排。左卡是"要改的东西"，右卡是"改完的结果"。
-   1.25fr 让左卡略宽——左卡有 4 个可编辑控件，右卡是只读展示。
-   两张卡各自有 margin-bottom，进网格后要清零，否则左右底边对不齐。 */
-.out2col{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
-.out2col>.card{margin-bottom:0;min-width:0}
+/* 加工设置 / 接入信息：两张独立的 section 左右并排，标题在框外、面板底边对齐。
+   之前标题被包进卡片 padding 里，和"概览"等页的层级语言不一致；这里把
+   标题提到面板上方（框外），面板本体只装内容，两栏 grid stretch 等高。 */
+.out2col{display:grid;grid-template-columns:minmax(0,1.06fr) minmax(0,1fr);gap:16px;align-items:stretch}
+.outpane{display:flex;flex-direction:column;min-width:0}
+.outpane-h{font-size:12.5px;font-weight:650;color:var(--fg2);letter-spacing:.3px;margin:0 0 8px 2px}
+.outpane-b{flex:1;display:flex;flex-direction:column;margin-bottom:0;min-width:0;padding:16px 18px}
+.outpane-fill{flex:1 1 auto}
+.outpane-b>.kvrow{margin-top:auto}
+.outpane-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:auto;
+  padding-top:14px;border-top:1px solid var(--line2)}
+/* 「监听端口」那行：说明挂在标签行右侧，不再单独占一行把卡片撑高。 */
+.labrow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:5px}
+.labrow label.f{margin:0}
+.hint.inline{margin:0;white-space:nowrap}
 /* 加工设置里第二行：模型前缀 + 费率后缀。费率后缀的选项文案很短
    （「显示费率（按模型）」），给它半张卡是浪费，收窄到刚够放下最长选项。 */
-.outgrid2{grid-template-columns:minmax(0,1fr) minmax(0,190px)}
+.outgrid2{grid-template-columns:minmax(0,1fr) minmax(0,200px)}
 .outgrid2 .field{margin-bottom:0}
 @media(max-width:1100px){.out2col{grid-template-columns:1fr;gap:12px}}
 /* 密钥那一行单独用 .kvrow：栅格与 .kv 一致（标签列同宽 96px，四行才对齐），
@@ -255,6 +266,17 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 /* 状态环：conic-gradient 画一圈，不引图表库。 */
 .donuts{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 @media(max-width:720px){.donuts{grid-template-columns:repeat(2,1fr)}}
+/* 概览下半区的摘要卡：宽屏两列铺开，卡片各自按内容占位，
+   不再「一张卡占满整行、右边空一大片」。列宽下限 620px：窄于这个就退回单列。 */
+.ovflow{display:grid;gap:14px;align-items:start;margin-bottom:14px;
+  grid-template-columns:repeat(auto-fill,minmax(620px,1fr))}
+.ovflow>.card{margin-bottom:0;min-width:0}
+.ovflow table.tfit th:last-child,.ovflow table.tfit td:last-child{white-space:normal}
+@media(max-width:1100px){.ovflow{grid-template-columns:1fr}}
+/* 需要关注：紧凑行列表（不再用表格，避免「原因」列把卡片摊宽） */
+.wrow{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px dashed var(--line2);font-size:12.5px}
+.wrow:last-child{border-bottom:0}
+.wrow .hint{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .donut{display:flex;flex-direction:column;align-items:center;gap:7px}
 .donut .ring{width:62px;height:62px;border-radius:50%;display:flex;align-items:center;
   justify-content:center;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -374,6 +396,16 @@ label.f{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:5px}
   border:1px solid var(--line2)}
 .tablewrap{overflow-x:auto;margin:0 -2px}
 .tablewrap table{min-width:100%}
+/* ptable：账号池这种列多的表用固定布局，列宽预算写死，
+   不让「原因」这种长文本列在宽屏上吞掉一半宽度（正文本身有 2 行 clamp + tooltip）。 */
+table.ptable{table-layout:fixed;min-width:1100px}
+table.ptable th,table.ptable td{overflow:hidden;text-overflow:ellipsis}
+/* tfit：概览里几行的小汇总表，按内容收紧，不再被 1fr 摊开成空列。 */
+table.tfit{width:auto;min-width:0}
+table.tfit th,table.tfit td{white-space:nowrap}
+table.tfit td:first-child,table.tfit th:first-child{padding-right:26px}
+/* 小结表内部的占比条列：给固定轨道宽，让「请求占比」这一列有稳定形状。 */
+table.tfit .sharetrack{width:170px;display:inline-block}
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line2);
   vertical-align:middle;font-size:13px}
@@ -470,7 +502,7 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
    一律被省略号截断，而右边第三列（中文名）却空着一大片。max-content 让这一列
    按最长 id 撑开、把富余宽度让给名字列；窗口窄时 min 值 150px 兜底、省略号照常生效。
    min-height + align-items:center 让带费率标签的行与不带的行等高。 */
-.mrow{display:grid;grid-template-columns:18px minmax(150px,max-content) minmax(0,1fr) auto;align-items:center;
+.mrow{display:grid;grid-template-columns:18px minmax(150px,max-content) minmax(0,max-content) max-content;align-items:center;
   min-height:41px;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12.5px;cursor:pointer}
 .mrow:last-child{border-bottom:0}
 .mrow:hover{background:var(--hover)}
@@ -484,7 +516,7 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .mrow input{width:15px;height:15px;margin:0;accent-color:var(--acc);cursor:pointer}
 .mrow .mid{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mrow .mname{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mrow .mbits{display:flex;gap:5px;justify-content:flex-end}
+.mrow .mbits{display:flex;gap:5px;justify-content:flex-start}
 /* 输出白名单的 producer 分组表头（workbuddy / zcode 各一段） */
 .mgroup{display:flex;justify-content:space-between;align-items:center;gap:10px;
   padding:7px 13px;background:var(--soft2);border-bottom:1px solid var(--line2);
@@ -509,10 +541,12 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 /* 多出口：每个出口一块；「服务来源」用圆角标签勾选 */
 .chan{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;margin-bottom:12px}
 .chan-head{display:flex;gap:10px;align-items:center;margin-bottom:11px}
-.chan-head input{font-weight:600}
-.chan-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+/* 出口名称是短标签，不要跟着卡片宽度拉伸成一条长输入框；右侧留白由 .grow 吃掉。 */
+.chan-head input{font-weight:600;max-width:340px}
+.chan-grid{display:grid;grid-template-columns:minmax(150px,220px) minmax(150px,260px) minmax(0,1fr);gap:12px}
 .chan-grid .field{margin-bottom:0}
-@media(max-width:1000px){.chan-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:1000px){.chan-grid{grid-template-columns:minmax(140px,200px) minmax(140px,1fr)}
+  .chan-grid .field:nth-child(3){grid-column:1 / -1}}
 @media(max-width:720px){.chan-grid{grid-template-columns:1fr}}
 .ptog{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;
   padding:3px 10px;font-size:11.5px;color:var(--fg2);cursor:pointer;background:var(--panel)}
@@ -1078,7 +1112,7 @@ function ovHealthCard(){
       ovDonut(total ? x.n * 100 / total : 0, x.color, String(x.n)) +
       '<div class="lbl">' + esc(x.k) + '</div></div>';
   }).join("");
-  return card("账号监测", "池子共 " + total + " 个号，各状态占比。环心是数量，颜色占比按全池算。",
+  return card("账号监测", "池子共 " + total + " 个号。",
     '<div class="donuts">' + cells + '</div>');
 }
 /* ovProducersCard 按客户端：账号 / 可用来自号池，请求 / token 来自区间统计。
@@ -1117,8 +1151,8 @@ function ovProducersCard(){
       '</tr>';
   }).join("");
   return card("按客户端（" + list.length + " 家）",
-    "账号 = 健康号（后缀为池内总量）；可用 = 健康且至少有一个模型可用；请求 / token 来自「" + ovRangeName() + "」区间统计。",
-    '<div class="tablewrap"><table><thead><tr><th>客户端</th><th class="num">账号</th><th class="num">可用</th>' +
+    "请求 / token 来自「" + ovRangeName() + "」区间统计。",
+    '<div class="tablewrap"><table class="tfit"><thead><tr><th>客户端</th><th class="num">账号</th><th class="num">可用</th>' +
     '<th class="num">请求</th><th class="num">成功率</th><th class="num">Tokens</th><th>请求占比</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>');
 }
@@ -1157,7 +1191,7 @@ function ovModelsCard(){
     ? '<div class="hint" style="margin-top:9px">另有 ' + (list.length - top.length) + ' 个模型未列出，完整清单看「请求统计」页。</div>'
     : "";
   return card("模型用量（Top " + top.length + " / " + list.length + "）",
-    "按「" + ovRangeName() + "」区间内的请求数排序；占比条按榜首归一，最后一列是全区间请求份额。",
+    "「" + ovRangeName() + "」区间。",
     '<div class="tablewrap"><table><thead><tr><th>模型</th><th class="num">请求</th><th class="num">成功率</th>' +
     '<th class="num">Tokens</th><th class="num">缓存命中</th><th>相对榜首</th><th class="num">份额</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' + more +
@@ -1184,7 +1218,7 @@ function ovChannelsCard(){
       '<td>' + copySpan(c.base_url || "") + '</td></tr>';
   }).join("");
   return card("出口 API（" + chans.length + " 个）",
-    "一个出口 = 一个监听端口 + 一套输出参数。主口承接全部来源，专用口只服务勾选的来源。",
+    chans.length > 1 ? "主口 + " + (chans.length - 1) + " 个专用口。" : "全部来源走主口。",
     '<div class="tablewrap"><table><thead><tr><th>出口</th><th style="width:86px">状态</th><th>监听</th>' +
     '<th>格式</th><th>服务来源</th><th>Base URL</th></tr></thead><tbody>' + rows + '</tbody></table></div>');
 }
@@ -1218,51 +1252,47 @@ function ovCreditsCard(){
         (g.urgent ? '<div class="hint" style="margin:2px 0 0">紧急 ' + esc(fmtInt(Math.round(g.urgent))) + '</div>' : "") +
         '</span>' : "0") + '</td></tr>';
   }).join("");
+  // 「上游没说套餐」不是故障（zcode 免费号常见），不进需要关注；只有读失败或余额吃紧才列。
+  var noPlan = function(x){ return !x.ok && !x.error && /未给可用范围/.test(String(x.note || "")); };
   var warn = list.filter(function(x){
+    if (noPlan(x)) return false;
     if (!x.ok) return true;
     return Number(x.total) > 0 && (Number(x.remain) || 0) <= Number(x.total) * 0.15;
   }).slice(0, 8);
   var warnRows = warn.map(function(x){
     var why = !x.ok ? (x.error || x.note || "额度读不到") : ("剩 " + fmtNum(x.remain, x.unit) +
       (x.unit === "token" ? " token" : " 积分") + " / 总 " + fmtNum(x.total, x.unit));
-    return '<tr><td><b>' + esc(x.nickname || x.uid) + '</b></td>' +
-      '<td>' + producerTag({ producer: x.producer }) + '</td>' +
-      '<td class="hint">' + esc(why) + '</td></tr>';
+    return '<div class="wrow" title="' + esc(why) + '"><b>' + esc(x.nickname || x.uid) + '</b>' +
+      producerTag({ producer: x.producer }) +
+      '<span class="hint">' + esc(why) + '</span></div>';
   }).join("");
   var when = c.fetched_at ? fmtTime(c.fetched_at) : "—";
-  var body = '<div class="tablewrap"><table><thead><tr><th>客户端</th><th class="num">可读 / 账号</th>' +
+  var body = '<div class="tablewrap"><table class="tfit"><thead><tr><th>客户端</th><th class="num">可读 / 账号</th>' +
     '<th class="num">剩余合计</th><th class="num">快过期</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    '<div class="hint" style="margin-top:9px">余额直查上游 billing（10 分钟缓存）· 上次 ' + esc(when) +
-    (c.refreshing ? " · 正在后台重查…" : "") + '。zcode 的「token」是套餐 token，workbuddy 的是积分。</div>';
+    '<div class="hint" style="margin-top:9px">10 分钟缓存 · 上次 ' + esc(when) +
+    (c.refreshing ? " · 后台重查中" : "") + '</div>';
   if (warnRows){
-    body += '<div class="sep"></div><div style="font-size:13px;font-weight:600;margin-bottom:9px">需要关注（' +
-      warn.length + ' 个）</div><div class="tablewrap"><table><thead><tr><th style="width:220px">账号</th>' +
-      '<th style="width:120px">客户端</th><th>原因</th></tr></thead><tbody>' + warnRows + '</tbody></table></div>';
+    body += '<div class="sep"></div><div style="font-size:13px;font-weight:600;margin-bottom:6px">需要关注（' +
+      warn.length + ' 个）</div>' + warnRows;
   }
-  return card("额度与积分", "按客户端汇总剩余额度；下方列出读不到额度或剩余不到 15% 的号。", body,
+  return card("额度与积分", "", body,
     '<button class="rf" data-action="credits-refresh" title="立刻重查每个号的积分余额">' + svg("refresh") + '刷新余额</button>');
 }
 /* ovSourcesCard 来源台账：三种来源各进来多少个号，占池子多少。 */
 function ovSourcesCard(){
   var oc = (S.src && S.src.origin_counts) || {};
   var total = (S.status && S.status.total) || 0;
-  var desc = {
-    app: "探查本机 AI 工具自己存的那一份登录态",
-    switch: "读 wb-switch / zcode-switch 账本里聚合好的多个账号",
-    file: "导入别的机器导出的 JSON 快照，导入时选归属"
-  };
   var rows = METHOD_ORDER.map(function(k){
     var n = oc[k] || 0;
     var pct = total ? n * 100 / total : 0;
     return '<tr><td>' + esc(methodLabel(k)) + '</td>' +
       '<td class="num">' + n + '</td>' +
       '<td style="width:200px"><span class="sharetrack"><i style="width:' + pct.toFixed(1) + '%"></i></span></td>' +
-      '<td class="num hint">' + pct.toFixed(0) + '%</td>' +
-      '<td class="hint">' + esc(desc[k] || "") + '</td></tr>';
+      '<td class="num hint">' + pct.toFixed(0) + '%</td></tr>';
   }).join("");
-  return card("来源台账", "每种来源进来的账号都记在来源台账里；整体迁移时 auths 目录连同台账一起拷走，归类不会丢。",
-    '<div class="tablewrap"><table><thead><tr><th style="width:140px">来源</th><th class="num" style="width:80px">账号</th>' +
-    '<th>占池子</th><th class="num" style="width:60px">占比</th><th>说明</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+  return card("来源台账", "",
+    '<div class="tablewrap"><table class="tfit"><thead><tr><th style="width:140px">来源</th><th class="num" style="width:80px">账号</th>' +
+    '<th>占池子</th><th class="num" style="width:60px">占比</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div class="row" style="margin-top:11px"><button class="tiny" data-goto="sources">去获取源</button></div>');
 }
 /* ovScheduleCard 定时任务摘要：只报「几个开着、几点跑」，改开关去运行态页。 */
@@ -1280,7 +1310,7 @@ function ovScheduleCard(){
       esc(t.name) + ' <span style="opacity:.6">' + esc(hrs) + '</span></span>';
   }).join("");
   return card("定时任务（" + on.length + "/" + tasks.length + " 启用）",
-    "签到、保活、活动等自动任务；开关与整点在「运行态」页改，改完重启网关生效。",
+    "运行态页可改。",
     '<div class="chips" style="margin:0">' + chips + '</div>' +
     '<div class="row" style="margin-top:11px"><button class="tiny" data-goto="runtime">去运行态调整</button></div>');
 }
@@ -1346,17 +1376,13 @@ function viewOverview(){
       "成功 " + fmtInt(live.success || 0) + " · 失败 " + fmtInt(live.failed || 0)) +
     lbCell("lv.rate_tok", "近 " + winSec + "s 生成", fmtInt(live.completion_tokens || 0),
       live.samples ? (live.samples + " 次观测") : "窗口内无观测") +
-    '</div>' +
-    '<div class="hint" style="margin:-4px 0 12px">「最近 ' + winSec + ' 秒」是滚动窗口，随每个请求落地而变；上面那排累计卡按下方区间统计，是累计口径。</div>';
-  var trend = card("请求趋势（" + rn + "）", "每天一根柱，悬停看当天请求 / 成功 / 失败 / token。", ovTrend(s && s.series));
+    '</div>';
+  var trend = card("请求趋势（" + rn + "）", "悬停看当天请求 / 成功 / 失败 / token。", ovTrend(s && s.series));
   var health = ovHealthCard();
   html += health ? ('<div class="grid2">' + trend + health + '</div>') : trend;
-  html += ovProducersCard();
   html += ovModelsCard();
   html += ovChannelsCard();
-  html += ovCreditsCard();
-  html += ovSourcesCard();
-  html += ovScheduleCard();
+  html += '<div class="ovflow">' + ovProducersCard() + ovCreditsCard() + ovSourcesCard() + ovScheduleCard() + '</div>';
   var steps;
   if (total === 0) steps = [
     "打开「获取源」，先看「应用内登录态」能不能直接读（只有明文 json 才读得动）",
@@ -1374,13 +1400,15 @@ function viewOverview(){
     "把 Base URL 和密钥填进要用的 AI 客户端（Codex / ZCode / Cherry Studio 都行）",
     "在客户端里拉一次模型列表，确认模型名带着你设的前缀"
   ];
-  html += card("下一步", "", '<ol class="steps">' + steps.map(function(s){ return '<li>' + s + '</li>'; }).join("") + '</ol>');
-  html += card("接入信息", "把这两项填进任意 OpenAI 兼容客户端即可。",
-    kv([
-      ["Base URL", copySpan(base + "/v1"), true],
-      ["网关密钥", S.apiKey ? (S.apiKey) : "未设置（默认本机直连免密钥）"],
-      ["模型列表", copySpan(base + "/v1/models"), true]
-    ]));
+  html += '<div class="ovflow">' +
+    card("下一步", "", '<ol class="steps">' + steps.map(function(s){ return '<li>' + s + '</li>'; }).join("") + '</ol>') +
+    card("接入信息", "",
+      kv([
+        ["Base URL", copySpan(base + "/v1"), true],
+        ["网关密钥", S.apiKey ? (S.apiKey) : "未设置（默认本机直连免密钥）"],
+        ["模型列表", copySpan(base + "/v1/models"), true]
+      ])) +
+    '</div>';
   return html;
 }
 
@@ -1399,8 +1427,8 @@ function gwCard(d, running){
            "点「停止网关」会停掉那个进程，之后可以用这里的「启动网关」重新拉起。";
   } else if (running){
     state = "运行中";
-    desc = "网关由本窗口托管，监听 " + esc((d && d.listen) || "") + "。关掉窗口不会停掉它——" +
-           "想停就点右边按钮。";
+    desc = "网关由本窗口托管，监听 " + esc((d && d.listen) || "") + "。关掉窗口会一并停掉它（端口即时释放）；" +
+           "想只停网关不关窗口，点右边按钮。";
   } else {
     state = "已停止";
     desc = "网关当前不承接请求。点「启动网关」在当前进程里把它拉起来，不需要另开 exe。";
@@ -1409,7 +1437,7 @@ function gwCard(d, running){
     ? '<button class="pri gwbtn" data-action="gw-stop"' + (busy ? " disabled" : "") + '>停止网关</button>'
     : '<button class="pri gwbtn" data-action="gw-start"' + (busy ? " disabled" : "") + '>启动网关</button>';
   var err = (d && d.error) ? '<div class="hint" style="color:#b4453f;margin-top:8px">' + esc(d.error) + '</div>' : "";
-  return card("网关开关", "整个 free2api 的启停都在这里，不用去碰计划任务或命令行。",
+  return card("网关开关", "",
     '<div class="gwrow">' +
       '<span class="gwdot' + (running ? " on" : "") + '"></span>' +
       '<div class="gwtext"><div class="t">' + esc(state) + '</div><div class="d">' + desc + '</div></div>' +
@@ -1431,7 +1459,7 @@ function viewSources(){
   else if (S.srcTab === "app") panel = panelApp(d);
   else if (S.srcTab === "switch") panel = panelSwitch(d);
   else panel = panelFile(d);
-  return head("获取源", "三种来源都从本机真实路径读：应用内登录态只探查、switch 账本直接读、外部文件由你指定归属。") +
+  return head("获取源", "本机登录态、switch 账本、外部文件。") +
     '<div class="seg">' + seg + '</div>' + panel;
 }
 function kindTag(k){
@@ -1510,11 +1538,7 @@ function panelApp(d){
     '<table><thead><tr><th style="width:200px">工具</th><th>路径</th><th style="width:92px">形态</th>' +
     '<th class="num" style="width:56px">账号</th><th style="width:36%">结论</th></tr></thead><tbody id="probeBody">' +
     body + '</tbody></table>' +
-    '<div class="hint">这一路是「只读探查，不猜解析」：读不了的形态（enc:v1 字段加密、Electron leveldb、SQLite）明确标出原因——' +
-    '拿错凭证去打上游会直接触发风控。<br>' +
-    'WorkBuddy 桌面端自 5.6.2 起把登录态做了字段级加密，本网关已实现解密，所以它的号能直接在这里取到（' +
-    '静态钥优先现场问客户端要，取不到时用内置常量，也可用环境变量 WORKBUDDY_AT_REST_SECRET 显式指定）。<br>' +
-    '其余工具自己的号取不到时，正经办法是装一个 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>' +
+    '<div class="hint">读不了的形态会标明原因。取不到号时，用 switch 类账本工具登录一次，再从「switch 账本」整批导入。</div>' +
     usableBlock,
     '<button class="rf" data-action="src-refresh" title="重新扫一遍本机路径：新装的工具、刚登录的账号、刚导出的账本都会立刻反映">' + svg("refresh") + '重新扫描</button>');
 }
@@ -1544,14 +1568,13 @@ function panelSwitch(d){
       '<span class="tag ' + (k.available ? "ok" : "mut") + '">' + (k.available ? kcountLabel(k) : "不可用") + '</span>' +
       btn + '</div><div class="d" style="margin-top:8px">' + esc(k.note || "") + '</div></div>';
   }).join("");
-  return card("switch 账本", "账本工具已经帮你聚合好多个账号，读它比逐个去啃工具本体稳。",
+  return card("switch 账本", "",
     '<div class="grid2">' + (boxes || '<div class="empty">没有发现账本</div>') + '</div>' +
     '<div class="sep"></div><h2 style="font-size:14px;margin-bottom:8px">目录</h2>' +
     kv([
       ["号池目录", copySpan(d.auth_dir), true],
       ["来源台账", copySpan(d.origin_path || "（未生成）"), true]
-    ]) +
-    '<div class="hint">号池目录加一个来源台账文件就是全部状态：整体拷到另一台机器，来源归类一起走。</div>',
+    ]),
     '<button class="rf" data-action="src-refresh" title="重新读一遍账本目录：在另一台机器新登录/新导出的账号会立刻出现">' + svg("refresh") + '重新读取</button>');
 }
 function panelFile(d){
@@ -1561,19 +1584,19 @@ function panelFile(d){
   var body =
     '<div class="grid2">' +
       '<div class="field"><label class="f">这批账号的归属来源</label><select id="impMethod">' + opts + '</select>' +
-        '<div class="hint">默认「导入文件」。如果这份 JSON 本来就是 switch 账本的备份，就选 switch 账本，台账里才分得清。</div></div>' +
+        '<div class="hint">这份 JSON 来自哪种工具就选哪种，台账里才分得清。</div></div>' +
       '<div class="field"><label class="f">备注（可选，便于事后对账）</label>' +
         '<input id="impDetail" placeholder="例如：笔记本导出的 wb 账本 2026-09-26">' +
-        '<div class="hint">会记进来源台账，鼠标悬停「账号池」里的来源标签就能看到。</div></div>' +
+        '<div class="hint">会记进来源台账。</div></div>' +
     '</div>' +
     '<div class="field"><label class="f">账号 JSON（数组或对象都行）</label>' +
       '<textarea id="pasteBox" placeholder="粘贴 wb-switch 条目 / auth 扁平形 / 插件 OAuth 嵌套形，三种形状都认"></textarea>' +
-      '<div class="hint">解析逻辑与后端同一套。导入前不写任何文件，导入成功才落盘并热加载号池。</div></div>' +
+      '<div class="hint">导入成功后落盘并热加载号池。</div></div>' +
     '<div class="row"><button class="pri" data-action="import-paste">导入到号池</button>' +
       '<button data-action="pick-file">选本地文件</button>' +
       '<input type="file" id="filePick" accept=".json,.txt" class="hidden">' +
       '<span class="hint" style="margin:0">一条都没命中会原样报错，不会静默成功。</span></div>';
-  return card("导入文件", "别的机器导出的快照、手工整理的清单，都从这里进来。", body,
+  return card("导入文件", "", body,
     '<button class="rf" data-action="src-refresh" title="重新扫一遍本机来源与台账">' + svg("refresh") + '重新扫描</button>');
 }
 function panelCandidates(){
@@ -1723,11 +1746,7 @@ function panelZCandidates(c){
     bar + '<table><thead><tr><th style="width:52px"></th><th style="width:24%">账号</th><th>可用模型</th>' +
     '<th style="width:132px">探活</th><th style="width:238px">额度</th></tr></thead><tbody>' +
     (rows || '<tr><td colspan="5"><div class="empty">没有候选</div></td></tr>') + '</tbody></table>' +
-    '<div class="hint" style="margin-top:10px">' +
-    '<b>可用模型</b>＝该账号<b>套餐/额度实际覆盖</b>的模型（读额度后由上游 capabilities 得出；周末活动只有 glm-5.3-flash 就是只有这一个）。' +
-    '没读额度时退化成「凭据能列出什么」，只是参考，不保证能调。<br>' +
-    '这些都是账号自己带的智谱能力，与任何 agent（Codex / ZCode / Cherry Studio）里手填的自定义模型无关——那类配置不进号池，也不参与路由。' +
-    '探活与额度都按需触发，不静默打外网。</div>');
+    '<div class="hint" style="margin-top:10px"><b>可用模型</b>按账号套餐/额度实际覆盖计算；未读额度时为凭据列出的参考值。</div>');
 }
 
 /* ---------- 账号池 ---------- */
@@ -1852,11 +1871,18 @@ function failTitle(a){
   return parts.join(" · ");
 }
 function acctState(a){
-  if (a.disabled) return '<span class="tag err">已禁用</span>';
-  if (a.manual_disabled) return '<span class="tag warn">手动停用</span>';
-  if (a.cooling) return '<span class="tag warn">冷却中</span>';
-  if (futureTime(a.breaker_until)) return '<span class="tag warn">熔断中</span>';
-  return '<span class="tag ok">可用</span>';
+  var r = acctReason(a);
+  var has = r && r !== "—";
+  var tip = has ? ' title="' + esc(r) + '"' : '';
+  var tag;
+  if (a.disabled) tag = '<span class="tag err"' + tip + '>已禁用</span>';
+  else if (a.manual_disabled) tag = '<span class="tag warn"' + tip + '>手动停用</span>';
+  else if (a.cooling) tag = '<span class="tag warn"' + tip + '>冷却中</span>';
+  else if (futureTime(a.breaker_until)) tag = '<span class="tag warn"' + tip + '>熔断中</span>';
+  else tag = '<span class="tag ok"' + tip + '>可用</span>';
+  // 原因不再单独占一列；只有异常状态才在下面带一行，健康号仅留 tooltip。
+  var abnormal = a.disabled || a.manual_disabled || a.cooling || futureTime(a.breaker_until);
+  return tag + (has && abnormal ? '<div class="clamp" style="margin:3px 0 0;color:var(--fg3);font-size:11.5px" title="' + esc(r) + '">' + esc(r) + '</div>' : "");
 }
 /* realmTags 域标签：正常情况下显示生效路由域；当凭证域（stored）与生效域不一致时
    显式写成 stored→routing 并给出原因，避免把「打不通」误读成「账号本身有问题」。 */
@@ -1983,12 +2009,10 @@ function viewPool(){
       '<td class="num">' + creditCell(a) + '</td>' +
       '<td class="num">' + expCell(a) + '</td>' +
       '<td>' + acctState(a) + '</td>' +
-      '<td style="color:var(--fg3);font-size:12px"><div class="clamp" title="' + esc(acctReason(a)) + '">' + esc(acctReason(a)) + '</div></td>' +
       '<td class="num" title="' + esc(failTitle(a)) + '">' + (a.success_count || 0) + ' / ' + failCell(a) + '</td>' +
       '<td>' + acctActions(a) + '</td></tr>';
   }).join("");
-  var html = head("账号池", "池里所有账号：来源归属、积分余额（含快过期部分）、token 到期、健康状态。" +
-    "停用只摘对话流量，签到与保活照常。");
+  var html = head("账号池", "池内账号与余额。");
   html += '<div class="grid4">' +
     statBox("账号总数", st.total, "路由域 cn " + (cn.total || 0) + " · global " + (gl.total || 0)) +
     statBox("可用", st.healthy, "可立即承接请求") +
@@ -2002,8 +2026,7 @@ function viewPool(){
     '<span class="grow"></span>' +
     '<button class="rf" data-action="credits-refresh" title="立刻重查每个号的积分余额，不等 10 分钟缓存">' +
       svg("refresh") + '刷新余额</button></div>' +
-    '<div class="hint" style="margin:0 0 6px">「可用模型」= 该账号<b>当前真正能用</b>的模型（读得到套餐/权益就按权益算）；' +
-    'workbuddy 侧的目录是所有同构号共享的，看「输出 API」的发布清单。</div>';
+    '<div class="hint" style="margin:0 0 6px">「可用模型」按账号当前权益计算。</div>';
   var cooldownBtn = '<button class="withico" data-action="reset-cooldowns" ' +
     'title="把池里所有账号的冷却、熔断、连败计数清零。停用/手工禁用不动；即时生效，不用停服。">清空冷却</button>';
   html += card("账号清单", "",
@@ -2011,20 +2034,12 @@ function viewPool(){
     '<div class="chips"><span class="hint" style="margin:0 8px 0 0;align-self:center">客户端</span>' + clientHtml + '</div>' +
     (realmHtml ? '<div class="chips"><span class="hint" style="margin:0 8px 0 0;align-self:center">域</span>' + realmHtml + '</div>' : '') +
     '<div class="chips"><span class="hint" style="margin:0 8px 0 0;align-self:center">来源方式</span>' + chipHtml + '</div>' +
-    '<div class="tablewrap"><table><thead><tr><th style="width:242px">账号</th><th style="width:96px">客户端</th><th style="width:120px">来源</th>' +
-    '<th style="width:168px">可用模型</th><th class="num" style="width:126px">积分余额</th>' +
-    '<th style="width:112px">到期</th><th style="width:80px">状态</th><th>原因</th>' +
-    '<th class="num" style="width:92px">成功/连败</th>' +
-    '<th style="width:84px">操作</th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="10"><div class="empty">这个筛选下没有账号</div></td></tr>') + '</tbody></table></div>', cooldownBtn);
-  html += card("迁移与来源", "账号池是单一目录，来源只是台账里的标注——这样迁移不会漏文件。",
-    '<div class="note">' +
-    '<b>来源三种</b>：应用内登录态（探查得到）、switch 账本（读账本得到）、导入文件（手工给）。' +
-    '导入时选哪一种，就记在 <span class="mono">' + esc((S.src && S.src.origin_path) || ".origins.json") + '</span> 里。<br>' +
-    '<b>整体迁移</b>：把 config.json + <span class="mono">auths/</span> 目录 + <span class="mono">data/</span> 目录拷到新机器，改一下监听端口即可；' +
-    '来源台账在 auths 目录里，跟着一起走，账号归类不会丢。<br>' +
-    '<b>为什么不做物理多池</b>：多池会让选号、粘性会话、成本台账各写一套；用台账做逻辑分组，效果一样而风险为零。' +
-    '</div>');
+    '<div class="tablewrap"><table class="ptable"><thead><tr><th style="width:20%">账号</th><th style="width:11%">客户端</th><th style="width:9%">来源</th>' +
+    '<th style="width:13%">可用模型</th><th class="num" style="width:11%">积分余额</th>' +
+    '<th style="width:9%">到期</th><th style="width:12%">状态</th>' +
+    '<th class="num" style="width:8%">成功/连败</th>' +
+    '<th style="width:7%">操作</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="9"><div class="empty">这个筛选下没有账号</div></td></tr>') + '</tbody></table></div>', cooldownBtn);
   return html;
 }
 /* statBox 统计页/运行态的指标卡。key 非空时值与副文本挂 data-live，可局部更新。 */
@@ -2337,20 +2352,15 @@ function chanCard(){
     ? list.map(function(c, i){ return chanRowHtml(c, i, statusById); }).join("")
     : '<div class="empty">还没有单独出口：所有来源都走主口。点「新增出口」给某个客户端单独开一个端口。</div>';
   return card("出口（每个客户端一条独立 API）",
-    "出口之间只在「服务哪些来源」上分叉：输出格式、模型前缀、费率后缀、发布清单都沿用「输出 API」上面那份。" +
-    "所以每个出口只要一个端口 + 勾几个来源；真要单独换格式，才展开「单独覆盖输出参数」。",
+    "一个端口 + 勾几个来源；参数默认跟随主口。",
     '<div class="row" style="margin-bottom:12px">' +
       '<button class="tiny" data-action="chan-add">新增出口</button>' +
       '<button class="pri tiny" data-action="chan-save">保存出口</button>' +
       '<span class="grow"></span>' +
-      '<span class="hint" style="margin:0">出口是进程内即时绑定/解绑的，保存即生效，不用重启（改主口端口才要重启）。</span>' +
+      '<span class="hint" style="margin:0">保存即生效，不用重启；改主口端口才要重启。</span>' +
     '</div>' + listHtml +
     '<div class="note" style="margin-top:11px">' +
-    '<b>两种用法都支持</b>：不加出口 = 所有来源走主口、由网关按模型名内部路由；加出口 = 每个来源各连各的地址。' +
-    '<b>共享参数</b>：格式/前缀/费率/发布清单默认跟随主口，改主口一次所有出口跟着变；'
-    + '某个口要特殊对待，就在它下面展开「单独覆盖输出参数」，那时它才脱离主口。<br>' +
-    '<b>服务来源都不勾</b> = 这个口服务全部来源（相当于换个端口的主口）。<br>' +
-    '<b>跨来源会被挡</b>：出口只发布自己范围内的模型，拿别的来源的模型名调它会被 404（避免配了却形同虚设）。' +
+    '「服务来源」都不勾 = 全部来源；调范围外的模型会 404。' +
     '</div>');
 }
 /* codexCard —— Codex 一键接入。
@@ -2417,13 +2427,13 @@ function codexCard(){
       : '<input id="codexModel" value="' + esc(curModel) + '" placeholder="例如 cn:auto">') +
     '<div class="hint">' + (ms.length ? "来自「发布清单」里已勾选的模型。" : "发布清单为空——先去下面勾模型，或手填一个。") + "</div></div>" +
     '<div class="field"><label class="f">Base URL</label><input id="codexBase" value="' + esc(S.codexDraft && S.codexDraft.base_url !== undefined ? S.codexDraft.base_url : (c.suggested_base_url || "")) + '">' +
-    '<div class="hint">主口地址（含 /v1）。想给 Codex 单独开出口，就把出口地址填这里。</div></div>' +
+    '<div class="hint">主口地址（含 /v1）；也可填某个出口的地址。</div></div>' +
     "</div>";
 
   // 提示
   var notes = [];
-  if (c.models_cache_path) notes.push("检测到模型缓存 " + c.models_cache_path + "：换网关后建议删掉，让 Codex 重新拉模型列表（否则选择器可能还显示旧模型）。");
-  if (!c.env_key_set) notes.push("环境变量 " + c.env_key + " 当前未设置。Codex 要求它存在（值可以是任意占位串，网关不鉴权时也一样）。");
+  if (c.models_cache_path) notes.push("检测到模型缓存 " + c.models_cache_path + "，建议删掉让 Codex 重拉，否则可能仍显示旧模型。");
+  if (!c.env_key_set) notes.push("环境变量 " + c.env_key + " 未设置；Codex 要求它存在，可填任意占位串。");
   if (notes.length) body += '<div class="sep"></div>' + notes.map(function(t){ return '<div class="hint">· ' + esc(t) + "</div>"; }).join("");
 
   // 预览
@@ -2431,7 +2441,7 @@ function codexCard(){
     var pl = S.codexPlan;
     body += '<div class="sep"></div><div class="f"><label class="f">改动预览</label>' +
       (pl.changed
-        ? '<div class="hint">下面是要写进去的内容（左边是现状，右边是改后；只动我们的段 + 顶层 model/model_provider 两行，其它内容原样保留）。</div>' +
+        ? '<div class="hint">左：现状；右：改后。只动我们的段与顶层 model / model_provider。</div>' +
           '<div class="grid2" style="margin-top:6px">' +
           '<pre class="mono codebox">' + esc(pl.before || "（文件不存在，将新建）") + "</pre>" +
           '<pre class="mono codebox">' + esc(pl.after) + "</pre></div>"
@@ -2480,7 +2490,7 @@ function codexCard(){
   }
 
   return card("Codex 一键接入",
-    "Codex 没有「自定义供应商」入口，只能改它的 config.toml。这里代你改，并且只动我们那一段。",
+    "只改 config.toml 里的 free2api 段。",
     body, null, { action: "card-toggle", id: "codex", open: copen, badge: codexBadge() });
 }
 function viewOutput(){
@@ -2492,34 +2502,42 @@ function viewOutput(){
   var fmtOpts = fmtOptions(cfg.format);
   var rateOpts = rateOptions(cfg.rate_hint);
   var cur = (o.formats || []).filter(function(f){ return f.id === cfg.format; })[0] || {};
-  var html = head("输出 API", "网关对外长什么样由这里决定：格式、端口、模型前缀、费率后缀。");
-  // 「加工设置」和「接入信息」是两张独立的卡：左卡放要改的东西，右卡放改完的结果。
-  // 不合并成一张：两者是不同性质的内容（可编辑配置 vs 只读地址），合成一张后标题
-  // 只能叫「加工设置 · 接入信息」，用户反而看不出该动哪里。
+  var html = head("输出 API", "主口的格式与监听参数。");
+  // 「加工设置」「接入信息」：两张独立的 section，标题挂在面板外（框外），
+  // 面板本体 grid stretch 等高。左卡放要改的东西（底边固定「保存设置」），
+  // 右卡放改完的结果（URL 在上、密钥钉在底边），两卡底边自然对齐。
   html += '<div class="out2col">' +
-    card("加工设置", "",
-      '<div class="grid2">' +
-        '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select></div>' +
-        '<div class="field"><label class="f">监听端口</label><input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7864">' +
-          '<div class="hint">改动后需重启网关生效。</div></div>' +
+    '<section class="outpane">' +
+      '<div class="outpane-h">加工设置</div>' +
+      '<div class="card outpane-b">' +
+        '<div class="grid2">' +
+          '<div class="field"><label class="f">输出格式</label><select id="outFormat">' + fmtOpts + '</select></div>' +
+          '<div class="field"><div class="labrow"><label class="f">监听端口</label>' +
+            '<span class="hint inline">改端口需重启</span></div>' +
+            '<input id="outListen" value="' + esc(o.listen || "") + '" placeholder="127.0.0.1:7864"></div>' +
+        '</div>' +
+        '<div class="grid2 outgrid2" style="margin-top:13px">' +
+          '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-"></div>' +
+          '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select></div>' +
+        '</div>' +
+        '<div class="outpane-foot"><button class="pri" data-action="save-out">保存设置</button>' +
+          '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>' +
       '</div>' +
-      '<div class="grid2 outgrid2" style="margin-top:13px">' +
-        '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-"></div>' +
-        '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select></div>' +
+    '</section>' +
+    '<section class="outpane">' +
+      '<div class="outpane-h">接入信息</div>' +
+      '<div class="card outpane-b">' +
+        '<div class="outpane-fill">' + kv([
+          ["Base URL", copySpan(base + "/v1"), true],
+          ["对话接口", copySpan(base + (cur.chat_path || "/v1/chat/completions")), true],
+          ["模型列表", copySpan(base + "/v1/models"), true]
+        ]) + '</div>' +
+        '<div class="kvrow">' +
+          '<div>网关密钥</div>' +
+          '<div>' + gwKeyInline(S.apiKey) + "</div>" +
+        "</div>" +
       '</div>' +
-      '<div class="sep"></div>' +
-      '<div class="row"><button class="pri" data-action="save-out">保存设置</button>' +
-        '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>') +
-    card("接入信息", "",
-      kv([
-        ["Base URL", copySpan(base + "/v1"), true],
-        ["对话接口", copySpan(base + (cur.chat_path || "/v1/chat/completions")), true],
-        ["模型列表", copySpan(base + "/v1/models"), true]
-      ]) +
-      '<div class="kvrow">' +
-        '<div>网关密钥</div>' +
-        '<div>' + gwKeyInline(S.apiKey) + "</div>" +
-      "</div>") +
+    '</section>' +
   '</div>';
   html += chanCard();
   html += codexCard();
@@ -2624,13 +2642,7 @@ function viewOutput(){
         '<button class="pri tiny" data-action="save-models">保存发布清单</button>' +
       '</div>' +
       '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + (S.onlyFree ? ' freeonly' : '') + '" id="mList">' + rows + '</div>' +
-      '<div class="hint" style="margin-top:9px">勾上的才会出现在客户端的 <span class="mono">GET /v1/models</span> 里；' +
-      '没勾的拿旧名字调也会被 <span class="mono">404 model_not_found</span> 挡回去（清单为空 = 全放）。' +
-      '一个都不勾 = 全部放开（等于不过滤）。改完要点「保存发布清单」。<br>' +
-      '没勾时 <span class="mono">/v1/models</span> 只列<b>号池真有额度</b>的模型（zcode 的上游目录是整家厂商的，' +
-      '很多型号这个号的套餐并没有）；「未授权」那些勾上了才会发出去（明知会失败才勾）。<br>' +
-      '<b>上游有什么</b>由账号自己决定（网关带账号 token 去上游拉，不读本机任何 agent 的配置）；' +
-      '<b>对外发哪些</b>由你在这里勾。</div>';
+      '<div class="hint" style="margin-top:9px">勾上的才出现在 <span class="mono">GET /v1/models</span>，一个都不勾 = 全部放开。</div>';
   }
   var pt2 = (S.status && S.status.producer_totals) || [];
   var servable = pt2.filter(function(x){ return x.servable; });
@@ -2643,26 +2655,7 @@ function viewOutput(){
   }
   html += card("模型发布清单（上游可勾 " + avail.length + " 个 · 当前对外 " + models.length + " 个）",
     "账号自己携带的模型能力由网关从上游拉取；默认全量放开，想收窄就在下面勾。" + clientNote,
-    modelBody +
-    '<div class="note" style="margin-top:10px">' +
-    '<b>清单从哪来</b>：网关带账号自己的 token 去上游读模型目录（/v3/config 全量口径，按 id 去重），' +
-    '不读本机任何 agent 的自定义模型——所以这里看到的都是<b>账号本身携带</b>的能力。<br>' +
-    '<b>为什么有上百个</b>：每一家都是<b>整家厂商的目录</b>，不是这个号真能跑的子集——workbuddy 44+28（CN/国际版）、' +
-    'opencode Zen 79、kilo 19、zcode 11。目录里的 cli 面往往只是子集，其余是 web/console 面的条目；' +
-    '默认全量发布，不需要的在这里取消勾选即可（一个都不勾 = 全部放开）。真打不通的会被池级死标记（24h）自动收敛。<br>' +
-    '<b>名字尾巴上的 -free / -x0.11</b>：就是费率档位落在模型名上的样子（免费 -free，收费按自身倍率 -x0.11）。' +
-    '客户端拉到的模型名带这个尾巴，请求带回来网关会自动剥掉再路由，所以带不带都能调。<br>' +
-    '<b>国际版（wba）为什么单列一组</b>：它的型号和国内版<b>不是同一批</b>（gpt-6-astra / ' +
-    'gemini-3.5-flash / grok-4.7 等只有国际版有）。清单里国际版的键是 ' +
-    '<span class="mono">global:&lt;裸 id&gt;</span>，与国内版同名的（fast-model、glm-5.3 等）各占一把开关；' +
-    '工具栏「国际版单独控制」：勾上 = 两域各一把开关；取消勾选 = 裸名字同时管两域（旧清单兼容）。' +
-    '它<b>切换即时生效</b>（直接写进配置，不用点保存、不用重启）——关掉它再勾一个 CN 型号，' +
-    '国际版的同名型号会立刻跟着开。<br>' +
-    '<b>zcode 段按套餐额度收敛</b>：zcode 的 /models 是<b>整家厂商的目录</b>（列了 11 个 GLM 型号），真正能调用的只有' +
-    '该号<b>套餐覆盖</b>的那些（周末活动的号只有 glm-5.3-flash）——在「获取源 → switch 账本 → zcode 卡片 → 看候选 → 读全部额度」' +
-    '里能看到每个号实际覆盖哪些。有额度的算「可用」，目录里其余标「未授权」并默认收起；对外 /v1/models 也不发未授权的' +
-    '（列出去就等于承诺能调），要强行发就勾上那几条。' +
-    '</div>');
+    modelBody);
   return html;
 }
 /* ---------- 请求统计（/v1/stats） ---------- */
@@ -2889,7 +2882,7 @@ function heatmapCard(heat){
         return s;
       })() + '</div>';
   }).join("");
-  return card("活跃热力图", "按「周几 × 小时」累计请求数（本地时区）。颜色越深越忙；空格 = 该时段没有请求。",
+  return card("活跃热力图", "按周几 × 小时累计（本地时区）。",
     '<div class="heatwrap">' + head + body + '</div>' +
     '<div class="hint" style="margin-top:10px">本区间合计 ' + fmtInt(total) + ' 次请求，峰值 ' + fmtInt(peak) + ' 次/格。</div>');
 }
@@ -2897,8 +2890,7 @@ function heatmapCard(heat){
    数据源 GET /v1/stats?range=…（逐日聚合落 data/stats.json，跨重启保留）。 */
 function viewStats(){
   var cur = statsRangeFor();
-  var html = head("请求统计", "按「今天 / 近 7 天 / 近 30 天 / 全部」看请求量、来源、模型、延迟与 token。" +
-    "历史按天落盘（data/stats.json），跨重启保留。数据源 /v1/stats。") +
+  var html = head("请求统计", "按区间看用量。") +
     '<div class="row" style="margin-bottom:14px">' + statsRangeSeg() + statsLiveTag() + '</div>';
   var st = S.stats;
   if (!st) return html + card("正在读取", "", '<div class="empty">读取中…</div>');
@@ -2968,7 +2960,7 @@ function viewStats(){
         '<td class="hint wtime" style="white-space:nowrap">' + esc(fmtTime(m.last_seen)) + '</td></tr>';
     }).join("");
     html += card("按模型（" + models.length + " 个）",
-      "默认按请求数降序；点表头可改排序。token 与缓存数来自上游 usage；缺观测的请求不计入均值分母。" +
+      "点表头排序；均值跳过缺观测的请求。" +
         (partialNote() ? (" " + partialNote()) : ""),
       '<div class="tablewrap"><table class="sortable"><thead><tr>' +
       statsTh("模型", "model", false) + statsTh("请求", "requests", true) +
@@ -3018,7 +3010,7 @@ function statsSortSet(key){
 function viewRuntime(){
   var selfTestHtml = selfTestCard();
   var st = S.status;
-  var html = head("运行态", "网关内部状态：粘性会话、并发水位、成本探索、定时任务、死信模型。");
+  var html = head("运行态", "内部状态。");
   if (!st) return html + card("正在读取", "", '<div class="empty">读取中…</div>');
   var sticky = st.sticky_sessions || 0;
   var redisMode = st.redis_mode || "noop";
@@ -3075,18 +3067,17 @@ function viewRuntime(){
   if (mdKeys.length){
     var mdRows = mdKeys.map(function(k){
       var e = md[k] || {};
-      return '<tr><td><span class="mono">' + esc(k) + '</span></td>' +
-        '<td class="hint">' + esc(e.reason || "") + '</td>' +
+      return '<tr title="' + esc(e.reason || "") + '"><td><span class="mono">' + esc(k) + '</span></td>' +
         '<td class="hint" style="white-space:nowrap">' + esc(fmtTime(e.until)) + '</td></tr>';
     }).join("");
     html += card("模型死信台账（" + mdKeys.length + " 条）",
       "上游权威答复「无此模型」的负缓存，TTL 到期自动复测；误杀可手动清空。",
-      '<div class="tablewrap"><table><thead><tr><th style="width:280px">键</th><th>原因</th><th style="width:150px">到期</th></tr></thead><tbody>' +
+      '<div class="tablewrap"><table><thead><tr><th>键</th><th style="width:150px">到期</th></tr></thead><tbody>' +
       mdRows + '</tbody></table></div>' +
       '<div class="row" style="margin-top:11px"><button class="tiny" data-action="modeldead-clear">清空死信台账</button>' +
       '<span class="hint" style="margin:0">清掉后这些模型立刻重新参与路由。</span></div>');
   } else {
-    html += card("模型死信台账", "没有死信：上游目录里的模型都还能正常路由。", "");
+    html += card("模型死信台账", "没有死信。", "");
   }
   return html + selfTestHtml;
 }
@@ -3226,7 +3217,7 @@ function floatSwitchItem(it, on, icon){
     '<span class="knob"></span></button></div>';
 }
 function viewSettings(){
-  var html = head("设置", "桌面程序的本地偏好：悬浮窗显示什么、区间口径与配色。都在本机落盘，不上传。");
+  var html = head("设置", "本机偏好。");
   if (!DESKTOP){
     html += card("桌面专属设置", "", '<div class="empty">当前是浏览器直连网关，没有桌面宿主，' +
       '这一页只对 Free2API 桌面程序有效。配置请直接改 config.json。</div>');
@@ -3238,8 +3229,7 @@ function viewSettings(){
     // 网关没跑时主动说清楚，而不是让用户对着一个不动的小窗猜。
     var conn = fw.connected ? '<span class="tag ok">数据已连接</span>'
       : '<span class="tag warn">等网关上线</span>';
-    html += card("桌面悬浮窗", "原生小窗，常驻在桌面右下角；数据来自网关的实时推送线。" +
-      "按住任意位置可拖动，位置会被记住。",
+    html += card("桌面悬浮窗", "桌面右下角，可拖动。",
       '<div class="row" style="margin-bottom:12px">' +
         '<button class="toggle big' + (on ? " on" : "") + '" data-action="float-main" data-next="' + (on ? "0" : "1") + '"' +
         (S.floatBusy ? " disabled" : "") + '><span class="knob"></span></button>' +
@@ -3253,8 +3243,7 @@ function viewSettings(){
       var rows = avail.map(function(it){
         return floatSwitchItem(it, items.indexOf(it.ID) >= 0, it.ID === "passthru" ? "mouse" : (it.ID === "topmost" ? "layers" : ""));
       }).join("");
-      html += card("显示哪些内容", "「Token 速度」那一行是真会动的实时值；" +
-        "「区间请求数 / 区间 Token」跟随下面选的区间。",
+      html += card("显示哪些内容", "",
         rows +
         '<div class="row" style="margin-top:12px">' +
           '<span class="hint" style="margin:0">统计区间</span>' +
@@ -3268,11 +3257,10 @@ function viewSettings(){
           '<button class="tiny' + ((fw.theme || "dark") === "dark" ? " pri" : "") + '" data-action="float-theme" data-theme="dark">深色</button>' +
           '<button class="tiny' + ((fw.theme || "dark") === "light" ? " pri" : "") + '" data-action="float-theme" data-theme="light">浅色</button>' +
         '</div>' +
-        '<div class="hint" style="margin-top:11px">配置落在 <span class="mono">data/floatwin.json</span>，' +
-        '跟着 exe 目录走；「记忆位置」也在同一份文件里。</div>');
+        '<div class="hint" style="margin-top:11px">配置保存在 <span class="mono">data/floatwin.json</span>。</div>');
     }
   }
-  html += card("网关密钥", "网关配了 api_key 时，其他本机客户端要带密钥才能调；本机直连默认免密钥。",
+  html += card("网关密钥", "配置 api_key 后，外部客户端需带密钥。",
     '<div class="row"><button class="tiny" data-action="open-key">' + svg("key") + '设置网关密钥</button>' +
     '<span class="hint" style="margin:0">' + (S.apiKey ? "本机已保存密钥。" : "当前未保存密钥（本机直连免密钥）。") + '</span></div>');
   return html;
@@ -3682,7 +3670,7 @@ function selfTestCard(){
       '<span class="pmeta" style="max-width:56%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' +
         esc(x.detail || "") + '">' + esc(x.detail || (x.status === "run" ? "进行中…" : "等待")) + '</span></div>';
   }).join("") + '</div>') : '<div class="empty">点右上角「开始自检」，依次验证管理面、模型表与对话链路。</div>';
-  return card("连通性自检", "把「客户端 → 网关 → 上游」这条链逐段点一遍，失败时直接看原始返回。",
+  return card("连通性自检", "",
     body, '<button class="rf" data-action="selftest">' + svg("shield") + (st && st.running ? "自检中…" : "开始自检") + '</button>');
 }
 /* loadRuntime 拉运行态页需要的三份数据：定时任务、死信台账、以及最新的 /status
@@ -3990,7 +3978,7 @@ function zcodeCard(){
       esc(miss.map(function(p){ return p.name || p.id; }).join("、")) + "</td></tr>");
   }
   body += '<div class="sep"></div><div class="f"><label class="f">识别到的供应商</label>' +
-    '<div class="hint">按 <b>Base URL</b> 认，不按名字——你可以给它们起任意名字。</div>' +
+    '<div class="hint">按 <b>Base URL</b> 识别。</div>' +
     '<div class="tablewrap"><table><thead><tr><th>名称</th><th>Base URL</th><th class="num">模型</th><th>处理</th></tr></thead>' +
     "<tbody>" + provRows.join("") + "</tbody></table></div></div>";
 
@@ -4031,7 +4019,7 @@ function zcodeCard(){
     '<span class="hint" style="margin:0">写完重启 ZCode 生效。已存在的规则不会被 ZCode 覆盖。</span></div>';
 
   return card("ZCode 一键接入",
-    "ZCode 不读 /v1/models 的上下文字段，这里把真实值写进它的供应商配置。",
+    "写入供应商配置并同步模型上下文。",
     body, null, { action: "card-toggle", id: "zcode", open: zopen, badge: zcodeBadge(z) });
 }
 /* ZCode 建供应商表单的字段表 + 草稿存读。
@@ -4096,28 +4084,27 @@ function zcodeCreateForm(z){
   }).join("");
 
   return '<div class="sep"></div><div class="f"><label class="f">新建 ZCode 供应商</label>' +
-    '<div class="hint">填名字、挑格式、勾模型，直接写进 ZCode 的 provider_config.json（先自动备份）。' +
-    '同 id 再点一次是覆盖，不会重复追加。</div>' +
+    '<div class="hint">写进 ZCode 的 provider_config.json，先自动备份；同 id 重建会覆盖。</div>' +
     '<div class="grid2" style="margin-top:7px">' +
       '<div class="field"><label class="f">供应商名称</label>' +
         '<input id="zcName" value="' + esc(fm.name || "free2api") + '" placeholder="free2api">' +
         '<div class="hint">ZCode 里显示的名字，随便起。</div></div>' +
       '<div class="field"><label class="f">供应商 id</label>' +
         '<input id="zcId" value="' + esc(fm.provider_id || "") + '" placeholder="留空自动生成">' +
-        '<div class="hint">小写唯一。和已有的 id 撞了且指向别处时会拒绝写入，让你换 id。</div></div>' +
+        '<div class="hint">小写唯一；撞到别的供应商会被拒绝。</div></div>' +
       '<div class="field"><label class="f">Base URL</label>' +
         '<input id="zcBase" value="' + esc(fm.base_url !== undefined ? fm.base_url : (z.base_url || "")) + '">' +
-        '<div class="hint">网关地址（含 /v1）。要给 ZCode 单独开出口，就填那个出口。</div></div>' +
+        '<div class="hint">含 /v1；单独出口就填出口地址。</div></div>' +
       '<div class="field"><label class="f">API 格式</label><select id="zcFmt">' + fmtOpts + '</select>' +
         '<div class="hint">' + esc(fmtNote) + '</div></div>' +
       '<div class="field"><label class="f">密钥</label>' +
         '<input id="zcKey" value="' + esc(fm.api_key || "free2api-local") + '" placeholder="free2api-local">' +
-        '<div class="hint">ZCode 要求非空（网关不鉴权也要填）。任意占位串即可。</div></div>' +
+        '<div class="hint">ZCode 要求非空，任意占位串即可。</div></div>' +
     '</div>' +
     '<div class="field" style="margin-top:9px"><label class="f">选模型（' + picked.length + ' 个）</label>' +
       (all.length
         ? (picked.length === all.length && !sel[all[0] && all[0].full_id]
-            ? '<div class="hint">还没在下面「模型发布清单」勾过，先按当前全部对外模型列出来。勾过的会优先列出。</div>' : "")
+            ? '<div class="hint">未在发布清单勾选时，默认列出全部对外模型。</div>' : "")
         : '<div class="hint">网关当前没有对外模型——号池里需要有健康账号。</div>') +
       '<div class="mbody" style="max-height:230px;overflow:auto;margin-top:5px">' +
       (modelRows || '<div class="empty">没有可选模型</div>') + '</div>' +
