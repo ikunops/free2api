@@ -57,15 +57,15 @@ type desktop struct {
 	cfgPath string
 	exeDir  string
 
-	inst    *gateway.Instance
+	inst     *gateway.Instance
 	starting bool
-	lastErr string
+	lastErr  string
 
-	gwAddr string             // config.json 的 listen，例如 127.0.0.1:7864
+	gwAddr string // config.json 的 listen，例如 127.0.0.1:7864
 	proxy  *httputil.ReverseProxy
 
-	probeAt   time.Time // 上次探测「外部是否已有 free2api」的时间
-	probeOK   bool
+	probeAt time.Time // 上次探测「外部是否已有 free2api」的时间
+	probeOK bool
 
 	// floatWin 桌面悬浮窗。指针常驻：它的生命周期独立于主控制台窗口
 	//（关掉控制台不关浮窗，只随进程退出），所以必须在 desktop 上有个稳定地址。
@@ -125,12 +125,16 @@ func main() {
 	// 但重启桌面程序后小窗不见了 —— 因为 enabled 只在用户点开关（floatApply）时
 	// 被读，从来没在启动路径上被读。配置里写着开，程序却当它关着。
 	if d.floatWin.wantsWindow() {
-		go func() {
-			time.Sleep(1200 * time.Millisecond) // 等网关 SSE 端点就绪
-			if err := d.floatWin.start(); err != nil {
-				log.Printf("按上次的设置恢复悬浮窗失败（可在设置页重开）: %v", err)
-			}
-		}()
+		// 等网关真正能应答再做首连，然后挂一个自愈循环。
+		//
+		// 为什么不能只 sleep 1200ms 拉倒：踩过两回 ——
+		//  1. 另一实例正在退、SSE 端点还没起来，首连没拿到数据；
+		//  2. 建窗线程偶发 5s 超时（认领 UI 消息队列的那一下），f.hwnd 已置位、
+		//     窗口其实在跑，但调用方已经放弃，之后没人再管它，一直显示「网关未连接」。
+		// 现在的语义：start 失败就重试（幂等，hwnd!=0 早退），连上且收到数据后
+		// 每 5s 复查一次 /healthz；断供超过 20s（网关重启/地址变了）就重连，
+		// 用 d.gwAddr 现读，不捕旧地址。
+		go ensureFloatLoop(d)
 	}
 
 	ctrlAddr, err := serve(d, *ctrlPort)
@@ -176,12 +180,68 @@ func main() {
 	w.Run() // 阻塞到窗口关闭
 
 	d.stopFloat()
-	// 关窗口只停「本窗口托管」的那个网关：端口上如果是别的进程（计划任务常驻），
-	// 用户关掉控制台不该顺手把服务停了。真停外部进程请点页面里的「停止网关」。
-	if err := d.stopGateway(); err != nil {
-		log.Printf("退出时停止网关失败: %v", err)
+	// 关窗口只停「本窗口托管」的网关。端口上如果是别的进程（计划任务常驻），
+	// 用户关掉控制台不该顺手把服务停了——那种「关窗口杀服务 → 看门狗一分钟
+	// 后又拉起来」的拉锯，正是端口生命周期看起来没闭环的来源。真停外部进程
+	// 请点页面里的「停止网关」。
+	done := make(chan struct{})
+	go func() {
+		d.stopHostedGateway()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		// 兜底：停机路径被某个后台任务卡住时，窗口已经关了、进程却还占着端口，
+		// 下一次启动就会 bind 失败。这里直接结束进程，由系统回收全部 socket。
+		log.Printf("退出清理超过 8s 未完成，强制结束进程（端口由系统回收）")
+		os.Exit(0)
 	}
 	log.Printf("窗口已关闭，退出")
+}
+
+// ensureFloatLoop 悬浮窗启动 + 自愈：首连失败就重试，数据断供就重连，
+// 网关重启换了地址也跟得上（每次都现读 d.gwAddr）。进程退出由 stopChan 收尾。
+func ensureFloatLoop(d *desktop) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	lastFail := ""
+	for {
+		f := d.floatWin
+		if f == nil || !f.wantsWindow() {
+			return // 用户把它关了；再开走 applyFloat，不用这个循环重新拉起
+		}
+		if !f.running() {
+			if err := f.start(); err != nil {
+				if msg := err.Error(); msg != lastFail {
+					lastFail = msg
+					log.Printf("按上次的设置恢复悬浮窗失败（重试中）: %v", err)
+				}
+			} else {
+				lastFail = ""
+			}
+		}
+		// 地址/密钥每条循环都同步一次；setGateway 内部只在真的变了时才断流。
+		d.syncFloatGateway()
+		if _, readAt, ok := f.snapState(); ok {
+			// 连接悬死判定：SSE 每 20s 至少一个心跳字节，40s 没读到任何字节
+			// 说明这条连接已经没人喂了（网关重启/网络切换），主动断开重连。
+			if !readAt.IsZero() && time.Since(readAt) > 40*time.Second {
+				log.Printf("悬浮窗数据源 40s 无字节，主动重连")
+				f.dropGateway()
+			}
+		}
+		// 网关停了就断开，别把「旧地址的残连」当还连着；网关回来后
+		// streamLoop 的重连会立即接上。
+		if !d.externalAlive(d.gwAddr) {
+			f.dropGateway()
+		}
+		select {
+		case <-f.stopChan():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // ---------------------------------------------------------------- 网关启停
@@ -239,6 +299,19 @@ func (d *desktop) startGateway() error {
 	log.Printf("网关已启动，监听 %s", listen)
 	d.syncFloatGateway()
 	return nil
+}
+
+// stopHostedGateway 只停本窗口托管的实例，绝不去动端口上别人的进程。
+// 窗口关闭路径用它；页面里的「停止网关」按钮走 stopGateway（含外部进程）。
+func (d *desktop) stopHostedGateway() {
+	d.mu.Lock()
+	inst := d.inst
+	d.inst = nil
+	d.mu.Unlock()
+	if inst != nil {
+		inst.Stop()
+		log.Printf("网关已停止（本窗口托管）")
+	}
 }
 
 func (d *desktop) stopGateway() error {

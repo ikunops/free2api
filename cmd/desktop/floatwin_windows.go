@@ -3,10 +3,10 @@
 // floatwin_windows.go 桌面悬浮窗：常驻小窗，实时显示网关的活跃度。
 //
 // 为什么是原生 Win32 + GDI，而不是再开一个 WebView2：
-//  - 第二个 WebView2 会再拉起一整套 Chromium 子进程（80~120MB 常驻），为一块
-//    260x100 的数字窗不值；原生方案的常驻开销就是一个窗口句柄 + 一块小 DIB。
-//  - WebView2 在「无边框 + 逐像素透明 + 圆角 + 不抢焦点」这四件事上都很别扭，
-//    而这四条恰好是悬浮窗的硬需求。
+//   - 第二个 WebView2 会再拉起一整套 Chromium 子进程（80~120MB 常驻），为一块
+//     260x100 的数字窗不值；原生方案的常驻开销就是一个窗口句柄 + 一块小 DIB。
+//   - WebView2 在「无边框 + 逐像素透明 + 圆角 + 不抢焦点」这四件事上都很别扭，
+//     而这四条恰好是悬浮窗的硬需求。
 //
 // 透明实现走 WS_EX_LAYERED + UpdateLayeredWindow（AC_SRC_ALPHA）：内容是自绘的
 // 32bpp 预乘 DIB，圆角、描边、半透明底都是算出来的，不依赖系统主题。文本用 GDI
@@ -21,17 +21,18 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"math"
 	"sort"
-	"syscall"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -163,17 +164,37 @@ type floatWin struct {
 
 	stop      chan struct{}
 	className string
+	// pending 建窗线程已派出、还没报告结果。重试期间用它挡住第二次 spawn，
+	// 否则超时后的重试会再建一个窗口线程（两个消息队列、两个 HWND）。
+	pending bool
+	// readyDone 建窗线程结果的广播；winErr 是对应错误。start 的调用方超时
+	// 撤回后，仍有一个常驻接收者把结果落进这两个字段，供下一轮重试判断。
+	readyDone chan struct{}
+	winErr    error
+	// streamOn 保证全进程只有一条 SSE 数据源。窗口关了再开不会叠加第二条流。
+	streamOn bool
 
 	snap     floatSnapshot
 	snapOK   bool
 	lastData time.Time
-	gwAddr   string
-	apiKey   string
+	// liveReadAt 最后一次从 SSE 连接读到**任何字节**（含 20s 一次的心跳帧）。
+	// 为什么单独立一个：/v1/stats/stream 只在统计变化时推数据帧，网关空闲时
+	// lastData 可以几分钟不动 —— 那不代表连接死了。心跳才是连接活着的证据。
+	liveReadAt time.Time
+	// streamBody 当前在读的 SSE 响应体。watchdog 判定网关停了/连接悬死时
+	// 主动 Close 它，让阻塞中的 ReadString 立刻报错退出、进入重连——
+	// 否则要等下一个心跳帧（最长 20s）才会发现自己已经没在数据源上了。
+	streamBody io.Closer
+	// gen 网关地址或密钥每变化一次 +1。SSE 循环带着建连时的 gen，
+	// 读到不一致就退出重连，保证切换地址后旧连接不会继续喂旧网关的数据。
+	gen    uint64
+	gwAddr string
+	apiKey string
 
 	phase float64 // 呼吸点相位，按帧推进
 
-	blitLogMu    sync.Mutex // 贴图失败日志去重（见 logBlitErr）
-	lastBlitErr  string
+	blitLogMu     sync.Mutex // 贴图失败日志去重（见 logBlitErr）
+	lastBlitErr   string
 	lastBlitErrAt time.Time
 }
 
@@ -276,11 +297,47 @@ func (f *floatWin) apply(req floatApply) error {
 }
 
 // setGateway 网关地址/密钥变化时更新数据源（启停后 listen 可能变）。
+// 地址或密钥真的变了才断开现有流：不变时这条函数每 5s 被 watchdog 调一次，
+// 不能跟着掐连接，否则浮窗永远在重连。
 func (f *floatWin) setGateway(addr, apiKey string) {
 	f.mu.Lock()
+	changed := f.gwAddr != addr || f.apiKey != apiKey
 	f.gwAddr, f.apiKey = addr, apiKey
 	f.mu.Unlock()
+	if changed {
+		f.dropGateway()
+	}
 	f.retick()
+}
+
+// dropGateway 主动断开当前 SSE 连接并置「未连接」。
+//
+// 两条调用路径：setGateway 发现地址变了；watchdog 发现网关已停 / 连接悬死。
+// 断开是必须的——只把 snapOK 置 false 的话，阻塞在 ReadString 上的旧流
+// 会继续活着，等网关回来时「重连」的其实是那条旧连接，新地址永远连不上。
+func (f *floatWin) dropGateway() {
+	f.mu.Lock()
+	body := f.streamBody
+	if !f.snapOK && body == nil {
+		f.mu.Unlock()
+		return // 已经处于断开状态，别空转
+	}
+	f.gen++
+	f.snapOK = false
+	f.streamBody = nil
+	f.mu.Unlock()
+	if body != nil {
+		_ = body.Close()
+	}
+	f.retick()
+}
+
+// snapState 数据源健康快照：最后一次数据帧时间、最后一次读到字节的时间
+// （含心跳）、当前是否连上。watchdog 用它区分「网关空闲」与「连接已死」。
+func (f *floatWin) snapState() (dataAt, readAt time.Time, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastData, f.liveReadAt, f.snapOK
 }
 
 func (f *floatWin) retick() {
@@ -316,6 +373,13 @@ func (f *floatWin) start() error {
 		f.mu.Unlock()
 		return nil
 	}
+	if f.pending {
+		f.mu.Unlock()
+		return fmt.Errorf("悬浮窗窗口线程正在启动")
+	}
+	f.pending = true
+	readyDone := make(chan struct{})
+	f.readyDone = readyDone
 	f.mu.Unlock()
 
 	ready := make(chan error, 1)
@@ -326,16 +390,50 @@ func (f *floatWin) start() error {
 		runtime.LockOSThread()
 		f.runWindow(ready)
 	}()
+	// 常驻接收者：即使 start 的调用方超时撤了，结果也必须被收下——
+	// 超时曾把「窗口其实建出来了」当成失败，之后再没人管它，浮窗就
+	// 一直挂在「网关未连接」。这里把结果落盘（winErr）并广播 readyDone。
+	go func() {
+		err := <-ready
+		f.mu.Lock()
+		f.pending = false
+		f.winErr = err
+		f.mu.Unlock()
+		if err == nil {
+			f.ensureStream()
+		}
+		close(readyDone)
+	}()
+
+	// 8s：建窗本身是毫秒级，慢只可能慢在 OS 消息线程的调度上。等够长的
+	// 同时保留 pending——超时只是「这一轮没等到」，不是「放弃建窗」。
 	select {
-	case err := <-ready:
+	case <-readyDone:
+		f.mu.Lock()
+		err, h := f.winErr, f.hwnd
+		f.mu.Unlock()
 		if err != nil {
 			return err
 		}
-		go f.streamLoop()
+		if h == 0 {
+			return fmt.Errorf("悬浮窗窗口线程报告成功但窗口不存在")
+		}
 		return nil
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("悬浮窗窗口线程启动超时")
+	case <-time.After(8 * time.Second):
+		return fmt.Errorf("悬浮窗窗口线程启动超时（仍在后台等待）")
 	}
+}
+
+// ensureStream 启动全进程唯一的数据源循环。幂等。
+func (f *floatWin) ensureStream() {
+	f.mu.Lock()
+	if f.streamOn {
+		f.mu.Unlock()
+		return
+	}
+	f.streamOn = true
+	f.mu.Unlock()
+	go f.streamLoop()
 }
 
 func (f *floatWin) closeWin() {
@@ -360,11 +458,11 @@ func (f *floatWin) runWindow(ready chan<- error) {
 	hmod, _, _ := pGetModuleHandleW.Call(0)
 	inst := windows.Handle(hmod)
 	wc := wndClassExW{
-		Size:       uint32(unsafe.Sizeof(wndClassExW{})), // cbSize 必填：留 0 注册必失败
-		Style:      0x0008 | 0x0002,                     // CS_DBLCLKS | CS_HREDRAW
-		WndProc:    floatWindowProcAddr(),
-		Instance:   inst,
-		ClassName:  className,
+		Size:      uint32(unsafe.Sizeof(wndClassExW{})), // cbSize 必填：留 0 注册必失败
+		Style:     0x0008 | 0x0002,                      // CS_DBLCLKS | CS_HREDRAW
+		WndProc:   floatWindowProcAddr(),
+		Instance:  inst,
+		ClassName: className,
 	}
 	// 类只注册一次：重复注册会失败，且第二次的 WndProc 不会被采纳。
 	if ret, _, rerr := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); ret == 0 {
@@ -544,12 +642,36 @@ func (f *floatWin) streamLoop() {
 			return
 		default:
 		}
-		err := f.streamOnce()
-		if err != nil {
-			log.Printf("悬浮窗数据源断开: %v（%s 后重连）", err, backoff)
+		// 窗口线程报错（比如上次超时后实际建窗失败）：别在这里无声重试，
+		// 交回 ensureLoop / 设置页；但窗口不在了要清掉连接状态。
+		f.mu.Lock()
+		winErr := f.winErr
+		f.mu.Unlock()
+		if winErr != nil {
 			f.mu.Lock()
 			f.snapOK = false
 			f.mu.Unlock()
+			select {
+			case <-f.stopChan():
+				return
+			case <-time.After(3 * time.Second):
+			}
+			continue
+		}
+
+		started := time.Now()
+		err := f.streamOnce()
+		if err != nil {
+			// 这次流「活过多久」决定退避怎么走：一上来就失败（端点没起来/地址不
+			// 对）要退避重试；连上并跑了一阵才断（网关重启、网络抖动）则立即
+			// 重连，否则每次重启都要白白等 2s/4s/8s，浮窗会挂着「网关未连接」。
+			f.mu.Lock()
+			if time.Since(started) > 10*time.Second {
+				backoff = time.Second
+			}
+			f.snapOK = false
+			f.mu.Unlock()
+			log.Printf("悬浮窗数据源断开: %v（%s 后重连）", err, backoff)
 			f.retick()
 		}
 		select {
@@ -577,7 +699,8 @@ func (f *floatWin) stopChan() <-chan struct{} {
 
 func (f *floatWin) streamOnce() error {
 	f.mu.Lock()
-	base, key, rng := f.gwAddr, f.apiKey, f.cfg.Range
+	base, key, rng, gen := f.gwAddr, f.apiKey, f.cfg.Range, f.gen
+	started := time.Now()
 	f.mu.Unlock()
 	if base == "" {
 		return fmt.Errorf("网关地址未就绪")
@@ -601,16 +724,39 @@ func (f *floatWin) streamOnce() error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	f.mu.Lock()
-	f.snapOK = true
+	// 连上后又换了地址（setGateway）：这条流已经过期，立刻收掉重开，
+	// 否则会一直读着旧网关的数据，而新地址再也不会有连接。
+	stale := f.gen != gen
+	f.snapOK = !stale
+	if !stale {
+		f.streamBody = resp.Body
+		f.liveReadAt = started
+	}
 	f.mu.Unlock()
 	f.retick()
+	if stale {
+		return fmt.Errorf("网关地址已变化，重连")
+	}
+	defer func() {
+		f.mu.Lock()
+		if f.streamBody == resp.Body {
+			f.streamBody = nil
+		}
+		f.mu.Unlock()
+	}()
 
 	rd := bufio.NewReaderSize(resp.Body, 64*1024)
 	for {
 		line, rerr := rd.ReadString('\n')
 		if rerr != nil {
+			f.mu.Lock()
+			f.liveReadAt = time.Now()
+			f.mu.Unlock()
 			return rerr
 		}
+		f.mu.Lock()
+		f.liveReadAt = time.Now()
+		f.mu.Unlock()
 		line = strings.TrimRight(line, "\r\n")
 		if !strings.HasPrefix(line, "data:") {
 			continue
@@ -643,6 +789,7 @@ func urlQueryEscape(s string) string {
 	}
 	return b.String()
 }
+
 // ---------------------------------------------------------------- Win32 常量
 
 const (
@@ -656,34 +803,34 @@ const (
 
 	swShowNoActivate = 4
 
-	wmDestroy       = 0x0002
-	wmClose         = 0x0010
-	wmEraseBkgnd    = 0x0014
-	wmNCHitTest     = 0x0084
-	wmTimer         = 0x0113
-	wmPaint         = 0x000F
-	wmApp           = 0x8000
-	wmFloatData     = wmApp + 1
+	wmDestroy    = 0x0002
+	wmClose      = 0x0010
+	wmEraseBkgnd = 0x0014
+	wmNCHitTest  = 0x0084
+	wmTimer      = 0x0113
+	wmPaint      = 0x000F
+	wmApp        = 0x8000
+	wmFloatData  = wmApp + 1
 
 	htCaption = 2
 
 	gwlpExStyle = ^uintptr(19) // -20 = GWL_EXSTYLE
 
-	ulwAlpha = 0x00000002
-	acSrcAlpha = 0x01
-	biRGB      = 0
+	ulwAlpha     = 0x00000002
+	acSrcAlpha   = 0x01
+	biRGB        = 0
 	dibRGBColors = 0
 
-	taTop          = 0x00000000
-	taLeft         = 0x00000000
-	wmTA           = taTop | taLeft
+	taTop  = 0x00000000
+	taLeft = 0x00000000
+	wmTA   = taTop | taLeft
 	// antialiased = 4 而不是 cleartype = 5：ClearType 是给不透明背景设计的，
 	// 在 32bpp 带 alpha 的 DIB 上它会把文字按子像素混色，深色底上实测发闷
 	// （前景 232 落到屏上只剩 ~140）。灰度抗锯齿在这里观感好得多。
-	antialiased = 4
-	transparentBk  = 1
-	psSolid        = 0
-	psEndRound     = 2
+	antialiased   = 4
+	transparentBk = 1
+	psSolid       = 0
+	psEndRound    = 2
 
 	// DPI 基准：设计与缩放都在 96 DPI 上写死，按实际 DPI 整体放大。
 	baseDPI = 96.0
@@ -694,24 +841,24 @@ var (
 	fkernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	fgdi32    = windows.NewLazySystemDLL("gdi32.dll")
 
-	pRegisterClassExW   = fuser32.NewProc("RegisterClassExW")
-	pCreateWindowExW    = fuser32.NewProc("CreateWindowExW")
-	pDefWindowProcW     = fuser32.NewProc("DefWindowProcW")
-	pDestroyWindow      = fuser32.NewProc("DestroyWindow")
-	pShowWindow         = fuser32.NewProc("ShowWindow")
-	pUpdateWindow       = fuser32.NewProc("UpdateWindow")
-	pGetMessageW        = fuser32.NewProc("GetMessageW")
-	pTranslateMessage   = fuser32.NewProc("TranslateMessage")
-	pDispatchMessageW   = fuser32.NewProc("DispatchMessageW")
-	pPostMessageW       = fuser32.NewProc("PostMessageW")
-	pPostQuitMessage    = fuser32.NewProc("PostQuitMessage")
-	pGetDpiForWindow    = fuser32.NewProc("GetDpiForWindow")
-	pSetWindowPos       = fuser32.NewProc("SetWindowPos")
-	pGetWindowRect      = fuser32.NewProc("GetWindowRect")
-	pGetDC              = fuser32.NewProc("GetDC")
-	pReleaseDC          = fuser32.NewProc("ReleaseDC")
-	pSetTimer           = fuser32.NewProc("SetTimer")
-	pKillTimer          = fuser32.NewProc("KillTimer")
+	pRegisterClassExW    = fuser32.NewProc("RegisterClassExW")
+	pCreateWindowExW     = fuser32.NewProc("CreateWindowExW")
+	pDefWindowProcW      = fuser32.NewProc("DefWindowProcW")
+	pDestroyWindow       = fuser32.NewProc("DestroyWindow")
+	pShowWindow          = fuser32.NewProc("ShowWindow")
+	pUpdateWindow        = fuser32.NewProc("UpdateWindow")
+	pGetMessageW         = fuser32.NewProc("GetMessageW")
+	pTranslateMessage    = fuser32.NewProc("TranslateMessage")
+	pDispatchMessageW    = fuser32.NewProc("DispatchMessageW")
+	pPostMessageW        = fuser32.NewProc("PostMessageW")
+	pPostQuitMessage     = fuser32.NewProc("PostQuitMessage")
+	pGetDpiForWindow     = fuser32.NewProc("GetDpiForWindow")
+	pSetWindowPos        = fuser32.NewProc("SetWindowPos")
+	pGetWindowRect       = fuser32.NewProc("GetWindowRect")
+	pGetDC               = fuser32.NewProc("GetDC")
+	pReleaseDC           = fuser32.NewProc("ReleaseDC")
+	pSetTimer            = fuser32.NewProc("SetTimer")
+	pKillTimer           = fuser32.NewProc("KillTimer")
 	pSetForegroundWindow = fuser32.NewProc("SetForegroundWindow")
 	pUpdateLayeredWindow = fuser32.NewProc("UpdateLayeredWindow")
 	pGetWindowLongPtrW   = fuser32.NewProc("GetWindowLongPtrW")
@@ -781,18 +928,18 @@ type bitmapInfoHeader struct {
 }
 
 type blendFunction struct {
-	BlendOp     byte
-	BlendFlags  byte
+	BlendOp             byte
+	BlendFlags          byte
 	SourceConstantAlpha byte
-	AlphaFormat byte
+	AlphaFormat         byte
 }
 
 const hwndTopmost = ^uintptr(0)   // HWND_TOPMOST = -1
 const hwndNotopmost = ^uintptr(1) // HWND_NOTOPMOST = -2
-const swpNoSize      = 0x0001
-const swpNoMove      = 0x0002
-const swpNoActivate  = 0x0010
-const swpNoOwnerZ    = 0x0200
+const swpNoSize = 0x0001
+const swpNoMove = 0x0002
+const swpNoActivate = 0x0010
+const swpNoOwnerZ = 0x0200
 
 // lastErr 取 Win32 last-error。仅用于失败分支的日志文案，走 GetLastError 裸调
 // （x/sys/windows 没有把它导出成函数，只有 Errno 常量）。
@@ -982,19 +1129,19 @@ func (f *floatWin) windowDPI(hwnd uintptr) float64 {
 // ---------------------------------------------------------------- 绘制
 
 type floatPaint struct {
-	bg      [4]uint8 // R,G,B,A（预乘 alpha 用）
-	fg      [3]uint8
-	fgDim   [3]uint8
-	accent  [3]uint8
-	scale   float64
-	radius  int
+	bg     [4]uint8 // R,G,B,A（预乘 alpha 用）
+	fg     [3]uint8
+	fgDim  [3]uint8
+	accent [3]uint8
+	scale  float64
+	radius int
 }
 
 type floatPalette struct {
-	bgR, bgG, bgB uint8
-	fgR, fgG, fgB uint8
+	bgR, bgG, bgB    uint8
+	fgR, fgG, fgB    uint8
 	dimR, dimG, dimB uint8
-	acR, acG, acB uint8
+	acR, acG, acB    uint8
 }
 
 func paletteFor(theme string) floatPalette {
@@ -1056,11 +1203,11 @@ func (f *floatWin) render(s float64) []byte {
 		return nil
 	}
 	bih := bitmapInfoHeader{
-		Size:       uint32(unsafe.Sizeof(bitmapInfoHeader{})),
-		Width:      int32(w),
-		Height:     -int32(h), // 负数 = 自上而下
-		Planes:     1,
-		BitCount:   32,
+		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
+		Width:       int32(w),
+		Height:      -int32(h), // 负数 = 自上而下
+		Planes:      1,
+		BitCount:    32,
 		Compression: biRGB,
 	}
 	var bits unsafe.Pointer
@@ -1228,11 +1375,11 @@ func (f *floatWin) blit(hwnd uintptr, s float64, w, h int, pixels []byte) {
 // copyPixelsToDIB 把一段 BGRA 像素塞进一块新建的 DIB 并返回它的句柄（已选入 DC）。
 func copyPixelsToDIB(memDC uintptr, pixels []byte, w, h int) uintptr {
 	bih := bitmapInfoHeader{
-		Size:       uint32(unsafe.Sizeof(bitmapInfoHeader{})),
-		Width:      int32(w),
-		Height:     -int32(h),
-		Planes:     1,
-		BitCount:   32,
+		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
+		Width:       int32(w),
+		Height:      -int32(h),
+		Planes:      1,
+		BitCount:    32,
 		Compression: biRGB,
 	}
 	var bits unsafe.Pointer
@@ -1259,8 +1406,8 @@ func colorRef(r, g, b uint8) uint32 { return uint32(r) | uint32(g)<<8 | uint32(b
 // 而内部区又恒等于 cov>1 被夹到 1 —— 最终现象是「窗子只剩下圆角一小圈」。
 // 顶层有 TestRoundedRectSDF 直接钉住这几个符号，回归时先炸这里。
 func roundedRectSDF(fx, fy, w, h, r float64) float64 {
-	qx := math.Abs(fx-w/2) - (w/2) + r
-	qy := math.Abs(fy-h/2) - (h/2) + r
+	qx := math.Abs(fx-w/2) - (w / 2) + r
+	qy := math.Abs(fy-h/2) - (h / 2) + r
 	ox, oy := math.Max(qx, 0), math.Max(qy, 0)
 	return math.Hypot(ox, oy) + math.Min(math.Max(qx, qy), 0) - r
 }
@@ -1374,11 +1521,11 @@ func drawFloatText(memDC uintptr, text string, x, y, w, h int32, fontSize int32,
 	lf := logFontW{
 		Height:      -fontSize, // 负数 = 字符高度
 		Weight:      weight,
-		CharSet:     1,          // DEFAULT_CHARSET
-		OutPrecis:   0,          // OUT_DEFAULT_PRECIS
-		ClipPrecis: 0,          // CLIP_DEFAULT_PRECIS
+		CharSet:     1, // DEFAULT_CHARSET
+		OutPrecis:   0, // OUT_DEFAULT_PRECIS
+		ClipPrecis:  0, // CLIP_DEFAULT_PRECIS
 		Quality:     byte(quality),
-		PitchFamily: 0,         // DEFAULT_PITCH | FF_SWISS
+		PitchFamily: 0, // DEFAULT_PITCH | FF_SWISS
 	}
 	if !lf.setFace(floatFontFace) {
 		return
@@ -1417,20 +1564,20 @@ func drawFloatText(memDC uintptr, text string, x, y, w, h int32, fontSize int32,
 
 // logFontW 与 Win32 LOGFONTW 内存布局一致（FaceName 是尾部内嵌的 WCHAR[32]）。
 type logFontW struct {
-	Height       int32
-	Width        int32
-	Escapement   int32
-	Orientation  int32
-	Weight       int32
-	Italic       byte
-	Underline    byte
-	StrikeOut    byte
-	CharSet      byte
-	OutPrecis    byte
-	ClipPrecis   byte
-	Quality      byte
-	PitchFamily  byte
-	FaceName     [32]uint16
+	Height      int32
+	Width       int32
+	Escapement  int32
+	Orientation int32
+	Weight      int32
+	Italic      byte
+	Underline   byte
+	StrikeOut   byte
+	CharSet     byte
+	OutPrecis   byte
+	ClipPrecis  byte
+	Quality     byte
+	PitchFamily byte
+	FaceName    [32]uint16
 }
 
 // setFace 写入字体名（UTF-16，超长截断）。返回 false 表示字体名太长放不下。
