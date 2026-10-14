@@ -302,6 +302,8 @@ func effectiveOutput(base *OutputStore, ch OutputChannel) OutputConfig {
 	// 域作用域标记不属于「出口之间的分叉」：CN 与国际版是否分开控制是全网关一次的选择，
 	// 通道不单独存一份，跟主口走（通道自己的清单为空时连清单一起继承）。
 	eff.ModelsRealmScoped = parent.ModelsRealmScoped
+	// 档位策略同理：是全网关一次的选择（所有出口一致），跟主口走，出口不单独覆盖。
+	eff.EffortMode = parent.EffortMode
 	out, err := normalizeOutput(eff)
 	if err != nil {
 		return parent
@@ -313,7 +315,8 @@ func effectiveOutput(base *OutputStore, ch OutputChannel) OutputConfig {
 // sameOutput 比较两份输出参数是否等价（Models 是切片，用分隔符拼串比，避免写反射）。
 func sameOutput(a, b OutputConfig) bool {
 	return a.Format == b.Format && a.ModelPrefix == b.ModelPrefix &&
-		a.RateHint == b.RateHint && strings.Join(a.Models, "\x00") == strings.Join(b.Models, "\x00")
+		a.RateHint == b.RateHint && a.EffortMode == b.EffortMode &&
+		strings.Join(a.Models, "\x00") == strings.Join(b.Models, "\x00")
 }
 
 // scopedOutput 把一个通道生效的输出参数包成独立 store（内存态，落盘统一走 output.json）。

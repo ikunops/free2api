@@ -95,14 +95,23 @@ func TestFloatRenderProducesText(t *testing.T) {
 		Requests int64  `json:"requests"`
 	}{{Producer: "workbuddy", Requests: 7000}}
 
-	rows := f.probeRows()
-	w, h := sc96(floatBaseWidth), floatHeightFor(rows)
-	px := f.render(1.0)
+	// 期望尺寸必须用**同一份快照**摊出来的行去算：probeRows() 故意喂空快照
+	// （只给开窗时估个大概），拿它当基准会永远对不上。
+	rows := f.layout(paletteFor(f.cfg.Theme), f.snap, true, 0.55, 0)
+	w, h := floatWidthFor(rows), floatHeightFor(rows)
+	px, fw, fh := f.render(1.0)
 	if px == nil {
 		t.Fatal("render returned nil")
 	}
-	if len(px) != w*h*4 {
-		t.Fatalf("pixel len = %d, want %d", len(px), w*h*4)
+	if len(px) != int(fw)*int(fh)*4 {
+		t.Fatalf("pixel len = %d, want %d (%dx%d)", len(px), int(fw)*int(fh)*4, fw, fh)
+	}
+	// 宽度必须容得下最宽的一行（含左右内边距），否则文字会被省略号截掉。
+	if int(fw) != w || int(fh) != h {
+		t.Errorf("frame %dx%d != floatWidthFor/HeightFor %dx%d", fw, fh, w, h)
+	}
+	if w < floatBaseWidth {
+		t.Errorf("frame width %d < floatBaseWidth %d", w, floatBaseWidth)
 	}
 	// 底色 dark = (20,21,26)。文本 fg=(232,234,240) / 主色 accent=(96,165,250)。
 	lit := 0
@@ -115,8 +124,9 @@ func TestFloatRenderProducesText(t *testing.T) {
 			lit++
 		}
 	}
-	if alphaOn < w*h/2 {
-		t.Errorf("only %d of %d pixels opaque; rounded corners should still be mostly opaque", alphaOn, w*h)
+	area := int(fw) * int(fh)
+	if alphaOn < area/2 {
+		t.Errorf("only %d of %d pixels opaque; rounded corners should still be mostly opaque", alphaOn, area)
 	}
 	if lit < 200 {
 		t.Errorf("only %d bright pixels in a full frame; text likely not drawn", lit)
@@ -125,7 +135,7 @@ func TestFloatRenderProducesText(t *testing.T) {
 	if px[3] != 0 {
 		t.Errorf("corner alpha = %d, want 0", px[3])
 	}
-	t.Logf("lit=%d opaque=%d size=%dx%d", lit, alphaOn, w, h)
+	t.Logf("lit=%d opaque=%d size=%dx%d", lit, alphaOn, fw, fh)
 }
 
 // TestFloatRenderLightTheme 浅色主题下底色是接近白的，文本是深色：
@@ -135,9 +145,7 @@ func TestFloatRenderLightTheme(t *testing.T) {
 	cfg.Theme = "light"
 	f := &floatWin{className: floatClassName, cfg: cfg, snapOK: true}
 	f.snap.Total.Requests = 100
-	rows := f.probeRows()
-	w, h := sc96(floatBaseWidth), floatHeightFor(rows)
-	px := f.render(1.0)
+	px, w, h := f.render(1.0)
 	dark := 0
 	for i := 0; i < len(px); i += 4 {
 		if px[i+3] > 200 && px[i] < 90 && px[i+1] < 90 && px[i+2] < 90 {

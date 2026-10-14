@@ -121,6 +121,10 @@ type Config struct {
 	Features struct {
 		// SanitizeBlacklistFingerprints 出站请求体黑名单指纹脱敏（默认 true；false 完全还原）。
 		SanitizeBlacklistFingerprints bool `json:"sanitize_blacklist_fingerprints"`
+		// ModelCatalogRefresh 模型目录周期刷新间隔（如 "30m"）：启动预热一次后按此周期
+		// 重打各来源目录，自动同步上游模型上下架。空 = 回落默认 30m；"0" = 关闭周期刷新
+		// （仍保留启动预热）。
+		ModelCatalogRefresh string `json:"model_catalog_refresh"`
 	} `json:"features"`
 
 	Prompt struct {
@@ -195,6 +199,9 @@ type Config struct {
 	CostExploreIntervalDur time.Duration `json:"-"`
 	// SlotWaitDur 解析后的排队等待时长（pool.slot_wait，默认 30s；0 = 不排队）。
 	SlotWaitDur time.Duration `json:"-"`
+	// ModelCatalogRefreshDur 解析后的目录周期刷新间隔（features.model_catalog_refresh，
+	// 默认 30m；0 = 关闭周期刷新）。
+	ModelCatalogRefreshDur time.Duration `json:"-"`
 }
 
 // Default 默认配置。
@@ -222,6 +229,8 @@ func Default() *Config {
 	// 显式 client_name="SaaS" 还原旧行为。
 	c.Upstream.ClientName = "WorkBuddy"
 	c.Features.SanitizeBlacklistFingerprints = true
+	// 目录周期刷新默认 30m：启动预热一次后每 30 分钟重打各来源目录，同步上游上下架。
+	c.Features.ModelCatalogRefresh = "30m"
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：默认透传客户端原始 system；显式配置 custom 仍可覆盖回替换
 	c.Pool.MaxInFlight = 3
 	// MaxInFlightGlobal 缺省 2：global 域 WAF 风控更紧，压低单号并发（WAF 403
@@ -473,6 +482,17 @@ func (c *Config) normalize() error {
 	}
 	if c.SlotWaitDur < 0 {
 		c.SlotWaitDur = 0
+	}
+	// 模型目录周期刷新（features.model_catalog_refresh）：空值回落默认 30m；"0" 是
+	// 合法值（关闭周期刷新，仅保留启动预热）；负值钳 0。
+	if c.Features.ModelCatalogRefresh == "" {
+		c.Features.ModelCatalogRefresh = "30m"
+	}
+	if c.ModelCatalogRefreshDur, err = time.ParseDuration(c.Features.ModelCatalogRefresh); err != nil {
+		return fmt.Errorf("features.model_catalog_refresh: %w", err)
+	}
+	if c.ModelCatalogRefreshDur < 0 {
+		c.ModelCatalogRefreshDur = 0
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120

@@ -130,8 +130,11 @@ func translateMaxCompletionTokens(obj map[string]any) {
 	}
 }
 
-// effortRank 档位从低到高。
-var effortRank = map[string]int{"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
+// effortRank 档位从低到高。ultra 排在 max 之上：Codex 的「统一七档」策略会把 ultra 摆上
+// 选择器，但上游（腾讯侧）并无 ultra，必须靠本表把它降到最近的合法档（max），否则未知
+// 档位会原样透传触发上游 400。persistent 不在此表：那是 Codex 的「持续模式」，出站前
+// 客户端已换回真实档位，不该作为推理强度出现。
+var effortRank = map[string]int{"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6, "ultra": 7}
 
 // normalizeReasoningEffort 按模型 supportedEfforts 降级 reasoning_effort（snake/camel 双字段兼容）。
 //   - 请求档位模型支持 → 原样透传

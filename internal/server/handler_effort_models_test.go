@@ -81,6 +81,54 @@ func TestModelListEffortFieldsGlobalProbeFailEmpty(t *testing.T) {
 	}
 }
 
+// TestModelListEffortFixedOverride fixed 档位策略：所有模型统一暴露七档，覆盖上游声明；
+// upstream 策略（默认）则保持各模型自己的档位（零回归）。
+func TestModelListEffortFixedOverride(t *testing.T) {
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		return 200, `{"code":0,"data":{"models":[
+			{"id":"dyn-effort","maxInputTokens":65536,"maxOutputTokens":8192,
+			 "reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high"}},
+			{"id":"dyn-none","maxInputTokens":65536,"maxOutputTokens":8192}
+		],"agents":[{"name":"cli","models":["dyn-effort","dyn-none"]}]}}`, false
+	})
+	resetModelsCache()
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	out := NewOutputStore("")
+	if _, err := out.Set(OutputConfig{Format: FormatOpenAI, RateHint: RateCredit, EffortMode: EffortFixed}); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	h := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: false, Output: out})
+
+	want := append([]string(nil), fixedEffortLevels...)
+	for _, m := range h.modelList() {
+		id, _ := m["id"].(string)
+		if eff := m["reasoning_supported_efforts"]; !reflect.DeepEqual(eff, want) {
+			t.Errorf("%s fixed efforts=%v want %v", id, eff, want)
+		}
+	}
+}
+
+// TestModelListEffortUpstreamDefault upstream 策略（默认）：各模型按上游真实档位（零回归）。
+func TestModelListEffortUpstreamDefault(t *testing.T) {
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		return 200, `{"code":0,"data":{"models":[
+			{"id":"dyn-effort","maxInputTokens":65536,"maxOutputTokens":8192,
+			 "reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high"}}
+		],"agents":[{"name":"cli","models":["dyn-effort"]}]}}`, false
+	})
+	resetModelsCache()
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	h := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: false, Output: NewOutputStore("")})
+
+	got := h.modelList()
+	if len(got) != 1 {
+		t.Fatalf("want 1 model, got %d", len(got))
+	}
+	if eff := got[0]["reasoning_supported_efforts"]; !reflect.DeepEqual(eff, []string{"low", "high"}) {
+		t.Errorf("default upstream efforts=%v want [low high]", eff)
+	}
+}
+
 // TestModelListEffortFieldsGlobalRemote 探测下发档位 → /v1/models global 面用远端桶（权威）；
 // 探测未覆盖的模型不出现（纯动态，无静态兜底）。
 func TestModelListEffortFieldsGlobalRemote(t *testing.T) {

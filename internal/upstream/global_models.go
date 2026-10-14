@@ -108,6 +108,16 @@ func (c *Client) GlobalModelInfosSnapshot() []ModelInfo {
 	return c.globalModels.infos
 }
 
+// InvalidateGlobalModelsCache 让下一次 FetchGlobalModels/FetchGlobalModelInfos 绕过
+// TTL 与负缓存、真正重打上游（供后台周期刷新：自动同步上游模型上下架）。只清时间戳，
+// 不清数据——刷新失败时旧名单仍在，客户端不会看到目录凭空消失。
+func (c *Client) InvalidateGlobalModelsCache() {
+	c.globalModels.Lock()
+	c.globalModels.fetched = time.Time{}
+	c.globalModels.lastFail = time.Time{}
+	c.globalModels.Unlock()
+}
+
 // fetchGlobalModelsOnce 单次探测决策（缓存命中/负缓存/触发探测），返回 (names, infos)。
 // 纯动态：成功 = 探测结果去重（不与任何静态名单合并）；一切失败 = nil（不回落静态）。
 // infos 仅对象形态成功探测时非 nil。

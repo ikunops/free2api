@@ -36,6 +36,12 @@ type codexStateView struct {
 	// SuggestedBaseURL / SuggestedModels 建议值（来自当前输出配置与发布清单）。
 	SuggestedBaseURL string   `json:"suggested_base_url"`
 	SuggestedModels  []string `json:"suggested_models"`
+	// ActiveListen / ConfiguredListen 分别是「本进程真正在听的地址」与「config.json 里
+	// 现在写的地址」。两者不同 = 在「加工设置」改了端口但还没重启（写进 Codex 的地址
+	// 必须是在听的那个，否则 Codex 一接就连不上）。
+	ActiveListen     string `json:"active_listen"`
+	ConfiguredListen string `json:"configured_listen"`
+	RestartPending   bool   `json:"restart_pending"`
 	// ModelsCachePath 模型目录缓存路径（存在时提示删除重拉）。
 	ModelsCachePath string `json:"models_cache_path,omitempty"`
 	// EnvKeySet 该环境变量当前进程里有没有值（只报真假，不回报值）。
@@ -91,6 +97,12 @@ func (h *Handler) adminCodexGet(w http.ResponseWriter, r *http.Request) {
 		SuggestedBaseURL: h.suggestedBaseURL(),
 		SuggestedModels:  h.suggestedModels(),
 	}
+	// 运行中地址 vs 文件里地址：不等就是「改了端口还没重启」。前端据此提示用户
+	// 先重启网关再写入，避免把连不上的地址写进 Codex 配置。
+	view.ActiveListen = strings.TrimSpace(h.cfg.Listen)
+	view.ConfiguredListen = strings.TrimSpace(h.configuredListen())
+	view.RestartPending = h.cfg.ConfigPath != "" && view.ConfiguredListen != "" &&
+		view.ActiveListen != "" && view.ConfiguredListen != view.ActiveListen
 	if _, ok := os.LookupEnv(codexEnvKey); ok {
 		view.EnvKeySet = true
 	}
@@ -114,8 +126,16 @@ func (h *Handler) adminCodexGet(w http.ResponseWriter, r *http.Request) {
 
 // suggestedBaseURL 主口的对外 Base URL（含 /v1）。没有配置时回落到默认监听。
 func (h *Handler) suggestedBaseURL() string {
-	listen := h.configuredListen()
-	if strings.TrimSpace(listen) == "" {
+	// 用**本进程正在监听的地址**（cfg.Listen）而不是 config.json 里现值：改端口要重启
+	// 才生效，而在「加工设置」改了、还没重启的这段窗口里，文件里的 listen 指向的是一个
+	// 没人监听的端口。Codex 一键接入写进 config.toml 是**立刻生效**的（Codex 自己发
+	// 请求），用文件现值就会写进一个连不上的地址；而「接入信息」卡片显示的又是真正在跑的
+	// 地址（桌面端注入 __F2A_BASE__），两块对不上，用户照卡片抄反而连不上。
+	listen := strings.TrimSpace(h.cfg.Listen)
+	if listen == "" {
+		listen = strings.TrimSpace(h.configuredListen())
+	}
+	if listen == "" {
 		listen = "127.0.0.1:7864"
 	}
 	return baseURLOf(listen)

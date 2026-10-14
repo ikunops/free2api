@@ -334,6 +334,10 @@ func Start(opts Options) (*Instance, error) {
 	// 启动就把额度缓存热一遍（后台，不阻塞起服务）：zcode 的对外模型表按套餐额度收敛，
 	// 读的就是这份缓存——见 server.Handler.WarmCredits。
 	go h.WarmCredits()
+	// 模型目录：启动预热一次（冷启动首个 /v1/models 不必等上游往返），之后按
+	// features.model_catalog_refresh（默认 30m）周期重打，自动同步上游模型上下架。
+	go h.WarmCatalog()
+	go h.RefreshCatalogLoop(ctx, cfg.ModelCatalogRefreshDur)
 	// 输出配置一变（PUT /admin/output，含 channels 增删改）就调和一次监听器，幂等。
 	outputStore.OnChange(runner.Reconcile)
 	runner.Reconcile(outputStore.Get())

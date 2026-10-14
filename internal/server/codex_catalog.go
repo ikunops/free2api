@@ -57,11 +57,17 @@ func codexServiceTierPriority() []map[string]any {
 // warning（"Model personality requested but model_messages is missing, falling back to
 // base instructions"）。给出 instructions_template（= base_instructions）即消掉该 warning；
 // instructions_variables / approvals 留字段位并置 null，与官方目录形状一致。
+//
+// persistent_instructions：Codex 在本地 runtime 线程上会把推理档设成 persistent（持续
+// 模式），真正让 agent「别停、继续找活干」的是这段开发者指令；档位本身出站前会被换回
+// 真实档位。官方内置模型目录带这段文本，缺了它用户在免费模型上选持续模式等于没生效。
+// 逐字取自 Codex 客户端内置目录（见 persistent_instructions.go）。
 func codexModelMessages() map[string]any {
 	return map[string]any{
-		"instructions_template":  codexBaseInstructions,
-		"instructions_variables": nil,
-		"approvals":              nil,
+		"instructions_template":   codexBaseInstructions,
+		"instructions_variables":  nil,
+		"approvals":               nil,
+		"persistent_instructions": codexPersistentInstructions,
 	}
 }
 

@@ -313,9 +313,17 @@ func TestFloatHeightFitsAllRows(t *testing.T) {
 	}
 
 	// 反过来：渲染出的位图高度必须正好等于算出来的高度。
-	px := f.render(1.0)
-	if got := len(px) / 4 / sc96(floatBaseWidth); got != h {
-		t.Fatalf("rendered height %d, want %d", got, h)
+	px, w, gotH := f.render(1.0)
+	if int(gotH) != h {
+		t.Fatalf("rendered height %d, want %d", gotH, h)
+	}
+	// 宽度也必须容得下最宽的一行 —— 否则实时行会被 DT_END_ELLIPSIS 切成
+	// 「242.0 tok…」，就是用户反馈的「显示不全」。
+	if minW := floatWidthFor(rows); int(w) < minW {
+		t.Fatalf("rendered width %d < floatWidthFor(rows) %d；最宽一行会被省略号截掉", w, minW)
+	}
+	if len(px) != int(w)*int(gotH)*4 {
+		t.Fatalf("pixel len = %d, want %d", len(px), int(w)*int(gotH)*4)
 	}
 
 	// 最后一行必须真的落在位图里面（底部至少留得下一个字高的一半）。
@@ -324,6 +332,58 @@ func TestFloatHeightFitsAllRows(t *testing.T) {
 	if h-sum < needBottom/2 {
 		t.Fatalf("bottom padding %d too small for last row (fontSize %d)", h-sum, last.fontSize)
 	}
+}
+
+// TestFloatWidthFitsWidestRow 窗口宽度必须容得下最宽的一行。
+//
+// 这是用户实际报的「浮窗显示不全」：宽度写死 300，而
+// 「242.0 tok/s · 60s 窗口 · 0 次」在 16pt 粗体下量出来 274px，加上左右内边距
+// 与呼吸点让位早已越界，DrawTextW 的 DT_END_ELLIPSIS 就把尾巴切成「242.0 tok…」。
+// 修法是不写死宽度：按当前这一帧的文字真量一遍，取最宽的那行。
+//
+// 判据：每一行「内边距 + 文字宽 + 内边距」都必须 <= 窗口宽；且窗口宽不小于
+// 基准宽度（短内容的小窗也要保持一致的观感）。
+func TestFloatWidthFitsWidestRow(t *testing.T) {
+	cfg := defaultFloatConfig()
+	f := &floatWin{className: floatClassName, cfg: cfg, snapOK: true}
+	// 刻意用「长 tok/s 行」这种最容易溢出的组合。
+	f.snap.Live.TokensPerSec = 242.0
+	f.snap.Live.WindowSec = 120
+	f.snap.Live.Requests = 12345
+
+	rows := f.layout(paletteFor(cfg.Theme), f.snap, true, 0.55, 0)
+	got := floatWidthFor(rows)
+	if got < floatBaseWidth {
+		t.Fatalf("width %d < floatBaseWidth %d", got, floatBaseWidth)
+	}
+
+	textX := floatPadX
+	if len(rows) > 0 && rows[0].bullet {
+		textX += floatBulletOffset
+	}
+	for _, r := range rows {
+		need := textX + floatRowWidth(r) + floatPadX
+		if need > got {
+			t.Errorf("行 %q 需要 %dpx，窗口只有 %dpx —— 会被省略号截掉", r.text, need, got)
+		}
+	}
+	// 空配置（只有标题）也要给出基准宽度，不能缩成一条。
+	short := f.layout(paletteFor(cfg.Theme), floatSnapshot{}, true, 0.55, 0)
+	if w := floatWidthFor(short); w != floatBaseWidth {
+		t.Errorf("短内容宽度 = %d，want %d", w, floatBaseWidth)
+	}
+	t.Logf("width=%d (base=%d) 最宽行=%v", got, floatBaseWidth, widestRowText(rows))
+}
+
+// widestRowText 调试用：找出最宽的那行文字。
+func widestRowText(rows []floatRow) string {
+	best, bestW := "", 0
+	for _, r := range rows {
+		if w := floatRowWidth(r); w > bestW {
+			best, bestW = r.text, w
+		}
+	}
+	return best
 }
 
 // TestRoundedRectSDFSigns 钉住 SDF 的符号约定：内负外正、边界恰为 0。

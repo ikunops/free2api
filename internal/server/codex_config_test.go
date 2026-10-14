@@ -194,3 +194,25 @@ func TestReadProviderBaseURL(t *testing.T) {
 		t.Errorf("不存在的段应回空串，got %q", got)
 	}
 }
+
+// TestSuggestedBaseURLPrefersLiveListen 改了端口但还没重启时，建议地址必须是
+// **正在听**的那个，而不是 config.json 里刚写进去的新值。
+//
+// 症状：在「加工设置」把端口从 7863 改成 7864（提示要重启），还没重启就点
+// 「Codex 一键接入」→ 之前会把 7864 写进 config.toml，而网关还在 7863 上听，
+// Codex 一接就连不上。同时上方的「接入信息」卡片显示的又是 7863（桌面端注入的
+// 真实地址），两块对不上，用户照卡片抄反而连不上。
+func TestSuggestedBaseURLPrefersLiveListen(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"listen":"127.0.0.1:7864","admin":{"enabled":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// cfg.Listen 是启动快照（真在听的 7863），文件里已经改成 7864（待重启）。
+	h := &Handler{cfg: Config{ConfigPath: p, Listen: "127.0.0.1:7863"}}
+	if got := h.suggestedBaseURL(); got != "http://127.0.0.1:7863/v1" {
+		t.Errorf("建议 Base URL = %q，应当用正在监听的 7863 而不是文件里的 7864", got)
+	}
+	if got := h.configuredListen(); got != "127.0.0.1:7864" {
+		t.Errorf("configuredListen = %q，应当反映文件现值 7864", got)
+	}
+}

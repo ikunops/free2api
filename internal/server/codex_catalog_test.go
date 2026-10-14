@@ -197,14 +197,22 @@ func TestCodexCatalogServiceTierAndModelMessages(t *testing.T) {
 			t.Errorf("%s: 缺 model_messages → Codex 会回落并打 personality warning", slug)
 			continue
 		}
-		if len(mm) != 3 {
-			t.Errorf("%s: model_messages 应与官方同形（3 个键），实际 %v", slug, mm)
+		if len(mm) != 4 {
+			t.Errorf("%s: model_messages 应与官方同形（4 个键），实际 %v", slug, mm)
 		}
 		if v, ok := mm["instructions_variables"]; !ok || v != nil {
 			t.Errorf("%s: instructions_variables 必须存在且为 null，实际 %v", slug, v)
 		}
 		if _, ok := mm["approvals"]; !ok {
 			t.Errorf("%s: approvals 字段位必须存在（官方同形）", slug)
+		}
+		// persistent_instructions：Codex 持续模式靠这段开发者指令生效；缺了它用户在
+		// 免费模型上选持久模式等于没生效（档位本身出站前会被换回真实档）。
+		pi, _ := mm["persistent_instructions"].(string)
+		if pi == "" {
+			t.Errorf("%s: 缺 persistent_instructions → 持续模式不注入指令", slug)
+		} else if pi != codexPersistentInstructions {
+			t.Errorf("%s: persistent_instructions 应等于内置原文", slug)
 		}
 		tmpl, _ := mm["instructions_template"].(string)
 		if tmpl != codexBaseInstructions {

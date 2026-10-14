@@ -218,6 +218,8 @@ func NewHandler(cfg Config) *Handler {
 		// /admin/credits 余额只读查询（按需直查上游 billing，补上「刚装好还没到签到点」的空窗）。
 		h.mux.HandleFunc("GET /admin/credits", h.withLocalOrAuth(h.adminCredits))
 		h.mux.HandleFunc("POST /admin/credits/refresh", h.withLocalOrAuth(h.adminCreditsRefresh))
+	// 手动重打模型目录：上游刚上新模型时不必等 30m 周期刷新或重启网关。
+	h.mux.HandleFunc("POST /admin/catalog/refresh", h.withLocalOrAuth(h.adminCatalogRefresh))
 		// Codex 一键接入：Codex 没有「自定义供应商」入口，只能代它改 config.toml。
 		// 读现状 / 预览（不落盘）/ 落盘（先备份）。
 		h.mux.HandleFunc("GET /admin/codex", h.withLocalOrAuth(h.adminCodexGet))
@@ -705,13 +707,15 @@ func (h *Handler) modelList() []map[string]any {
 	// 在「输出 API」页勾选决定——见 output.go OutputConfig.Models。这里管「列出来」，
 	// 「能不能调」由 chatCompletions 用同一份清单判（两侧口径必须一致，否则勾了等于没勾）。
 	published := h.outputCfgModelSet()
+	// known 保存清单时的目录基线：不在其中的型号是「用户勾完才出现的新型号」，放行。
+	known := h.outputCfgBaselineSet()
 	// 多出口：这个口不服务 workbuddy 时连目录都不拉（避免给 zcode 专用口白拉 CN 目录）。
 	var cnModels []upstream.ModelInfo
 	if h.producerAllowed("workbuddy") {
 		cnModels = h.fetchDynamicModels()
 	}
 	for _, mi := range cnModels {
-		if !h.publishAllows(published, "cn", "workbuddy", mi.ID) {
+		if !h.publishAllows(published, known, "cn", "workbuddy", mi.ID) {
 			continue
 		}
 		// 池级可服务性：上游目录里有、但号池实测打不通的（权威「无此模型」已标记）
@@ -761,7 +765,7 @@ func (h *Handler) modelList() []map[string]any {
 	// 用户意图，覆盖这条收敛）；一条额度信息都还没读到过时也不收敛（宁可多列，不假装没有）。
 	zcEnt, zcKnown := h.zcodeEntitledModels()
 	for _, mi := range zcodeModels {
-		if !h.publishAllows(published, "cn", upstream.ProducerZCode, mi.ID) {
+		if !h.publishAllows(published, known, "cn", upstream.ProducerZCode, mi.ID) {
 			continue
 		}
 		if published == nil && zcKnown && !zcEnt[mi.ID] {
@@ -793,7 +797,7 @@ func (h *Handler) modelList() []map[string]any {
 		opencodeModels = h.fetchOpenCodeCatalog()
 	}
 	for _, mi := range opencodeModels {
-		if !h.publishAllows(published, "cn", upstream.ProducerOpenCode, mi.ID) {
+		if !h.publishAllows(published, known, "cn", upstream.ProducerOpenCode, mi.ID) {
 			continue
 		}
 		if h.modelDead.active("cn", upstream.ProducerOpenCode, mi.ID) {
@@ -820,7 +824,7 @@ func (h *Handler) modelList() []map[string]any {
 		kiloModels = h.fetchKiloCatalog()
 	}
 	for _, mi := range kiloModels {
-		if !h.publishAllows(published, "cn", upstream.ProducerKilo, mi.ID) {
+		if !h.publishAllows(published, known, "cn", upstream.ProducerKilo, mi.ID) {
 			continue
 		}
 		if h.modelDead.active("cn", upstream.ProducerKilo, mi.ID) {
@@ -860,7 +864,7 @@ func (h *Handler) modelList() []map[string]any {
 		globalEfforts, globalDefaults := h.cfg.Upstream.GlobalEffortSnapshot()
 		for _, id := range globalIDs {
 			// 白名单口径与 CN 段、与请求侧 404 判定共用 publishAllows 一处。
-			if !h.publishAllows(published, "global", "workbuddy", id) {
+			if !h.publishAllows(published, known, "global", "workbuddy", id) {
 				continue
 			}
 			// 池级可服务性：与 CN 段同一口径（global 段的昂贵档被上游拒参数不在此列——
@@ -903,6 +907,15 @@ func (h *Handler) modelList() []map[string]any {
 			out = append(out, entry)
 		}
 	}
+	// 档位策略后处理：fixed 模式下所有模型统一暴露七档，覆盖各来源原本声明的档位。
+	// 放在这里而非各分支内：口径只有一处，CN/global/zcode/opencode/kilo 全同源。
+	// 只改对外目录（Codex/ZCode 看到的可选档）；出站降级仍用上游真实 efforts 收敛，
+	// 客户端选了上游不支持的档会在 prepareBody 落到最近的合法档，不会 400。
+	if h.outputCfg().EffortMode == EffortFixed {
+		for _, e := range out {
+			e["reasoning_supported_efforts"] = append([]string(nil), fixedEffortLevels...)
+		}
+	}
 	return out
 }
 
@@ -924,6 +937,16 @@ func modelKey(producer, id string) string {
 // 两家同名的型号（fast-model / glm-5.3 …）才能各留一把开关。
 func globalModelKey(id string) string { return "global:" + id }
 
+// publishKey 一个模型在发布清单/基线里的键。面板存的每一项、以及保存时记下的基线，
+// 都用这个形态，所以 publishAllows 查基线时直接按它比对即可（不参与裸 id 回退——
+// 回退是为兼容手写的老清单，而基线只由新版面板写入，形态恒定）。
+func publishKey(realm, producer, id string) string {
+	if realm == "global" {
+		return globalModelKey(id)
+	}
+	return modelKey(producer, id)
+}
+
 // publishAllows 发布清单放行判定：/v1/models 列不列、请求 404 不 404，都必须走这一处。
 // 两侧口径分叉过：global 段曾只认裸 id，于是「清单里勾了 global:x」在列表里看得见、
 // 一调就被 404 挡回去——列表与可调用性必须是同一口径。
@@ -931,8 +954,16 @@ func globalModelKey(id string) string { return "global:" + id }
 // realm=global 用 "global:<裸 id>" 当键；CN 与 zcode 沿用 modelKey。裸 id 回退只在
 // ModelsRealmScoped=false 的旧清单上生效（那时国际版跟着 CN 的裸 id 共用一把开关），
 // 新清单（面板保存，ModelsRealmScoped=true）两域完全独立，同名型号各留一把开关。
-func (h *Handler) publishAllows(published map[string]bool, realm, producer, id string) bool {
+//
+// known 是保存清单时的目录基线（OutputConfig.ModelsBaseline）：不在基线里的 id 属于
+// 「用户勾选那会儿上游还没有这个型号」，一律放行。没有它，白名单会在上游新增模型时
+// **静默**把新型号挡在外面（既不进 /v1/models、请求又直接 404，而面板上根本看不见它）。
+// known 为空 = 老清单没有基线 → 维持严格白名单，绝不因为升级突然放开没选过的模型。
+func (h *Handler) publishAllows(published, known map[string]bool, realm, producer, id string) bool {
 	if published == nil {
+		return true
+	}
+	if len(known) > 0 && !known[publishKey(realm, producer, id)] {
 		return true
 	}
 	if realm != "global" {
@@ -985,11 +1016,61 @@ func (h *Handler) outputCfgModelSet() map[string]bool {
 	return modelSetOf(c.Models)
 }
 
+// outputCfgBaselineSet 保存清单时的目录基线集合（nil/空 = 老清单没有基线，按严格白名单）。
+// 与 outputCfgModelSet 分开取：基线只在 publishAllows 判「是不是新增型号」时用一次。
+func (h *Handler) outputCfgBaselineSet() map[string]bool {
+	if h.cfg.Output == nil {
+		return nil
+	}
+	return modelSetOf(h.cfg.Output.Get().ModelsBaseline)
+}
+
+// decorateModelEntry 给发布清单的一行补上「上下文 + 能力」与「是否因新增而自动放行」。
+//
+// 能力字段（vision/tools/reasoning）**只在上游确实声明了才写**：各家目录的详略差别很大
+// （workbuddy 全给、kilo 只给模态、zcode 只给上下文、opencode 什么都不给），把"上游没
+// 说"画成"这个模型不支持图片"是撒谎。所以未知一律省略键，前端不渲染——宁缺勿假。
+//
+// 上下文走 ContextWindowListingV4 四级链（远端→静态表→本地缓存→models.dev），与
+// /v1/models 对外下发的 context_length 同一个口径，两处不会互相打脸。
+// 没挂 Upstream（单测里构造的裸 Handler）时跳过整条链、直接用模型自带值：那条链的第
+// 四级会异步打外网，而这里没有可用的 HTTP client 也不该有网络行为。
+func (h *Handler) decorateModelEntry(e map[string]any, mi upstream.ModelInfo, realm, producer string, sel, known map[string]bool) {
+	ctx, maxOut, hasMaxOut := mi.ContextWindow, mi.MaxTokens, mi.MaxTokens > 0
+	if h.cfg.Upstream != nil {
+		ctx = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
+		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+			maxOut, hasMaxOut = mo, true
+		}
+	}
+	if ctx > 0 {
+		e["context"] = ctx
+	}
+	if hasMaxOut && maxOut > 0 {
+		e["max_output"] = maxOut
+	}
+	if mi.SupportsImages {
+		e["vision"] = true
+	}
+	if mi.SupportsToolCall {
+		e["tools"] = true
+	}
+	if mi.SupportsReasoning {
+		e["reasoning"] = true
+	}
+	// auto：这一行被勾上不是用户选的，而是"保存清单之后上游才新增"。面板要能把它和
+	// 用户亲手勾的区别开，否则基线机制等于暗中放开了东西却看不见。
+	if sel != nil && len(known) > 0 && e["selected"] == true && !known[publishKey(realm, producer, mi.ID)] {
+		e["auto"] = true
+	}
+}
+
 // availableOutputModels 输出侧可勾选清单：上游当前下发的模型 + 是否已选中。
 // 只读 fetchDynamicModels 的 1h 缓存（不额外打上游）；无健康号/拉取失败 → 空数组。
 // id 是裸 id（保存时回传这个），full_id 是客户端实际看到的模型名（realm + 输出前缀）。
 func (h *Handler) availableOutputModels() []map[string]any {
 	sel := h.outputCfgModelSet()
+	known := h.outputCfgBaselineSet()
 	rateHint := h.outputCfg().RateHint
 	out := make([]map[string]any, 0)
 	// workbuddy（CN 动态目录）与 zcode（智谱目录）各出一组，带 producer 字段——
@@ -1027,7 +1108,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			// 全放（sel==nil）时 zcode 未授权的那些本来就不发（见 modelList 同一处收敛），
 			// 所以勾选态要如实为 false——否则面板一打开就显示「未授权也全勾着」，用户随手
 			// 一保存就把它们写进白名单，反而真的把 11 条全发出去。
-			selected := h.publishAllows(sel, "cn", g.producer, mi.ID)
+			selected := h.publishAllows(sel, known, "cn", g.producer, mi.ID)
 			if g.producer == upstream.ProducerZCode && sel == nil && zcKnown && !entitled {
 				selected = false
 			}
@@ -1055,6 +1136,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			if mi.IsDefault {
 				e["is_default"] = true
 			}
+			h.decorateModelEntry(e, mi, "cn", g.producer, sel, known)
 			out = append(out, e)
 		}
 	}
@@ -1081,7 +1163,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 				"full_id":  h.modelID("global", id, gm.Credits),
 				"producer": "workbuddy",
 				"realm":    "global",
-				"selected": h.publishAllows(sel, "global", "workbuddy", id),
+				"selected": h.publishAllows(sel, known, "global", "workbuddy", id),
 				"entitled": true,
 				"free":     gm.Free,
 			}
@@ -1097,6 +1179,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			if gm.IsDefault {
 				e["is_default"] = true
 			}
+			h.decorateModelEntry(e, gm, "global", "workbuddy", sel, known)
 			out = append(out, e)
 		}
 	}
@@ -1119,14 +1202,17 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		sort.Strings(extra)
 		for _, id := range extra {
 			key := modelKey(upstream.ProducerZCode, id)
-			out = append(out, map[string]any{
+			e := map[string]any{
 				"id":       id,
 				"key":      key,
 				"full_id":  h.modelIDFor("cn", upstream.ProducerZCode, id, ""),
 				"producer": upstream.ProducerZCode,
-				"selected": h.publishAllows(sel, "cn", upstream.ProducerZCode, id),
+				"selected": h.publishAllows(sel, known, "cn", upstream.ProducerZCode, id),
 				"entitled": true,
-			})
+			}
+			// 这些条目没有上游 ModelInfo（目录里根本没列），上下文交给四级查找链兜底。
+			h.decorateModelEntry(e, upstream.ModelInfo{ID: id}, "cn", upstream.ProducerZCode, sel, known)
+			out = append(out, e)
 		}
 	}
 	return out
@@ -1202,8 +1288,12 @@ func (h *Handler) fetchZCodeCatalog() []upstream.ModelInfo {
 		return out
 	}
 	if !zcodeCatalogCache.lastFail.IsZero() && time.Since(zcodeCatalogCache.lastFail) < modelsFetchFailCooldown {
+		// 冷却期内不再打上游，但**有旧名单就回旧名单**：清空目录比数据过期严重得多，
+		// 一次 TLS 抖动会让 /v1/models 与发布清单整家来源凭空消失（实测 114→58）。
+		// 冷启动即失败时 infos 为空，返回空切片，与原先一致。
+		out := zcodeCatalogCache.infos
 		zcodeCatalogCache.RUnlock()
-		return nil
+		return out
 	}
 	zcodeCatalogCache.RUnlock()
 
@@ -1279,8 +1369,12 @@ func (h *Handler) fetchOpenCodeCatalog() []upstream.ModelInfo {
 		return out
 	}
 	if !opencodeCatalogCache.lastFail.IsZero() && time.Since(opencodeCatalogCache.lastFail) < modelsFetchFailCooldown {
+		// 冷却期内不再打上游，但**有旧名单就回旧名单**：清空目录比数据过期严重得多，
+		// 一次 TLS 抖动会让 /v1/models 与发布清单整家来源凭空消失（实测 114→58）。
+		// 冷启动即失败时 infos 为空，返回空切片，与原先一致。
+		out := opencodeCatalogCache.infos
 		opencodeCatalogCache.RUnlock()
-		return nil
+		return out
 	}
 	opencodeCatalogCache.RUnlock()
 
@@ -1345,8 +1439,12 @@ func (h *Handler) fetchKiloCatalog() []upstream.ModelInfo {
 		return out
 	}
 	if !kiloCatalogCache.lastFail.IsZero() && time.Since(kiloCatalogCache.lastFail) < modelsFetchFailCooldown {
+		// 冷却期内不再打上游，但**有旧名单就回旧名单**：清空目录比数据过期严重得多，
+		// 一次 TLS 抖动会让 /v1/models 与发布清单整家来源凭空消失（实测 114→58）。
+		// 冷启动即失败时 infos 为空，返回空切片，与原先一致。
+		out := kiloCatalogCache.infos
 		kiloCatalogCache.RUnlock()
-		return nil
+		return out
 	}
 	kiloCatalogCache.RUnlock()
 
@@ -1485,8 +1583,12 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	}
 	// 失败负缓存：冷却期内不再请求上游。
 	if !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
+		// 冷却期内不再打上游，但**有旧名单就回旧名单**：清空目录比数据过期严重得多，
+		// 一次 TLS 抖动会让 /v1/models 与发布清单整家来源凭空消失（实测 114→58）。
+		// 冷启动即失败时 infos 为空，返回空切片，与原先一致。
+		out := dynamicModelsCache.ids
 		dynamicModelsCache.RUnlock()
-		return nil
+		return out
 	}
 	dynamicModelsCache.RUnlock()
 
@@ -1609,7 +1711,7 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 	// 放在来源判定之后，错误信息才不至于驴唇不对马嘴——先告诉用户「这个口不服务这一家」，
 	// 再说「这一家也没勾这个模型」。少了这一道，勾选就只是「列表过滤器」：客户端拿着
 	// 清单外的旧名字照样能穿透，「发布清单」名不副实。
-	if published := h.outputCfgModelSet(); !h.publishAllows(published, realm, producer, bareModel) {
+	if published := h.outputCfgModelSet(); !h.publishAllows(published, h.outputCfgBaselineSet(), realm, producer, bareModel) {
 		writeOpenAIErrorHint(w, http.StatusNotFound, "model_not_found",
 			"模型 "+peek.Model+" 不在本网关的发布清单里",
 			"在「输出 API」页 →「模型发布清单」里把它勾上，或改用清单里已有的模型名")

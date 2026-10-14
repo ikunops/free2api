@@ -50,6 +50,21 @@ const (
 	RateOff    = "off"    // 不加后缀
 )
 
+// 推理档位策略：决定 /v1/models 对每个模型暴露哪些 reasoning 档位。
+//   - upstream（默认）：各模型用上游真实档位（远端 supportedEfforts 权威，缺失落到静态
+//     兜底表）；模型之间档位可以不同，与接入本开关之前完全一致。
+//   - fixed：所有模型统一暴露同一组七档（minimal/low/medium/high/xhigh/max/ultra），
+//     不管上游声明什么。发给上游时仍由出站降级管线收敛到真实支持的档位（不会 400）。
+// 定义在输出侧：这是「网关对外长什么样」的选择，与模型前缀/费率同层。
+const (
+	EffortUpstream = "upstream"
+	EffortFixed    = "fixed"
+)
+
+// fixedEffortLevels 统一七档（从低到高）。Codex 渲染档位标签时走自己的 i18n，
+// 这里只给枚举值；description 由 server 侧 codexReasoningLevelDesc 提供。
+var fixedEffortLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
 // 后缀的两个可辨识形状：免费是 "-free"，收费是 "-x<数字>"（与上游 "x0.05" 写法一致）。
 const (
 	rateFreeSuffix = "-free"
@@ -149,10 +164,25 @@ type OutputConfig struct {
 	Format      string `json:"format"`       // openai（其余协议待接入）
 	ModelPrefix string `json:"model_prefix"` // 模型前缀：便于客户端区分模型来自哪个网关
 	RateHint    string `json:"rate_hint"`    // credit / free / off
+	// EffortMode 推理档位策略：upstream（默认，各模型按上游真实档位）/ fixed（全部统一
+	// 七档）。空 = upstream。作用在对外模型目录（/v1/models 的 reasoning_supported_efforts
+	// 与 Codex supported_reasoning_levels），不影响出站降级（那仍按上游真实能力收敛）。
+	EffortMode string `json:"effort_mode,omitempty"`
 	// Models 对外发布的模型白名单（**裸 id**，不含 realm 前缀与输出前缀）。
 	// 空 = 全放（与接入本功能之前一致）。这是「输出侧等用户来生成」的落点：
 	// 账号能跑什么由上游决定（账号携带），网关对外吐什么由用户勾选决定，两者不混。
 	Models []string `json:"models"`
+	// ModelsBaseline 保存 Models 那一刻上游目录里**存在**的全部模型键（与 Models 同一套
+	// key 形态：CN 走 modelKey、国际版走 globalModelKey）。它存在的唯一理由是把
+	// 「用户主动没勾」与「用户勾的时候这模型还不存在」区分开：
+	//   - 在基线里、不在 Models 里 → 用户明确不要它 → 继续屏蔽；
+	//   - 不在基线里 → 保存之后上游才新增的型号 → 自动放行（见 outputCfgModelSet）。
+	// 没有这个字段时白名单是**静默失效**的：workbuddy/opencode 上新模型后，那些模型
+	// 既不出现在 /v1/models、请求又直接 404，而面板上根本看不见它们，用户无从知道
+	// 自己那份清单已经把新东西挡在外面了。
+	// 空 = 老清单（本功能之前存的）→ 不启用自动放行，保持严格白名单，绝不因为升级
+	// 就突然把一堆没选过的模型放出去。
+	ModelsBaseline []string `json:"models_baseline,omitempty"`
 	// ModelsRealmScoped 发布清单是否「按域分开控制」：true = CN 版与国际版（wba）各用一把
 	// 开关（国际版在清单里的键是 "global:<裸 id>"，裸 id 只管 CN）；false/缺省 = 旧清单
 	// 语义，裸 id 同时管两域（加国际版分组之前的存档，见 publishAllows）。新面板保存时置 true。
@@ -227,7 +257,17 @@ func sameModelList(a, b []string) bool {
 
 // DefaultOutputConfig 缺省输出配置（与接入本功能之前的行为一致：无前缀 + 显示积分倍率）。
 func DefaultOutputConfig() OutputConfig {
-	return OutputConfig{Format: FormatOpenAI, ModelPrefix: "", RateHint: RateCredit}
+	return OutputConfig{Format: FormatOpenAI, ModelPrefix: "", RateHint: RateCredit, EffortMode: EffortUpstream}
+}
+
+// normalizeEffortMode 归一化档位策略：空/未知一律回落 upstream（旧配置零迁移）。
+func normalizeEffortMode(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case EffortFixed:
+		return EffortFixed
+	default:
+		return EffortUpstream
+	}
 }
 
 // normalizeOutput 归一化并校验。ModelPrefix 里的冒号会被剔除：
@@ -251,6 +291,7 @@ func normalizeOutput(c OutputConfig) (OutputConfig, error) {
 		return c, fmt.Errorf("rate_hint 只能是 credit / free / off，收到 %q", c.RateHint)
 	}
 	c.ModelPrefix = strings.ReplaceAll(strings.TrimSpace(c.ModelPrefix), ":", "")
+	c.EffortMode = normalizeEffortMode(c.EffortMode)
 	c.Models = normalizeModelList(c.Models)
 	ch, err := normalizeChannels(c.Channels)
 	if err != nil {
@@ -574,6 +615,22 @@ func (h *Handler) adminOutputPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Models != nil {
 		next.Models = *body.Models
+		// 每次保存都把"当时的目录全集"记成基线：这样"用户没勾"这件事只对他当时
+		// 看得见的那些模型成立，之后上游新增的不会被这份清单静默挡掉。
+		// 直接取 availableOutputModels 的 key —— 与面板上每一项的键形态同源，
+		// 另写一套枚举迟早会和面板漂移（多出口/未授权补条目都会改变键集合）。
+		// 清空清单（恢复全放）时基线一并清掉——全放本来就不需要它。
+		if len(normalizeModelList(*body.Models)) == 0 {
+			next.ModelsBaseline = nil
+		} else {
+			keys := make([]string, 0, 64)
+			for _, e := range h.availableOutputModels() {
+				if k, _ := e["key"].(string); k != "" {
+					keys = append(keys, k)
+				}
+			}
+			next.ModelsBaseline = normalizeModelList(keys)
+		}
 	}
 	if body.ModelsRealmScoped != nil {
 		next.ModelsRealmScoped = *body.ModelsRealmScoped
@@ -675,6 +732,11 @@ func (h *Handler) outputView() map[string]any {
 			{"id": "credit", "name": "显示费率（按模型）", "note": "模型名后缀按各自倍率：免费 -free，收费 -x0.11"},
 			{"id": "free", "name": "统一标记免费", "note": "忽略真实倍率，所有模型名一律加 -free"},
 			{"id": "off", "name": "不显示", "note": "模型名不带任何费率后缀"},
+		},
+		// effort_modes 推理档位策略可选项（前端只读注册表，不另写枚举）。
+		"effort_modes": []map[string]any{
+			{"id": EffortUpstream, "name": "按上游真实档位", "note": "各模型用上游声明的档位（缺声明落到静态表），与接入前一致"},
+			{"id": EffortFixed, "name": "统一七档", "note": "所有模型一律暴露 minimal/low/medium/high/xhigh/max/ultra；出站仍按上游真实能力收敛，不会 400"},
 		},
 		// available_models 输出侧可勾选清单：上游当前下发的模型（裸 id）+ 是否已选中。
 		// 只读 fetchDynamicModels 的 1h 缓存，不额外打上游；上游没号/拉失败 → 空数组。

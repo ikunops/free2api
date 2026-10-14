@@ -480,7 +480,15 @@ func detectWBSwitch(path string) Kind {
 	cands, err := ListWBSwitch(path)
 	switch {
 	case err != nil:
-		k.Note = "读取失败：" + err.Error()
+		// 文件不存在 ≠ 读取失败：本机没装 wb-switch / 从未登录时，账本文件本来就不存在。
+		// 从前一律报「读取失败：open <用户目录>/.wb-switch/accounts.json: The system
+		// cannot find the path specified.」，用户会以为是自己哪里配错了路径；这里与
+		// probeOne 的口径对齐，把「没装」讲清楚，真正的 IO 错误（权限等）才叫读取失败。
+		if os.IsNotExist(err) {
+			k.Note = "本机没有这个账本（没装 wb-switch，或用它登录过至少一个账号后才会生成）"
+		} else {
+			k.Note = "读取失败：" + err.Error()
+		}
 	case len(cands) == 0:
 		k.Note = "账本为空：先用 wb-switch 登录至少一个账号"
 	default:
@@ -845,12 +853,16 @@ type ImportOptions struct {
 	UpstreamBase string
 }
 
+// normalized 补默认来源归属。**只补 Method，绝不补 Producer**：
+// 粘贴/快照类导入（ImportJSONAs / ImportWBSwitchAs）的 producer 得由条目自己带，
+// 这里一旦填成 workbuddy，importBlob 就会把它当"导入器显式指定"覆盖掉条目原值，
+// 表现成「导入文件后 zcode/opencode/kilo 号全变 workbuddy」——选号按 producer 过滤
+// （见 gateway.run.go 的 SetProducerOf 读台账），错标即把 workbuddy 模型派给别家号，
+// 上游回 11102 封号 6h。各专用导入器（zcode/opencode/kilo/workbuddy_desktop）本来
+// 就在调用后的下一行自己写死 Producer，不依赖这里的兜底。
 func (o ImportOptions) normalized() ImportOptions {
 	if o.Method == "" {
 		o.Method = MethodFile
-	}
-	if o.Producer == "" {
-		o.Producer = ProducerWorkbuddy
 	}
 	return o
 }
@@ -904,6 +916,7 @@ func importBlob(kind, authDir string, raw []byte, ids []string, opt ImportOption
 	}
 	res := ImportResult{Kind: kind, AuthDir: authDir}
 	labels := map[string]string{}
+	producers := map[string]string{}
 	for _, it := range items {
 		p, err := parseOne(it)
 		if err != nil {
@@ -936,6 +949,9 @@ func importBlob(kind, authDir string, raw []byte, ids []string, opt ImportOption
 		}
 		res.Imported = append(res.Imported, p.UID)
 		labels[p.UID] = labelOf(p)
+		// 台账记**归一后的实际 producer**而非 opt.Producer：粘贴通道没有"导入器
+		// 指定的 producer"，选号过滤读的正是台账（见 gateway.run.go SetProducerOf）。
+		producers[p.UID] = p.Producer
 	}
 	sort.Strings(res.Imported)
 	sort.Strings(res.Skipped)
@@ -943,7 +959,7 @@ func importBlob(kind, authDir string, raw []byte, ids []string, opt ImportOption
 	if len(res.Imported) > 0 {
 		mark := make(map[string]Origin, len(res.Imported))
 		for _, uid := range res.Imported {
-			mark[uid] = Origin{Method: opt.Method, Producer: opt.Producer, Label: labels[uid], Detail: opt.Detail}
+			mark[uid] = Origin{Method: opt.Method, Producer: producers[uid], Label: labels[uid], Detail: opt.Detail}
 		}
 		_ = LoadRegistry(authDir).Mark(mark)
 	}

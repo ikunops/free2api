@@ -503,7 +503,14 @@ func (f *floatWin) runWindow(ready chan<- error) {
 	theme, snapOK := f.cfg.Theme, f.snapOK
 	savedX, savedY, havePos := f.cfg.X, f.cfg.Y, f.cfg.HavePos
 	f.mu.Unlock()
-	w, h := sc96(floatBaseWidth), floatHeightFor(f.layout(paletteFor(theme), floatSnapshot{}, snapOK, 0.55, 0))
+	// 首帧用空数据摊一次行估尺寸（真数据要等 SSE 推上来）。估偏了不要紧：paint()
+	// 拿到真数据后用同一套 floatWidthFor/floatHeightFor 重算并 resizeTo。
+	rows0 := f.layout(paletteFor(theme), floatSnapshot{}, snapOK, 0.55, 0)
+	// 窗口坐标与尺寸在 DPI 感知进程里一律是物理像素：布局在 DIP 域算完必须乘缩放，
+	// 否则高 DPI 屏上「字号乘了 s、盒子没乘」，文字会被 DT_END_ELLIPSIS 截掉。
+	s0 := f.windowDPI(hwnd) / baseDPI
+	w := int(float64(floatWidthFor(rows0))*s0 + 0.5)
+	h := int(float64(floatHeightFor(rows0))*s0 + 0.5)
 	wa, ok := primaryWorkArea()
 	x, y := int(wa.Right)-w-24, int(wa.Bottom)-h-24
 	if !ok {
@@ -1106,8 +1113,12 @@ func rowHeight(r floatRow) int32 { return r.spaceBefore + r.fontSize + 5 }
 // floatBaseWidth 基准宽度（96 DPI 下）。
 const floatBaseWidth = 300
 
-// sc96 96 DPI 上的裸像素值（窗口摆位等不需要 DPI 缩放的地方用）。
-func sc96(v int) int { return v }
+// 布局常量：宽度、内边距、呼吸点给标题让出的宽度，以及宽度取整步长。
+const (
+	floatPadX         = 14
+	floatBulletOffset = 13
+	floatWidthStep    = 20
+)
 
 // floatHeightFor 按行高累加出窗口高度。**唯一的高度来源**——窗口与内容都由它算，
 // 不会再出现「内容画到窗口外面」。
@@ -1117,6 +1128,36 @@ func floatHeightFor(rows []floatRow) int {
 		h += int(rowHeight(r))
 	}
 	return h + 16 // 上下各 8px 内边距
+}
+
+// floatRowWidth 一行文字实际占用的宽度（DIP）。
+//
+// 为什么必须真量：窗口宽度原先写死 300，而「242.0 tok/s · 60s 窗口 · 0 次」这类
+// 实时行在 16pt 粗体下 DrawTextW 量出来就有 274px，加上左右内边距与呼吸点已经
+// 越界 —— 一开悬浮窗就被 DT_END_ELLIPSIS 切成「242.0 tok…」，用户看到的就是
+// 「显示不全」。宽度受字号、字体、语言、数字位宽共同影响，只有量一次才准。
+func floatRowWidth(r floatRow) int {
+	// 再多留一个字号的余量：DT_CALCRECT 给的是紧贴墨迹的宽，抗锯齿边缘、
+	// 字距舍入都可能再宽一两个像素，余量宁可略宽也不能让省略号出现。
+	return int(floatMeasureText(r.text, r.fontSize, r.weight)) + int(r.fontSize)
+}
+
+// floatWidthFor 按内容算窗口宽度（DIP）：不小于基准宽度，也不小于最宽一行的需要。
+//
+// 与 floatHeightFor 同源（都由「先摊成行、再量行」得出），所以窗口与内容永远
+// 对得上；取整到 20 的倍数是为了避免数字每变一点就重排窗口，看着很晃。
+func floatWidthFor(rows []floatRow) int {
+	need := floatBaseWidth
+	textX := floatPadX
+	if len(rows) > 0 && rows[0].bullet {
+		textX += floatBulletOffset // 首行标题要给呼吸点让位，所有行共用同一起点
+	}
+	for _, r := range rows {
+		if w := textX + floatRowWidth(r) + floatPadX; w > need {
+			need = w
+		}
+	}
+	return (need + floatWidthStep - 1) / floatWidthStep * floatWidthStep
 }
 
 func (f *floatWin) windowDPI(hwnd uintptr) float64 {
@@ -1158,13 +1199,51 @@ func (f *floatWin) paint(hwnd uintptr) {
 	}
 	dpi := f.windowDPI(hwnd)
 	s := dpi / baseDPI
-	w, h := sc96(floatBaseWidth), floatHeightFor(f.probeRows())
-
-	pixels := f.render(s)
+	pixels, w, h := f.render(s)
 	if pixels == nil {
 		return
 	}
-	f.blit(hwnd, s, w, h, pixels)
+	// 宽度是按内容量出来的，会随 tok/s 数字位数、来源增减而变：帧尺寸与窗口尺寸
+	// 不一致时必须跟着调窗口，否则「字画在窗外」或「窗口比内容宽一截」。
+	// SetWindowPos 的坐标与尺寸在 DPI 感知进程里都是物理像素。
+	f.resizeTo(hwnd, w, h)
+	f.blit(hwnd, s, int(w), int(h), pixels)
+}
+
+// resizeTo 把分层窗口调成内容的物理像素尺寸（尽量保持左上角不动）。
+// 尺寸没变就不动，避免每帧都发一次 SetWindowPos（会打断拖动/置顶状态）。
+//
+// 宽度是按内容量出来的，会随 tok/s 数字位数变长：默认摆在右下角时窗口向右长
+// 就会顶出屏幕。所以长出来的部分往**左**借位（右边缘钉住不动），并在最后统一
+// 夹回工作区——小窗口贴边显示不全是没法手动拖回来的（没有标题栏）。
+func (f *floatWin) resizeTo(hwnd uintptr, w, h int32) {
+	var wr rECT
+	if ret, _, _ := pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&wr))); ret == 0 {
+		return
+	}
+	if wr.Right-wr.Left == w && wr.Bottom-wr.Top == h {
+		return
+	}
+	x, y := int32(wr.Left), int32(wr.Top)
+	wa, ok := primaryWorkArea()
+	if ok {
+		if x+w > wa.Right {
+			x = wa.Right - w
+		}
+		if y+h > wa.Bottom {
+			y = wa.Bottom - h
+		}
+		if x < wa.Left {
+			x = wa.Left
+		}
+		if y < wa.Top {
+			y = wa.Top
+		}
+	}
+	const swpNoZOrder = 0x0004
+	const swpNoActivate = 0x0010
+	_, _, _ = pSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y),
+		uintptr(w), uintptr(h), swpNoZOrder|swpNoActivate)
 }
 
 // render 把一帧画进一块新建的 32bpp 预乘 DIB，返回 BGRA 像素。
@@ -1172,7 +1251,7 @@ func (f *floatWin) paint(hwnd uintptr) {
 // 为什么单独拆出来：painting 是「能不能看见」的唯一关口，而 UpdateLayeredWindow
 // 一旦把内容交上去就再也读不回来——出了 bug 只能靠屏幕截图，单元测试完全够不着。
 // 拆开之后单测直接对 render 的返回值数像素（见 floatwin_paint_test.go）。
-func (f *floatWin) render(s float64) []byte {
+func (f *floatWin) render(s float64) ([]byte, int32, int32) {
 	f.mu.Lock()
 	cfg := f.cfg
 	snap := f.snap
@@ -1190,17 +1269,20 @@ func (f *floatWin) render(s float64) []byte {
 	}
 
 	rows := f.layout(pal, snap, snapOK, pulse, phase)
-	w := int32(sc96(floatBaseWidth))
-	h := int32(sc96(floatHeightFor(rows)))
+	// 尺寸在 **DIP 域**算好（与布局断点同口径），再整体乘 DPI 缩放换成物理像素。
+	// 宽高必须同源：只把字号乘 s 而宽度写死 DIP，就会出现「字变大、盒子没变」
+	// ——小屏高缩放下最后一行被省略号吃掉，正是用户看到的现象。
+	w := int32(sc(float64(floatWidthFor(rows))))
+	h := int32(sc(float64(floatHeightFor(rows))))
 
 	screenDC, _, _ := pGetDC.Call(0)
 	if screenDC == 0 {
-		return nil
+		return nil, 0, 0
 	}
 	memDC, _, _ := pCreateCompatibleDC.Call(screenDC)
 	if memDC == 0 {
 		pReleaseDC.Call(0, screenDC)
-		return nil
+		return nil, 0, 0
 	}
 	bih := bitmapInfoHeader{
 		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
@@ -1216,7 +1298,7 @@ func (f *floatWin) render(s float64) []byte {
 	if dib == 0 {
 		pDeleteDC.Call(memDC)
 		pReleaseDC.Call(0, screenDC)
-		return nil
+		return nil, 0, 0
 	}
 	oldBmp, _, _ := pSelectObject.Call(memDC, dib)
 
@@ -1250,7 +1332,7 @@ func (f *floatWin) render(s float64) []byte {
 		pDeleteObject.Call(br)
 	}
 
-	padX := sc(14)
+	padX := sc(floatPadX)
 	padTop := sc(8)
 	textX := padX
 	// 有呼吸点时标题往右让一个点的位置。
@@ -1266,9 +1348,9 @@ func (f *floatWin) render(s float64) []byte {
 			pDeleteObject.Call(rgn)
 			pDeleteObject.Call(dbr)
 		}
-		textX = padX + sc(13)
+		textX = padX + sc(floatBulletOffset)
 	}
-	innerW := int32(w) - textX - padX
+	innerW := w - textX - padX
 
 	y := padTop
 	for i, r := range rows {
@@ -1303,7 +1385,7 @@ func (f *floatWin) render(s float64) []byte {
 	pDeleteObject.Call(dib)
 	pDeleteDC.Call(memDC)
 	pReleaseDC.Call(0, screenDC)
-	return out
+	return out, w, h
 }
 
 // probeRows 用「空数据」摊一次行——只为了在开窗时先知道窗口该多大。
@@ -1510,14 +1592,74 @@ const (
 	fwBold   = 700
 )
 
-func drawFloatText(memDC uintptr, text string, x, y, w, h int32, fontSize int32, weight int32,
-	cr, cg, cb uint8, quality uint32) {
-	if text == "" || memDC == 0 {
-		return
+// floatMeasureText 用与 drawFloatText 完全相同的字体度量一段文字的宽度（DIP）。
+//
+// 走 DrawTextW 的 DT_CALCRECT：它算的是真实排版宽度（含字距与 CJK 全角），比按
+// 字符数估算准得多。量不出来（没有屏幕 DC 等异常情况）时回落到按字号估算，
+// 宁可窗口偏宽也不能让文字被省略号截掉。
+//
+// 为什么不能只量一次缓存起来：字号与字体固定，但文字内容每帧都在变（tok/s 数字
+// 增长、来源增减），量的是「当前这一帧要显示什么」。
+func floatMeasureText(text string, fontSize int32, weight int32) int32 {
+	if text == "" {
+		return 0
 	}
-	// LOGFONTW 里 FaceName 是内嵌 WCHAR[32]，不是指针。这样整块结构体是纯值，
-	// 可以安全交给 syscall（往 Win32 里传「含 Go 指针的结构体」会被 GC 拒绝，
-	// 传含野指针的又直接 0xc0000005 崩）。
+	// 粗估兜底：ASCII 约 0.55 字宽，CJK 全角按 1 字宽。
+	estimate := func() int32 {
+		var w float64
+		for _, r := range text {
+			if r < 0x2E80 {
+				w += 0.55
+			} else {
+				w += 1.0
+			}
+		}
+		return int32(w*float64(fontSize)) + fontSize
+	}
+
+	screenDC, _, _ := pGetDC.Call(0)
+	if screenDC == 0 {
+		return estimate()
+	}
+	defer pReleaseDC.Call(0, screenDC)
+	memDC, _, _ := pCreateCompatibleDC.Call(screenDC)
+	if memDC == 0 {
+		return estimate()
+	}
+	defer pDeleteDC.Call(memDC)
+
+	font := createFloatFont(fontSize, weight, antialiased)
+	if font == 0 {
+		return estimate()
+	}
+	defer pDeleteObject.Call(font)
+	oldFont, _, _ := pSelectObject.Call(memDC, font)
+	defer pSelectObject.Call(memDC, oldFont)
+
+	buf, err := windows.UTF16FromString(text)
+	if err != nil || len(buf) == 0 {
+		return estimate()
+	}
+	var rect rECT
+	rect.Right, rect.Bottom = 1<<15, 1<<15
+	const dtCalcRect = 0x00000400
+	const dtSingleLine = 0x00000020
+	const dtNoPrefix = 0x00000800
+	_, _, _ = pDrawTextW.Call(memDC, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)-1),
+		uintptr(unsafe.Pointer(&rect)), uintptr(dtCalcRect|dtSingleLine|dtNoPrefix))
+	if w := rect.Right - rect.Left; w > 0 {
+		return w
+	}
+	return estimate()
+}
+
+// createFloatFont 按字号 / 字重 / 渲染质量建一个悬浮窗用字体，调用方负责 DeleteObject。
+// drawFloatText 与 floatMeasureText 共用它，保证「量的字体」与「画的字体」是同一个。
+//
+// LOGFONTW 里 FaceName 是内嵌 WCHAR[32]，不是指针。这样整块结构体是纯值，
+// 可以安全交给 syscall（往 Win32 里传「含 Go 指针的结构体」会被 GC 拒绝，
+// 传含野指针的又直接 0xc0000005 崩）。
+func createFloatFont(fontSize int32, weight int32, quality uint32) uintptr {
 	lf := logFontW{
 		Height:      -fontSize, // 负数 = 字符高度
 		Weight:      weight,
@@ -1528,14 +1670,25 @@ func drawFloatText(memDC uintptr, text string, x, y, w, h int32, fontSize int32,
 		PitchFamily: 0, // DEFAULT_PITCH | FF_SWISS
 	}
 	if !lf.setFace(floatFontFace) {
-		return
+		return 0
 	}
 	font, _, _ := pCreateFontW.Call(
-		uintptr(lf.Height), 0, 0, 0, // height, width, escapement, orientation
-		uintptr(lf.Weight), 0, 0, 0, // weight, italic, underline, strikeout
+		uintptr(lf.Height), 0, 0, 0,
+		uintptr(lf.Weight), 0, 0, 0,
 		uintptr(lf.CharSet), uintptr(lf.OutPrecis), uintptr(lf.ClipPrecis),
 		uintptr(lf.Quality), uintptr(lf.PitchFamily),
 		uintptr(unsafe.Pointer(&lf)))
+	return font
+}
+
+func drawFloatText(memDC uintptr, text string, x, y, w, h int32, fontSize int32, weight int32,
+	cr, cg, cb uint8, quality uint32) {
+	if text == "" || memDC == 0 {
+		return
+	}
+	// 字体与 floatMeasureText 共用同一个构造函数：量出来的宽必须就是画出来的宽，
+	// 两处各建一次字体稍有出入，宽度算得再准也白算。
+	font := createFloatFont(fontSize, weight, quality)
 	if font == 0 {
 		return
 	}

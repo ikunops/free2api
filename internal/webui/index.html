@@ -135,7 +135,7 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 /* 加工设置 / 接入信息：两张独立的 section 左右并排，标题在框外、面板底边对齐。
    之前标题被包进卡片 padding 里，和"概览"等页的层级语言不一致；这里把
    标题提到面板上方（框外），面板本体只装内容，两栏 grid stretch 等高。 */
-.out2col{display:grid;grid-template-columns:minmax(0,1.06fr) minmax(0,1fr);gap:16px;align-items:stretch}
+.out2col{display:grid;grid-template-columns:minmax(0,1.06fr) minmax(0,1fr);gap:16px;align-items:stretch;margin-bottom:12px}
 .outpane{display:flex;flex-direction:column;min-width:0}
 .outpane-h{font-size:12.5px;font-weight:650;color:var(--fg2);letter-spacing:.3px;margin:0 0 8px 2px}
 .outpane-b{flex:1;display:flex;flex-direction:column;margin-bottom:0;min-width:0;padding:16px 18px}
@@ -205,17 +205,22 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 /* ---------- 正在发生（实时活跃态） ---------- */
 /* 概览顶部这块和下面的累计卡是两种东西：累计是「一共多少」，这里是「此刻在干嘛」。
    它的数字是真正连续的（在飞请求、当前模型、实时速度），不参与区间累计口径。 */
-.livebar{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--line2);
-  border:1px solid var(--line2);border-radius:var(--r2);overflow:hidden;background-clip:padding-box}
-.livebar>div{background:var(--panel);padding:10px 13px;min-width:0}
+/* 实时带：5 个指标。这里用 flex+wrap 而不是「固定列数的 grid + 容器铺底色」——
+   5 个格子在 3 列 / 2 列时凑不满整行，grid 会让空位露出容器底色、变成一个灰块
+   （实测：3 列时空位在右下角，看着像内容缺失）。flex 的 flex-grow 让最后一行的
+   指标自己撑满，任何宽度下都不留洞；1px 分隔线仍由容器底色从 gap 里透出来。 */
+.livebar{display:flex;flex-wrap:wrap;gap:1px;background:var(--line2);
+  border:1px solid var(--line2);border-radius:var(--r2);overflow:hidden;background-clip:padding-box;
+  margin-bottom:12px}
+.livebar>div{background:var(--panel);padding:10px 13px;min-width:0;flex:1 1 calc(20% - 1px)}
 .livebar .lk{font-size:11px;color:var(--fg3);display:flex;align-items:center;gap:5px}
 .livebar .lk .dot{width:6px;height:6px;border-radius:50%;background:var(--fg4);flex:none}
 .livebar.on .lk .dot{background:var(--acc);animation:ratePulse 1.4s ease-in-out infinite}
 .livebar .lv-v{font-size:19px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.3px}
 .livebar .lv-n{font-size:10.5px;color:var(--fg4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@media(max-width:1400px){.livebar{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:900px){.livebar{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:1400px){.livebar>div{flex-basis:calc(33.333% - 1px)}}
+@media(max-width:900px){.livebar>div{flex-basis:calc(50% - 1px)}}
 
 /* ---------- 三类量：累计 / 速率 / 均值 ----------
    把不同性质的数字用不同视觉语言区分开，用户一眼就知道「这个该动」还是
@@ -502,7 +507,10 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
    一律被省略号截断，而右边第三列（中文名）却空着一大片。max-content 让这一列
    按最长 id 撑开、把富余宽度让给名字列；窗口窄时 min 值 150px 兜底、省略号照常生效。
    min-height + align-items:center 让带费率标签的行与不带的行等高。 */
-.mrow{display:grid;grid-template-columns:18px minmax(150px,max-content) minmax(0,max-content) max-content;align-items:center;
+/* 五列：勾选 · 模型 id · 别名（吃剩余宽度，把右侧整块推到固定位置）· 徽标 · 上下文与能力。
+   末列是**固定宽**，所以它的起点与行的右边缘保持固定距离——不会因为模型名或徽标长短左右浮动。
+   三处用 .mrow 的清单（发布清单 / 出口子清单 / ZCode 建供应商）共用这套列，改这里三处一起变。 */
+.mrow{display:grid;grid-template-columns:18px minmax(150px,max-content) minmax(0,1fr) max-content 152px;align-items:center;
   min-height:41px;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12.5px;cursor:pointer}
 .mrow:last-child{border-bottom:0}
 .mrow:hover{background:var(--hover)}
@@ -516,7 +524,17 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .mrow input{width:15px;height:15px;margin:0;accent-color:var(--acc);cursor:pointer}
 .mrow .mid{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mrow .mname{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mrow .mbits{display:flex;gap:5px;justify-content:flex-start}
+.mrow .mbits{display:flex;gap:5px;justify-content:flex-start;align-items:center;flex-wrap:wrap}
+/* 上下文与能力徽标：末列整块。列宽固定（见 .mrow 的第五列），所以所有行的起点对齐在
+   同一条竖线上，不随模型名/徽标长短漂移——这是用户点名的要求：位置不能"紧随费率之后"。
+   能力图标只在**上游确实声明**时出现（后端未知就不发键），所以"没有图标"= 未知，
+   不等于"不支持"——tooltip 里也照实这么写。 */
+.mrow .mmeta{display:flex;gap:7px;align-items:center;justify-content:flex-start;min-width:0}
+.mrow .ctx{font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.mrow .caps{display:inline-flex;gap:4px;align-items:center}
+.mrow .cap{display:inline-flex;align-items:center;color:var(--fg3)}
+.mrow .cap svg{width:13px;height:13px;stroke-width:1.7}
+.mrow .cap:hover{color:var(--fg2)}
 /* 输出白名单的 producer 分组表头（workbuddy / zcode 各一段） */
 .mgroup{display:flex;justify-content:space-between;align-items:center;gap:10px;
   padding:7px 13px;background:var(--soft2);border-bottom:1px solid var(--line2);
@@ -537,7 +555,7 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .card.fold > .card-head:hover{background:var(--hover2)}
 .card.fold h2 .mcaret{color:var(--fg3);transition:transform .12s ease}
 .card.fold.open h2 .mcaret{transform:rotate(90deg)}
-@media(max-width:860px){.mrow{grid-template-columns:18px minmax(0,1fr) auto}.mrow .mname{display:none}}
+@media(max-width:860px){.mrow{grid-template-columns:18px minmax(0,1fr) max-content 152px}.mrow .mname{display:none}}
 /* 多出口：每个出口一块；「服务来源」用圆角标签勾选 */
 .chan{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;margin-bottom:12px}
 .chan-head{display:flex;gap:10px;align-items:center;margin-bottom:11px}
@@ -639,6 +657,11 @@ const ICON = {
   moon: "M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z",
   search: "M11 19a8 8 0 100-16 8 8 0 000 16zM21 21l-4.3-4.3",
   shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  /* 模型能力徽标（发布清单行内）：图片 / 工具调用 / 推理。
+     只在**上游确实声明了**该能力时才画，未知一律不画——见 handler.go decorateModelEntry。 */
+  image: "M4 4h16v16H4zM4 15l4.5-4.5 4 4L16 11l4 4M9 8.5a1.2 1.2 0 11-2.4 0 1.2 1.2 0 012.4 0z",
+  tools: "M14.5 4.5a4 4 0 005 5l-8.4 8.4a2.1 2.1 0 01-3-3zM4 20l3.2-3.2M16.5 4.5l3 3",
+  brain: "M9.5 4A3.5 3.5 0 006 7.5 3 3 0 004.5 13 3 3 0 007 18.5a3 3 0 005-1.5V5.5A2.5 2.5 0 009.5 4zM14.5 4A3.5 3.5 0 0118 7.5 3 3 0 0119.5 13 3 3 0 0117 18.5a3 3 0 01-5-1.5",
   sliders: "M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M7 14v6"
 };
 function svg(k, cls){
@@ -2087,6 +2110,17 @@ function rateName(id){
   var h = ((S.out && S.out.rate_hints) || []).filter(function(x){ return x.id === id; })[0];
   return h ? h.name : (id || "credit");
 }
+/* effortOptions / effortModeHint 推理档位策略：与上面两个同源，只读后端
+   effort_modes 注册表（id/name/note），加策略时后端改一处页面自动跟着变。 */
+function effortOptions(sel){
+  return ((S.out && S.out.effort_modes) || []).map(function(m){
+    return '<option value="' + esc(m.id) + '"' + (sel === m.id ? " selected" : "") + '>' + esc(m.name) + '</option>';
+  }).join("");
+}
+function effortModeHint(id){
+  var m = ((S.out && S.out.effort_modes) || []).filter(function(x){ return x.id === id; })[0];
+  return m ? (m.note || m.name) : "";
+}
 /* producerChoices 可选「服务来源」：池里出现过的客户端 + 已知的两家（保证空池也能配）。 */
 function producerChoices(){
   var list = (S.status && S.status.producer_totals) || [];
@@ -2285,7 +2319,7 @@ function chanModelBodyHtml(c, i){
         (inhSet[key] ? ' data-cmi="1"' : '') + '>' +
         '<span class="mid mono">' + esc(m.full_id) + '</span>' +
         '<span class="mname hint">' + esc(m.name || "") + '</span>' +
-        '<span class="mbits">' + bits.join("") + '</span></label>';
+        '<span class="mbits">' + bits.join("") + '</span><span class="mmeta">' + modelBitsHtml(m) + '</span></label>';
     }).join("");
   }).join("");
   return '<div class="sep"></div>' +
@@ -2434,6 +2468,11 @@ function codexCard(){
   var notes = [];
   if (c.models_cache_path) notes.push("检测到模型缓存 " + c.models_cache_path + "，建议删掉让 Codex 重拉，否则可能仍显示旧模型。");
   if (!c.env_key_set) notes.push("环境变量 " + c.env_key + " 未设置；Codex 要求它存在，可填任意占位串。");
+  // 改了端口还没重启：config.json 里是新地址，但网关仍在旧地址上听。写进 Codex 的
+  // config.toml 是立刻生效的，此时必须用「正在听」的那个地址，所以上面预填的就是它；
+  // 这里把差异讲明白，免得用户以为页面填错了。
+  if (c.restart_pending) notes.push("监听地址已改成 " + c.configured_listen + "，但网关现在还跑在 " + c.active_listen +
+    " 上：下面预填的是正在听的那个（写进去才能连上）。想让新端口生效，去「加工设置」保存后重启网关。");
   if (notes.length) body += '<div class="sep"></div>' + notes.map(function(t){ return '<div class="hint">· ' + esc(t) + "</div>"; }).join("");
 
   // 预览
@@ -2520,6 +2559,9 @@ function viewOutput(){
           '<div class="field"><label class="f">模型前缀（可选）</label><input id="outPrefix" value="' + esc(cfg.model_prefix || "") + '" placeholder="例如 wb-"></div>' +
           '<div class="field"><label class="f">费率后缀</label><select id="outRate">' + rateOpts + '</select></div>' +
         '</div>' +
+        '<div class="field" style="margin-top:13px"><div class="labrow"><label class="f">推理档位</label>' +
+          '<span class="hint inline">' + esc(effortModeHint(cfg.effort_mode)) + '</span></div>' +
+          '<select id="outEffort">' + effortOptions(cfg.effort_mode) + '</select></div>' +
         '<div class="outpane-foot"><button class="pri" data-action="save-out">保存设置</button>' +
           '<span class="hint" style="margin:0">配置文件：' + esc(o.config_path || "（未记录）") + '</span></div>' +
       '</div>' +
@@ -2591,6 +2633,9 @@ function viewOutput(){
         if (m.is_default) bits.push('<span class="tag ok">默认</span>');
         var un = m.entitled === false;
         if (un) bits.push('<span class="tag mut">未授权</span>');
+        // auto：保存清单之后上游才新增的型号，被基线机制自动放行（不是用户亲手勾的）。
+        // 必须显式标出来：否则「我明明没勾它怎么出去了」会变成一个查不出来的问题。
+        if (m.auto) bits.push('<span class="tag mut" title="保存这份清单之后上游新增的型号，已自动放行；不需要就取消勾选再保存">新增</span>');
         var key = m.key || m.id;
         var on = !!sel[key];
         // paid：非免费行。只在「只看免费」勾上时由 CSS 收起（free 由后端按各家口径判定）。
@@ -2602,7 +2647,7 @@ function viewOutput(){
           '<input type="checkbox" data-model="' + esc(key) + '"' + (on ? " checked" : "") + '>' +
           '<span class="mid mono">' + esc(m.full_id) + '</span>' +
           '<span class="mname hint">' + esc(m.name || "") + '</span>' +
-          '<span class="mbits">' + bits.join("") + '</span></label>';
+          '<span class="mbits">' + bits.join("") + '</span><span class="mmeta">' + modelBitsHtml(m) + '</span></label>';
       };
       return head + '<div class="mbody">' + ent.map(rowOf).join("") + unent.map(rowOf).join("") + '</div>';
     }).join("");
@@ -2629,6 +2674,7 @@ function viewOutput(){
         '<button class="tiny" data-action="model-default">只留默认</button>' +
         '<button class="tiny" data-action="model-free" title="把发布清单收窄成「只有免费模型」——不消耗积分的那些">只勾免费</button>' +
         '<button class="tiny" data-action="model-reset">恢复为全部放开</button>' +
+        '<button class="tiny" data-action="catalog-refresh" title="立刻重打各来源的模型目录（平时每 30 分钟自动刷一次）。上游刚上新模型时点这里，不用等周期也不用重启网关。">立即同步上游</button>' +
         '<button class="tiny" data-action="mgroup-all" data-open="1">展开全部</button>' +
         '<button class="tiny" data-action="mgroup-all" data-open="0">收起全部</button>' +
         '<label class="inlinechk" title="只看不消耗积分的模型（opencode Zen 目录 79 个里大部分是收费的，勾上后只留免费层）">' +
@@ -2662,6 +2708,37 @@ function viewOutput(){
 function fmtInt(n){
   n = Number(n) || 0;
   return n.toLocaleString("en-US");
+}
+/* fmtCtx 上下文窗口：这类数字看的是数量级不是零头，用 K/M 而不是千分位
+   （1,048,576 这种写法在一行里既占地方又难扫）。 */
+function fmtCtx(n){
+  n = Number(n) || 0;
+  if (n <= 0) return "";
+  if (n >= 1e6) return (Math.round(n / 1e5) / 10) + "M";
+  if (n >= 1e3) return Math.round(n / 1e3) + "K";
+  return String(n);
+}
+/* modelBitsHtml 发布清单行右侧的「上下文 + 能力」附加信息。
+   能力位由后端**只在上游声明时**下发（未知就不带键），所以这里没有图标 = 不知道，
+   不等于不支持；tooltip 明说这一点，免得被读成能力否定。 */
+function modelBitsHtml(m){
+  var out = [];
+  var ctx = fmtCtx(m.context);
+  if (ctx){
+    var t = "上下文 " + fmtInt(m.context) + " tokens";
+    if (m.max_output) t += " · 最大输出 " + fmtInt(m.max_output);
+    out.push('<span class="ctx" title="' + esc(t) + '">' + esc(ctx) + '</span>');
+  }
+  var caps = [];
+  if (m.vision) caps.push(["image", "支持图片输入"]);
+  if (m.tools) caps.push(["tools", "支持工具调用"]);
+  if (m.reasoning) caps.push(["brain", "支持推理档位"]);
+  if (caps.length){
+    out.push('<span class="caps">' + caps.map(function(c){
+      return '<span class="cap" title="' + esc(c[1]) + '">' + svg(c[0]) + '</span>';
+    }).join("") + '</span>');
+  }
+  return out.join("");
 }
 function fmtDur(ms){
   ms = Number(ms) || 0;
@@ -3805,6 +3882,24 @@ async function refreshAll(silent){
   }
 }
 /* ---------- 动作 ---------- */
+/* candImportMeta 每个取源 kind 的导入元信息：挂在哪个来源 tab、归属哪种来源、台账备注。
+   收敛成一张表的原因：这三项原先散在 openCands（tab）、quick（method+detail）、
+   cand-import（method）三处 if 链里各写一遍，加了新的可取用源（workbuddy-desktop）
+   就漏了两处——「全部导入」于是落到兜底分支去读 wb-switch 账本，报的错还是那个
+   不存在的 ~/.wb-switch/accounts.json，看着像源选错了。一处定义、三处查表，
+   以后加源只改这里。 */
+const CAND_IMPORT_META = {
+  "workbuddy-desktop": { tab: "app",    method: "app",    detail: "workbuddy desktop auth" },
+  "opencode":          { tab: "app",    method: "app",    detail: "opencode auth.json" },
+  "kilo":              { tab: "app",    method: "app",    detail: "kilo anonymous free lane" },
+  "wb-switch":         { tab: "switch", method: "switch", detail: "wb-switch 账本" },
+  "zcode-switch":      { tab: "switch", method: "switch", detail: "zcode-switch 账本" },
+  "paste":             { tab: "file",   method: "file",   detail: "粘贴导入" }
+};
+/* candImportMeta 查表；未知 kind 按「switch 账本」兜底（历史行为）。 */
+function candImportMeta(kind){
+  return CAND_IMPORT_META[kind] || { tab: "switch", method: "switch", detail: kind || "" };
+}
 function checkedIDs(){
   return Object.keys(S.checked).filter(function(k){ return S.checked[k]; });
 }
@@ -3835,7 +3930,7 @@ async function openCands(kind, opt){
   S.tab = "sources";
   // 候选面板挂在它所属的「来源」tab 下：账本类在 switch，OpenCode 在应用内登录态。
   // Kilo 与 OpenCode 同挂在「应用内登录态」下：两者都无需 switch 账本（Kilo 甚至无需账号）。
-  S.srcTab = (kind === "opencode" || kind === "kilo") ? "app" : "switch";
+  S.srcTab = candImportMeta(kind).tab;
   S.checked = {};
   var o = opt || {};
   S.candProbe = !!o.probe; S.candBalance = !!o.balance;
@@ -4080,7 +4175,7 @@ function zcodeCreateForm(z){
       '<input type="checkbox" data-zmodel="' + esc(m.full_id) + '"' + (on ? " checked" : "") + '>' +
       '<span class="mid mono">' + esc(m.full_id) + '</span>' +
       '<span class="mname hint">' + esc(m.name || "") + '</span>' +
-      '<span class="mbits">' + bits.join("") + '</span></label>';
+      '<span class="mbits">' + bits.join("") + '</span><span class="mmeta">' + modelBitsHtml(m) + '</span></label>';
   }).join("");
 
   return '<div class="sep"></div><div class="f"><label class="f">新建 ZCode 供应商</label>' +
@@ -4185,14 +4280,15 @@ async function codexApply(){
   } catch (e) { toast("err", e.message || String(e)); }
 }
 async function saveOutput(){
-  var f = $("#outFormat"), l = $("#outListen"), p = $("#outPrefix"), r = $("#outRate");
+  var f = $("#outFormat"), l = $("#outListen"), p = $("#outPrefix"), r = $("#outRate"), ef = $("#outEffort");
   if (!f || !l) return;
   try {
     var res = await api("/admin/output", { method: "PUT", body: {
       format: f.value,
       listen: l.value.trim(),
       model_prefix: p ? p.value.trim() : "",
-      rate_hint: r ? r.value : "credit"
+      rate_hint: r ? r.value : "credit",
+      effort_mode: ef ? ef.value : "upstream"
     } });
     S.out = res;
     if (res && res.restart_required) toast("info", res.restart_note || "端口已写入 config.json，重启网关后生效", 8000);
@@ -4308,6 +4404,23 @@ function applyModelFilter(){
   });
   var cnt = $("#mFilterCount");
   if (cnt) cnt.textContent = active ? ("筛选命中 " + shown + " / " + total + " 个") : "";
+}
+/* catalogRefresh 手动重打模型目录。后端返回刷新前后各家条数，这里只报「变了什么」——
+   全列出来等于把 5 行没变的一起念一遍，用户要的是"上游到底有没有上新"。 */
+async function catalogRefresh(){
+  var btn = $('[data-action="catalog-refresh"]');
+  if (btn){ btn.disabled = true; btn.textContent = "同步中…"; }
+  try {
+    var r = await api("/admin/catalog/refresh", { method: "POST" });
+    var ch = (r && r.changed) || [];
+    if (!ch.length){ toast("info", "已同步，各家模型数没有变化", 4200); }
+    else {
+      var parts = ch.map(function(c){ return producerName(c.producer) + " " + c.before + " → " + c.after; });
+      toast("ok", "已同步：" + parts.join("，"), 7000);
+    }
+    await refreshAll(true);
+  } catch (e) { toast("err", "同步失败：" + e.message, 9000); }
+  finally { if (btn){ btn.disabled = false; btn.textContent = "立即同步上游"; } }
 }
 /* saveModels 保存发布清单：只发勾上的裸 id；一个都没勾 = 全部放开（后端按空名单处理）。 */
 async function saveModels(){
@@ -4533,10 +4646,8 @@ async function actOn(t){
     if (act === "cands") return openCands(t.getAttribute("data-kind"));
     if (act === "quick"){
       var qk = t.getAttribute("data-kind") || "wb-switch";
-      if (qk === "zcode-switch") return doImport("zcode-switch", null, null, "switch", "zcode-switch 账本");
-      if (qk === "opencode") return doImport("opencode", null, null, "app", "opencode auth.json");
-      if (qk === "kilo") return doImport("kilo", null, null, "app", "kilo anonymous free lane");
-      return doImport("wb-switch", null, null, "switch", "wb-switch 账本");
+      var qm = candImportMeta(qk);
+      return doImport(qk, null, null, qm.method, qm.detail);
     }
     if (act === "src-refresh") return srcRefresh();
     if (act === "import-paste") return doPaste();
@@ -4547,10 +4658,9 @@ async function actOn(t){
     }
     if (act === "cand-none"){ S.checked = {}; render(); toast("info", "已取消全部勾选", 2200); return; }
     if (act === "cand-import"){
-      // 两种账本都是「来源 = switch」；粘贴导入（candKind 非账本）才是 file。
-      var meth = (S.candKind === "wb-switch" || S.candKind === "zcode-switch") ? "switch"
-        : ((S.candKind === "opencode" || S.candKind === "kilo") ? "app" : "file");
-      return doImport(S.candKind, checkedIDs(), null, meth, S.candKind);
+      // 归属来源与台账备注统一查表（见 candImportMeta），不再逐处 if。
+      var cm = candImportMeta(S.candKind);
+      return doImport(S.candKind, checkedIDs(), null, cm.method, cm.detail);
     }
     if (act === "zcode-probe") return reloadCands(true, false);
     if (act === "zcode-balance") return reloadCands(false, true);
@@ -4574,6 +4684,7 @@ async function actOn(t){
     if (act === "model-default") return setModelSel(function(m){ return !!m.is_default; });
     if (act === "model-free") return setModelSel(function(m){ return !!m.free; });
     if (act === "model-reset") return resetModels();
+    if (act === "catalog-refresh") return catalogRefresh();
     if (act === "selftest") return runSelfTest();
     if (act === "mfilter-clear"){
       S.mq = ""; S.mfProducer = "all"; S.mfRate = "all";

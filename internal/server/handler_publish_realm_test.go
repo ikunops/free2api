@@ -150,7 +150,7 @@ func TestPublishGateRealmScoped(t *testing.T) {
 	published := h.outputCfgModelSet()
 	for id := range listedIDs(h) {
 		realm, producer, bare := h.resolveRoute(id)
-		if !h.publishAllows(published, realm, producer, bare) {
+		if !h.publishAllows(published, nil, realm, producer, bare) {
 			t.Errorf("清单列了 %q，请求侧却会被 404（realm=%s producer=%s bare=%s）", id, realm, producer, bare)
 		}
 	}

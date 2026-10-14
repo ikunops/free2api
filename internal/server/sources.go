@@ -435,7 +435,9 @@ func (h *Handler) adminSourceImport(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeOpenAIErrorHint(w, http.StatusBadRequest, "import_failed", err.Error(),
-			"账本路径/JSON 形状不对；wb-switch 账本默认在 ~/.wb-switch/accounts.json")
+			"检查该来源在本机的路径是否存在、JSON 是否为数组或对象。"+
+				"wb-switch 账本默认 ~/.wb-switch/accounts.json；OpenCode 默认 ~/.local/share/opencode/auth.json；"+
+				"WorkBuddy 桌面端登录态默认 %LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth")
 		return
 	}
 

@@ -32,11 +32,8 @@ func TestDumpFloatFrameForManualInspect(t *testing.T) {
 		Producer string `json:"producer"`
 		Requests int64  `json:"requests"`
 	}{{Producer: "workbuddy", Requests: 7000}}
-
-	px := f.render(1.0)
-	rows := f.probeRows()
-	w, h := sc96(floatBaseWidth), floatHeightFor(rows)
-	if err := writeBMP(out, px, w, h); err != nil {
+	px, w, h := f.render(1.0)
+	if err := writeBMP(out, px, int(w), int(h)); err != nil {
 		t.Fatalf("writeBMP: %v", err)
 	}
 	t.Logf("wrote %s (%dx%d)", out, w, h)

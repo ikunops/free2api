@@ -56,6 +56,13 @@ func resetModelsCache() {
 	opencodeCatalogCache.fetched = time.Time{}
 	opencodeCatalogCache.lastFail = time.Time{}
 	opencodeCatalogCache.Unlock()
+	// kilo（匿名免费层）模型目录缓存同理：不清会让上一条测试留下的免费层模型
+	// 泄漏进下一条测试的 /v1/models 断言。
+	kiloCatalogCache.Lock()
+	kiloCatalogCache.infos = nil
+	kiloCatalogCache.fetched = time.Time{}
+	kiloCatalogCache.lastFail = time.Time{}
+	kiloCatalogCache.Unlock()
 }
 
 const sseOK = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你好\"}}]}\n\n" +

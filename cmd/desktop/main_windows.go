@@ -154,6 +154,11 @@ func main() {
 	}
 
 	winW, winH := defaultWindowSize()
+	dpi := systemDPI()
+	// defaultWindowSize 给的是 DIP，这里换回物理像素再交给 WebView2：
+	// CreateWindowExW 与 WM_GETMINMAXINFO 全程按物理像素对话，直接塞 DIP 会在
+	// 高 DPI 屏上把窗口建成「物理 1280 = CSS 1024」的窄窗。
+	pxW, pxH := dipToPx(winW, dpi), dipToPx(winH, dpi)
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		AutoFocus: true,
 		DataPath:  filepath.Join(exeDir, "data", "webview2"),
@@ -163,8 +168,8 @@ func main() {
 			IconId: iconResourceID,
 			// 默认尺寸按主屏工作区算（defaultWindowSize），不再写死 1280x860：
 			// 那在 2K 屏上只占一半宽，首屏 KPI 还会掉到 3 列。
-			Width:  uint(winW),
-			Height: uint(winH),
+			Width:  uint(pxW),
+			Height: uint(pxH),
 			Center: true,
 		},
 	})
@@ -173,9 +178,21 @@ func main() {
 			"临时替代：用 -headless 参数启动，然后浏览器打开控制台地址。")
 	}
 	defer w.Destroy()
-	w.SetSize(960, 640, webview.HintMin) // 最小尺寸：再小布局就散了
+	// 最小尺寸 960x640（DIP 口径：再小布局就散了）同样要换回物理像素，
+	// 否则高 DPI 屏上这个下限会被系统当作物理像素，实际只允许缩到 CSS 640 宽。
+	// 但下限不能超过当前窗口（= 工作区）：小屏高缩放下「960 DIP」可能比整块工作区
+	// 还大，那样一拖拽窗口就被撑到屏幕外，标题栏都点不到。上限夹在工作区里，
+	// 小屏上退化成「只能放大不能缩小」，总好过窗口大到没法操作。
+	minPxW, minPxH := dipToPx(960, dpi), dipToPx(640, dpi)
+	if minPxW > pxW {
+		minPxW = pxW
+	}
+	if minPxH > pxH {
+		minPxH = pxH
+	}
+	w.SetSize(minPxW, minPxH, webview.HintMin)
 	// 库自带的 Center 按整个屏幕居中，会压到任务栏；这里按工作区再摆一次。
-	centerWindowInWorkArea(uintptr(w.Window()), winW, winH)
+	centerWindowInWorkArea(uintptr(w.Window()), pxW, pxH)
 	w.Navigate(uiURL)
 	w.Run() // 阻塞到窗口关闭
 
@@ -743,7 +760,38 @@ var (
 	procSystemParameters = user32ge.NewProc("SystemParametersInfoW")
 	procGetWindowRect    = user32ge.NewProc("GetWindowRect")
 	procSetWindowPos     = user32ge.NewProc("SetWindowPos")
+	procGetDpiForSystem  = user32ge.NewProc("GetDpiForSystem")
 )
+
+// systemDPI 主屏 DPI（GetDpiForSystem）。本进程声明了 PerMonitorV2，所以窗口还没
+// 建出来时拿不到 per-window DPI，用系统这个值做启动尺寸换算；拿不到（老系统）退回 96。
+func systemDPI() int {
+	if d, _, _ := procGetDpiForSystem.Call(); d >= 72 && d <= 480 {
+		return int(d)
+	}
+	return 96
+}
+
+// dipToPx / pxToDip 设备无关像素（DIP）与物理像素互换。
+//
+// 为什么必须有：PerMonitorV2 进程里 CreateWindowExW、WM_GETMINMAXINFO、工作区
+// 这些收发/返回的都是**物理像素**，而页面里的布局断点（1200/1400px）和「960x640
+// 才不会散架」说的都是 **CSS 像素 == DIP**。两者在 100% 缩放下数值相同，于是
+// 一直没人发现；到了 125%~150% 缩放的笔记本屏上，物理 1280 只等于 CSS 1024，
+// 首屏就掉进更窄的断点、开始换行。
+func dipToPx(dip, dpi int) int {
+	if dpi <= 0 {
+		return dip
+	}
+	return (dip*dpi + 48) / 96
+}
+
+func pxToDip(px, dpi int) int {
+	if dpi <= 0 {
+		return px
+	}
+	return (px*96 + dpi/2) / dpi
+}
 
 // primaryWorkArea 返回主屏工作区（已扣掉任务栏）的像素矩形。
 // ok=false 表示两种算法都拿不到，调用方自己退回默认值。
@@ -764,21 +812,29 @@ func primaryWorkArea() (rECT, bool) {
 
 // defaultWindowSize 按主屏工作区算启动尺寸：
 // 宽取工作区的 3/4、高取 6/7，再夹在 [1280x860, 1760x1120] 内，
-// 最后不允许超过工作区本身。
+// 最后不允许超过工作区本身。返回的是 **DIP（CSS 像素）**，不是物理像素。
 //
 // 为什么不是写死：以前固定 1280x860，在 2560x1080 的主屏上只占一半宽，
 // 首屏 5 个 KPI 还会因为 1400px 断点掉到 3 列，白白浪费右半边屏幕。
+//
+// 为什么单位必须是 DIP：页面布局断点（1200 / 1400px）与「960x640 才不会散架」
+// 都是 CSS 像素口径。工作区拿回来的物理像素只在 100% 缩放时才恰好等于 DIP，
+// 高 DPI 笔记本屏（125%~150%）上若直接拿物理像素当 CSS 像素去算窗口尺寸，页面
+// 视口会比预期窄一大截，首屏直接掉到 2 列并开始换行 —— 就是「小屏尺寸没变、
+// 窗口变小了」那个现象。这里统一在 DIP 域里计算与裁剪。
 func defaultWindowSize() (int, int) {
 	const (
 		minW, minH = 1280, 860
 		maxW, maxH = 1760, 1120
 	)
+	dpi := systemDPI()
 	wa, ok := primaryWorkArea()
 	if !ok {
 		return minW, minH
 	}
-	workW := int(wa.Right - wa.Left)
-	workH := int(wa.Bottom - wa.Top)
+	// 物理像素 → DIP：断了缩放差异，后面的 3/4、6/7 与区间夹取才在同一口径下。
+	workW := pxToDip(int(wa.Right-wa.Left), dpi)
+	workH := pxToDip(int(wa.Bottom-wa.Top), dpi)
 	w := workW * 3 / 4
 	h := workH * 6 / 7
 	if w < minW {
