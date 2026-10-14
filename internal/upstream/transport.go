@@ -74,7 +74,12 @@ func newDialer() *net.Dialer {
 func newTransport() *http.Transport {
 	dialer := newDialer()
 	return &http.Transport{
-		DialContext: dialer.DialContext,
+		// DialContext = 系统拨号器外面套一层「workbuddy.ai 家族 DoH 真实 IP 直拨」
+		// 加固（见 dial_realip.go）：TUN/fake-ip 环境（如 FlClash）下按域名经节点
+		// 连接会被节点侧二次解析破坏（TLS EOF 风暴）；按真实 IP 直拨实测可用。
+		// 非目标主机 / DoH 失败 / 直拨失败 → 原样回落系统拨号，行为与加固前
+		// 完全一致（CN 域不受任何影响）。
+		DialContext: newRealIPDialer(dialer).DialContext,
 		// 空 TLSNextProto（非 nil）真正禁 h2：见函数注释。必须 make 而非 nil——
 		// nil 表示「让标准库注入默认 h2 映射」（kongjianguan 实测：设
 		// ForceAttemptHTTP2=false 后日志仍报 h2 timeout，正是这个陷阱）。

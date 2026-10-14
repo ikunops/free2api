@@ -109,8 +109,10 @@ func (c *Client) GlobalModelInfosSnapshot() []ModelInfo {
 }
 
 // InvalidateGlobalModelsCache 让下一次 FetchGlobalModels/FetchGlobalModelInfos 绕过
-// TTL 与负缓存、真正重打上游（供后台周期刷新：自动同步上游模型上下架）。只清时间戳，
-// 不清数据——刷新失败时旧名单仍在，客户端不会看到目录凭空消失。
+// TTL 与负缓存、真正重打上游。两处调用：后台周期刷新（warm.go，自动同步上下架）
+// 与管理面强制重探（/admin/output?refresh=1，刷新按钮当场重打）。
+// 只清时间戳、不清已缓存数据：重探失败时调用方至少还能读到上一轮名单，
+// 不会因为一次上游抖动就把目录整家清空。
 func (c *Client) InvalidateGlobalModelsCache() {
 	c.globalModels.Lock()
 	c.globalModels.fetched = time.Time{}
