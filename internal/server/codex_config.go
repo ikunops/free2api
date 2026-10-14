@@ -92,6 +92,11 @@ func buildCodexProviderBlock(baseURL, wireAPI string) string {
 	b.WriteString(`base_url = "` + baseURL + `"` + "\n")
 	b.WriteString(`env_key = "` + codexEnvKey + `"` + "\n")
 	b.WriteString(`wire_api = "` + wireAPI + `"` + "\n")
+	// model_catalog_url 是 Codex 0.162+ 拉远程模型目录的唯一开关：只给 base_url 时
+	// 客户端不会去 GET /v1/models（即使 features.api_key_model_discovery=true），模型
+	// 选择器退化成内置列表 + 顶层 model 一项。实测（Windows 桌面端 0.162.0-alpha.17.2）：
+	// 补上这一行后立刻发出 GET /v1/models?client_version=0.162.0 并解析出全部已发布模型。
+	b.WriteString(`model_catalog_url = "` + strings.TrimRight(baseURL, "/") + `/models"` + "\n")
 	return b.String()
 }
 

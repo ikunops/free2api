@@ -25,6 +25,7 @@ func TestPlanCodexFreshFile(t *testing.T) {
 		`base_url = "http://127.0.0.1:7864/v1"`,
 		`env_key = "WB_API_KEY"`,
 		`wire_api = "responses"`,
+		`model_catalog_url = "http://127.0.0.1:7864/v1/models"`,
 	} {
 		if !strings.Contains(p.After, want) {
 			t.Errorf("After 缺 %q\n---\n%s", want, p.After)
