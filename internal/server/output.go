@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // 已跑通的输出协议。anthropic / gemini 仍在 /admin/output 里**列出来但不给选**：
@@ -565,8 +566,41 @@ func (s *OutputStore) save(path string, c OutputConfig) error {
 // ---------- 端点 ----------
 
 // adminOutputGet 返回输出配置 + 可选档位（前端照着渲染，不在前端各写一份枚举）。
+//
+// ?refresh=1 = 强制重新探测上游模型目录后再返回。默认路径只读 1h 缓存（不打上游）；
+// 目录探测失败会进 5min 负缓存，期间点刷新只会读到空目录——带这个参数把负缓存清掉，
+// 让「刷新」按钮真正刷新（不然只能硬刷新页面 / 重启网关，桌面端没有硬刷新）。
 func (h *Handler) adminOutputGet(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("refresh") == "1" {
+		h.invalidateCatalogCaches()
+	}
 	writeJSON(w, http.StatusOK, h.outputView())
+}
+
+// invalidateCatalogCaches 清空五路模型目录探测缓存的时间戳（CN 动态 / zcode /
+// opencode / kilo / global）。清的是 fetched 与 lastFail，**不清已缓存的清单**：
+// 重新探测成功就整体换新，失败也不会把旧清单擦掉（保持展示连续性）。
+// 这是管理端点的手动动作，不是常规路径，调用频率以用户点击为准。
+func (h *Handler) invalidateCatalogCaches() {
+	dynamicModelsCache.Lock()
+	dynamicModelsCache.fetched = time.Time{}
+	dynamicModelsCache.lastFail = time.Time{}
+	dynamicModelsCache.Unlock()
+	zcodeCatalogCache.Lock()
+	zcodeCatalogCache.fetched = time.Time{}
+	zcodeCatalogCache.lastFail = time.Time{}
+	zcodeCatalogCache.Unlock()
+	opencodeCatalogCache.Lock()
+	opencodeCatalogCache.fetched = time.Time{}
+	opencodeCatalogCache.lastFail = time.Time{}
+	opencodeCatalogCache.Unlock()
+	kiloCatalogCache.Lock()
+	kiloCatalogCache.fetched = time.Time{}
+	kiloCatalogCache.lastFail = time.Time{}
+	kiloCatalogCache.Unlock()
+	if h.cfg.Upstream != nil {
+		h.cfg.Upstream.InvalidateGlobalModelsCache()
+	}
 }
 
 // adminOutputPut 局部更新输出配置（只传要改的字段）。

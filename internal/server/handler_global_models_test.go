@@ -43,6 +43,7 @@ func newGlobalModelsHandlerFake(t *testing.T, status int, body string) *globalMo
 			cf.auth = r.Header.Get("Authorization")
 			cf.host = r.Host
 		}
+		status, body := cf.status, cf.body
 		cf.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if isCN {
@@ -55,8 +56,8 @@ func newGlobalModelsHandlerFake(t *testing.T, status int, body string) *globalMo
 			],"agents":[{"name":"cli","models":["cn-dyn-model"]}]}}`)
 			return
 		}
-		w.WriteHeader(cf.status)
-		_, _ = io.WriteString(w, cf.body)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
 	}))
 	cf.up = &upstream.Client{
 		HTTP:           &http.Client{},
@@ -65,6 +66,14 @@ func newGlobalModelsHandlerFake(t *testing.T, status int, body string) *globalMo
 		GlobalEnabled:  true,
 	}
 	return cf
+}
+
+// setProbe 更新 fake 的响应（并发安全：handler 侧读 status/body 也在同一把锁里）。
+func (cf *globalModelsHandlerFake) setProbe(status int, body string) {
+	cf.mu.Lock()
+	cf.status = status
+	cf.body = body
+	cf.mu.Unlock()
 }
 
 func (cf *globalModelsHandlerFake) snapshot() (cnt int, path, auth, host string) {
@@ -157,6 +166,60 @@ func TestModelListTwoFamilies(t *testing.T) {
 	}
 	// CN 动态拉取走同一 fake（ChatBaseCN 同 host，console 路径分流返回动态模型表），
 	// cn-dyn-model 已在上面 cnIDs 断言覆盖——不断言 CN 请求计数，避免耦合 CN 缓存重置时序。
+}
+
+// TestAdminOutputRefreshForcesProbe 管理面 ?refresh=1 强制重探：
+//   - 首次探测失败（500）→ 负缓存，默认 /admin/output 不再打上游（cnt 不涨）；
+//   - ?refresh=1 清掉负缓存 → 重探（cnt 增）且这次成功 → 清单里出现新模型。
+// 这条对应「刷新按钮必须能刷新」：负缓存期内只能硬刷新/重启的旧行为由这个参数修掉。
+func TestAdminOutputRefreshForcesProbe(t *testing.T) {
+	auth.SetGlobalEnabled(true)
+	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+	resetModelsCache()
+
+	failFirst := newGlobalModelsHandlerFake(t, 500, `{"code":500,"msg":"boom"}`)
+	p := testPoolWith(
+		&auth.Auth{UID: "g1", AccessToken: "at_gl", Domain: "www.workbuddy.ai", ExpiresAt: 9999999999},
+	)
+	h := NewHandler(Config{Pool: p, Upstream: failFirst.up, GlobalEnabled: true, AdminEnabled: true})
+	get := func(path string) string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != 200 {
+			t.Fatalf("GET %s code=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	// 首探失败 → 负缓存生效。
+	get("/admin/output")
+	first, _, _, _ := failFirst.snapshot()
+	if first == 0 {
+		t.Fatal("首次 /admin/output 应当触发一次 global 探测")
+	}
+	// 负缓存期内默认路径不再打上游。
+	get("/admin/output")
+	again, _, _, _ := failFirst.snapshot()
+	if again != first {
+		t.Fatalf("负缓存期内默认 /admin/output 又探测了：cnt %d -> %d", first, again)
+	}
+	// 换成成功响应后 ?refresh=1：清负缓存 + 重探成功。
+	failFirst.setProbe(200, modelsProbeBody("recovered-model"))
+	body := get("/admin/output?refresh=1")
+	after, _, _, _ := failFirst.snapshot()
+	if after == again {
+		t.Fatalf("?refresh=1 没有触发重探：cnt 仍为 %d", after)
+	}
+	if !strings.Contains(body, "recovered-model") {
+		t.Fatalf("刷新后 available_models 应含 recovered-model；body 前 400 字：%s", truncateStr(body, 400))
+	}
+}
+
+// truncateStr 测试辅助：截断长 body 便于失败信息打印。
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // TestModelListNoGlobalAccountEmpty 无 global 账号：global 名单为空（纯动态，无静态兜底），探测零调用。

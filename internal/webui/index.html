@@ -605,7 +605,7 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
     <div class="toolbar">
       <button class="ic" id="btnTheme" title="切换深色 / 浅色"></button>
       <button class="ic" id="btnKey" title="设置网关密钥"></button>
-      <button class="ic" id="btnRefresh" title="刷新全部数据"></button>
+      <button class="ic" id="btnRefresh" title="刷新全部数据，并强制重新探测上游模型目录"></button>
     </div>
     <div id="keyPop" class="pop hidden">
       <h2 style="font-size:14px">网关密钥（api_key）</h2>
@@ -947,6 +947,9 @@ function render(opt){
   if (keepPageTop > 0) window.scrollTo(0, keepPageTop);
   if (S.tab === "output") applyModelFilter();
   updateSvcDot();
+  // 整页重画会换掉所有 DOM：把「实时数字」重新登记一遍，下一次 patchLive /
+  // refreshLiveNumbers 才能找到新元素继续播滚动。
+  registerLiveNumbers();
 }
 /* updateSvcDot 只刷页脚那个服务状态点。健康轮询用它就够了（见 loadHealth），
    不必为了一行文字重画整页——重画会顺带把滚动位置、输入焦点都清掉。 */
@@ -2770,6 +2773,9 @@ function statsRangeName(id){
    避免四舍五入让显示值和真实值长期差 1。 */
 var TWEEN_MS = 620;
 var tweenRAF = null;
+/* LIVE_NUMERIC 判定「纯数字读数」（含千分位/小数/末尾单位）——只有这类才值得滚动，
+   带中文的读数（3 个模型）由 liveValue 自己格式化，不走补间。 */
+var LIVE_NUMERIC = /^(≥\s*)?-?[\d,]+(\.\d+)?(\s*(tok\/s|%|ms|s|亿|万))?$/;
 /* tweenNumber 把 el 里的数字从 from 滚到 to，fmt 决定显示格式。
    返回 true 表示安排了动画，false 表示无变化或格式不支持，直接跳过。 */
 function tweenNumber(el, from, to, fmt){
@@ -2789,47 +2795,73 @@ function tweenNumber(el, from, to, fmt){
   tweenRAF = requestAnimationFrame(step);
   return true;
 }
+/* numericTextSpec 解析一段「数字读数」文本，产出补间所需的部件：
+   pre（前缀，如「≥ 」）/ dec（小数位）/ rest（后缀，如「 tok/s」「 亿」/ value（数值）。
+   解析不出数字返回 null——非数值读数（「—」「3 个模型」）直接跳变，不滚。 */
+function numericTextSpec(txt){
+  var t = String(txt == null ? "" : txt);
+  var core = t.replace(/^[^\d\-]+/, "");
+  var m = /^-?([\d,]+)(\.\d+)?/.exec(core);
+  if (!m) return null;
+  var pre = t.slice(0, t.indexOf(m[0]));
+  var rest = core.slice(m[0].length);
+  // 只认「数字 + 可选单位」的形态：日期（10-13 21:05）、「3 个模型」这类残留会被拒，
+  // 免得它们被当成数字滚出「10-13 21:05」这种荒唐结果。
+  if (!/^(≥\s*)?$/.test(pre)) return null;
+  if (rest !== "" && !/^\s*(tok\/s|%|ms|s|亿|万)$/.test(rest)) return null;
+  var dec = m[2] ? m[2].length - 1 : 0;
+  var value = parseFloat(m[0].replace(/,/g, ""));
+  if (!isFinite(value)) return null;
+  return { pre: pre, dec: dec, rest: rest, value: value,
+    fmt: dec > 0
+      ? function(v){ return pre + v.toFixed(dec) + rest; }
+      : function(v){ return pre + fmtInt(Math.round(v)) + rest; } };
+}
 /* bindLive 把「数据键 -> DOM 元素 + 格式化函数」登记起来，
    下一轮 refreshLiveNumbers 就能只动变化了的数字，不必重画整页。 */
 var liveBindings = [];
 function bindLive(key, el, fmt){
   liveBindings.push({ key: key, el: el, fmt: fmt });
 }
-/* refreshLiveNumbers 比对新旧快照，只给变了的键播滚动动画。
-   oldStats 为 null（首屏）时只登记不动画——第一次出现就闪一下没有意义。 */
+/* refreshLiveNumbers 比对新旧快照，给「数字真的变了」的实时节点播滚动动画。
+   oldStats 为 null（首屏）时不动画——第一次出现就滚没有意义。
+   整页重画后（render 换掉 DOM）调用它，用户看到的仍是「数字从旧值滚到新值」，
+   而不是「页面闪了一下、数字突然跳过去」。 */
 function refreshLiveNumbers(oldStats, newStats){
   if (!oldStats || !newStats) return;
-  var oldT = oldStats.total || {}, newT = newStats.total || {};
   liveBindings.forEach(function(b){
     if (!b.el || !b.el.isConnected) return;
-    var a = oldT[b.key], c = newT[b.key];
-    if (a === undefined || c === undefined) return;
-    a = Number(a) || 0; c = Number(c) || 0;
-    if (a === c) return;
-    tweenNumber(b.el, a, c, b.fmt);
+    var oldGot = liveValue(b.key, oldStats);
+    var newGot = liveValue(b.key, newStats);
+    if (!newGot) return;
+    var spec = numericTextSpec(newGot.text);
+    if (!spec) return;
+    var oldSpec = oldGot ? numericTextSpec(oldGot.text) : null;
+    if (!oldSpec) return;              // 旧值不可解析（老版本没这个量）→ 直接跳变，不从 0 滚
+    if (oldSpec.value === spec.value) return;
+    tweenNumber(b.el, oldSpec.value, spec.value, spec.fmt);
   });
 }
 /* registerLiveNumbers 登记「会变的数字」到 DOM 元素上。
-   只绑两个大数：「请求总数」和「合计 tokens」——它们是用户真正
-   会一直盯着的量，滚动往这里最值得。其余小量不滚：多个小数同时
-   动会把整页拉成一片红幕，反而看不清重点。
-   注意「合计 tokens」在 mstrip 里（不是 .stat 卡），所以两处都要找。 */
+   口径：所有挂了 data-live 且当前值是纯数字的节点（累计量、速率、在飞数）。
+   只登记数值节点——带标签的（「3 个模型」「1 个模型」）与时间不做补间。
+   key 沿用 data-live 自己的 key，refreshLiveNumbers 用同一套 liveValue 算值，
+   所以不存在「渲染处与动画处各写一份取值逻辑」的漂移。 */
 function registerLiveNumbers(){
   liveBindings = [];
-  [].slice.call(document.querySelectorAll("#view .stat")).forEach(function(card){
-    var label = ((card.querySelector(".k") || {}).textContent || "").trim();
-    if (!/^请求总数$/.test(label)) return;
-    var el = card.querySelector(".v");
-    if (el) bindLive("requests", el, function(v){ return fmtInt(Math.round(v)); });
-  });
-  [].slice.call(document.querySelectorAll("#view .mstrip > div")).forEach(function(cell){
-    var label = ((cell.querySelector(".mk") || {}).textContent || "").trim();
-    if (label !== "合计 tokens") return;
-    var el = cell.querySelector(".mv");
-    if (!el) return;
-    // mstrip 的值可能带「≥ 」前缀（区间有缺天时是下限），保留这个前缀。
-    var pre = /^≥/.test(el.textContent) ? "≥ " : "";
-    bindLive("total_tokens", el, function(v){ return pre + fmtInt(Math.round(v)); });
+  [].slice.call(document.querySelectorAll("#view [data-live]")).forEach(function(el){
+    var key = el.getAttribute("data-live");
+    if (!key) return;
+    var got = liveValue(key);
+    if (!got || got.tween === false || got.text == null) return;
+    var text = String(got.text);
+    // 纯数字即可滚；带标签的（「17 / 17」「3 个模型」）不滚——它们滚起来会丢掉标签语义。
+    var plainNum = !el.children.length && LIVE_NUMERIC.test(text);
+    var want = (got.tween === true) || (got.tween !== false && plainNum);
+    if (!want) return;
+    var spec = numericTextSpec(text);
+    if (!spec) return;
+    bindLive(key, el, spec.fmt);
   });
 }
 
@@ -3358,8 +3390,11 @@ async function loadStatus(){
 }
 async function loadSources(){ try { S.src = await api("/admin/sources"); } catch (e) { S.src = null; } }
 async function loadOrigins(){ try { S.origins = await api("/admin/sources/origins"); } catch (e) { S.origins = null; } }
-async function loadOutput(){
-  try { S.out = await api("/admin/output"); } catch (e) { S.out = null; }
+/* loadOutput(force)：force=true 时带 ?refresh=1——后端清掉目录探测负缓存并重打上游。
+   刷新按钮走 force（否则 5min 负缓存内点刷新毫无反应，只能硬刷新页面/重启网关）。 */
+async function loadOutput(force){
+  var path = force ? "/admin/output?refresh=1" : "/admin/output";
+  try { S.out = await api(path); } catch (e) { S.out = null; }
   try { S.codex = await api("/admin/codex"); } catch (e) { S.codex = null; }
   try { S.zcode = await api("/admin/zcode"); } catch (e) { S.zcode = null; }
   // 域作用域：新清单（国际版用 global:<裸 id> 自己的键）默认「分开控制」。旧存档没标过
@@ -3402,8 +3437,8 @@ async function loadStats(){
    这是「局部更新」的唯一真相来源：渲染时用它算初值，帧到达时也用它算新值，
    两边走同一个函数，所以永远不会出现「首屏和刷新后不一致」。
    新增一个实时数字时只要在这里加一条 case，渲染处挂上同名 key 即可。 */
-function liveValue(key){
-  var s = S.stats, t = (s && s.total) || {};
+function liveValue(key, snap){
+  var s = (arguments.length > 1) ? snap : S.stats, t = (s && s.total) || {};
   var st = S.status || {};
   var rn = ovRangeName();
   var partial = (s && s.partial_days) ? "≥ " : "";
@@ -3430,7 +3465,7 @@ function liveValue(key){
   case "lv.inflight": {
     var n = 0;
     ((st && st.accounts) || []).forEach(function(a){ n += (a.in_flight || 0); });
-    return { text: fmtInt(n), html: false };
+    return { text: fmtInt(n), html: false, tween: true };
   }
   case "lv.inflight.n":
     return { text: (function(){
@@ -3450,15 +3485,16 @@ function liveValue(key){
     return { text: k2 === 1 ? "1 个模型" : (k2 ? (k2 + " 个模型") : "没有请求在跑"), html: false };
   }
   case "lv.rate_tps":
-    return { text: ((s && s.live && s.live.tokens_per_sec) ? Number(s.live.tokens_per_sec).toFixed(1) : "—"), html: false };
+    var tps = (s && s.live && s.live.tokens_per_sec) ? Number(s.live.tokens_per_sec).toFixed(1) : "";
+    return { text: tps || "—", html: false, tween: !!tps };
   case "lv.rate_tps.n":
     return { text: ((s && s.live && s.live.tokens_per_sec) ? "tok/s · 生成阶段" : "最近 " + ((s && s.live && s.live.window_sec) || 60) + "s 无输出"), html: false };
   case "lv.rate_req":
-    return { text: fmtInt((s && s.live && s.live.requests) || 0), html: false };
+    return { text: fmtInt((s && s.live && s.live.requests) || 0), html: false, tween: true };
   case "lv.rate_req.n":
     return { text: "成功 " + fmtInt((s && s.live && s.live.success) || 0) + " · 失败 " + fmtInt((s && s.live && s.live.failed) || 0), html: false };
   case "lv.rate_tok":
-    return { text: fmtInt((s && s.live && s.live.completion_tokens) || 0), html: false };
+    return { text: fmtInt((s && s.live && s.live.completion_tokens) || 0), html: false, tween: true };
   case "lv.rate_tok.n":
     return { text: ((s && s.live && s.live.samples) ? ((s.live.samples) + " 次观测") : "窗口内无观测"), html: false };
 
@@ -3534,9 +3570,27 @@ function patchLive(prevStats){
     if (!got) continue;
     var txt = String(got.text == null ? "" : got.text);
     if (el.textContent !== txt){
-      if (el.getAttribute("data-live-html")) el.innerHTML = txt;
-      else el.textContent = txt;
-      changed = true;
+      // 纯数字读数（无标签、非时间/模型名）带旧值走补间：数字从旧值滚到新值。
+      // 大 KPI（请求总数 / 今天 Tokens）身上挂着 data-live-html，但当前值本身就是纯数字
+      //（带标签的值如「17 / 17」不会通过 LIVE_NUMERIC 两道校验），所以这类照样滚。
+      var plainNum = !el.children.length && LIVE_NUMERIC.test(txt) && LIVE_NUMERIC.test(String(el.textContent));
+      var wantTween = (got.tween === true) || (got.tween !== false && plainNum);
+      if (wantTween){
+        // 数值补间：从当前显示值滚到新值（前缀/单位/小数位原样保留）。
+        var spec = numericTextSpec(txt);
+        if (spec){
+          var oldNum = parseFloat(String(el.textContent).replace(/,/g, "").replace(/^[^\d\-]*/, ""));
+          if (!isFinite(oldNum)) oldNum = 0;
+          if (!tweenNumber(el, oldNum, spec.value, spec.fmt)) el.textContent = txt;
+        } else {
+          el.textContent = txt;
+        }
+        changed = true;
+      } else {
+        if (el.getAttribute("data-live-html")) el.innerHTML = txt;
+        else el.textContent = txt;
+        changed = true;
+      }
       /* 增量角标：只有「带 delta 语义」的累计量才闪，且要真的有增量。
          均值类（成功率 / 延迟 / 命中率）不加角标——它们本来就该迟钝，
          让它们闪反而在暗示「这里在实时」，那是假的。 */
@@ -3615,6 +3669,7 @@ function applyStatsSnapshot(next, prev){
     refreshLiveTag();
     return true;
   }
+  // 慢路径 = 整页重画：下面的 render() 会换掉 DOM，之后必须重播数字动画。
   render();
   // 重画会换掉 DOM，所以先登记新元素，再拿旧快照的数字播滚动。
   registerLiveNumbers();
@@ -3852,13 +3907,19 @@ function cancelScan(){
   S.scan = null;
   render();
 }
-async function refreshAll(silent){
+async function refreshAll(silent, force){
   var first = !S.status;
   var err = null;
+  // 手动刷新会整页重画：把刷新前的统计快照留一份，画完给 KPI 数字播滚动（从旧值滚到新值）。
+  var liveSnapshotBefore = force ? S.stats : null;
+  // force：手动点刷新时**先**强制重探上游目录（清掉 1h 成功缓存与 5min 失败负缓存），
+  // 再拉 /v1/models。两步必须串行：并发的话 models 很可能先读到还没清掉的旧缓存，
+  // 页面看着就是「按了刷新，清单纹丝不动」——那正是这个按钮以前没用、只能硬刷新的原因。
+  if (force) await loadOutput(true);
   var jobs = [
-    loadStatus(), loadSources(), loadOrigins(), loadOutput(), loadModels(), loadHealth(),
-    loadCredits(!first), loadDesktop()
-  ];
+    loadStatus(), loadSources(), loadOrigins(), force ? null : loadOutput(false),
+    loadModels(), loadHealth(), loadCredits(!first), loadDesktop()
+  ].filter(function(p){ return !!p; });
   // 概览要用到区间统计与定时任务：不再等用户点进「请求统计 / 运行态」才拉，
   // 否则首屏概览的这几块永远是空的。
   jobs.push(loadStats());
@@ -3872,7 +3933,14 @@ async function refreshAll(silent){
   }
   await Promise.all(jobs);
   if (!S.src && first) err = "管理端点没起来：确认 config.json 里 admin.enabled=true，且网关已重启。";
+  // 强制刷新后目录可能多出/少掉模型：草稿没被用户改过就重铺一次，让新模型立即可选
+  //（用户动过草稿则保持原样，不能把手上勾的冲掉）。
+  if (force && !S.modelDirty) { S.modelSel = null; initModelSel(); }
+  var beforeRender = force ? S.stats : null;   // render 内部会重新登记实时数字绑定
   render();
+  // 滚动动画必须排在 render 之后（那时 DOM 是新节点）、toast 之前（先看到数字滚，
+  // 再看到提示，观感上「刷新完成」和「数字到位」是同一拍）。
+  if (beforeRender) refreshLiveNumbers(liveSnapshotBefore, beforeRender);
   if (err) toast("err", err, 9000);
   else if (!silent){
     var st = S.status || {};
@@ -4878,7 +4946,7 @@ document.addEventListener("click", function(ev){
   $("#btnRefresh").addEventListener("click", async function(){
     var b = $("#btnRefresh");
     b.classList.add("spin");
-    await refreshAll(false);
+    await refreshAll(false, true);
     b.classList.remove("spin");
   });
 }
