@@ -60,6 +60,10 @@ type desktop struct {
 	inst     *gateway.Instance
 	starting bool
 	lastErr  string
+	// lease 是「谁控制这个端口」的互斥体句柄（见 acquirePortLease）。网关在跑时
+	// 一直握着；停止、启动失败、进程退出都会释放。端口上的排他性靠它，
+	// 不靠「谁先 bind 上」。
+	lease windows.Handle
 
 	gwAddr string // config.json 的 listen，例如 127.0.0.1:7864
 	proxy  *httputil.ReverseProxy
@@ -98,6 +102,7 @@ func main() {
 	}
 
 	setupLogging(exeDir)
+	logNetSelfCheck()
 
 	// 第一次运行还没有 config.json：生成一份最小可用的，而不是让窗口里只显示一条
 	// 「load config: ... no such file」。生成的内容全部可以在「输出 API」页里改。
@@ -109,11 +114,11 @@ func main() {
 	d.gwAddr = resolveListen(cfgPath)
 	d.proxy = newProxy(d.gwAddr)
 
-	// 端口上已经有 free2api（计划任务 / 命令行 / 另一个 exe）时不要抢：抢不到只会
-	// 在页面上留下一条「bind: Only one usage」的噪音错误，用户还以为是自己搞坏了。
-	if d.externalAlive(d.gwAddr) {
-		log.Printf("端口 %s 上已有网关在跑，本窗口只当控制台", d.gwAddr)
-	} else if err := d.startGateway(); err != nil {
+	// 桌面程序就是网关的唯一宿主：开窗即接管。startGateway 会先撤掉看门狗暂停、
+	// 把别的 free2api 进程清掉，再在自己进程里绑端口——不再有「端口上已有网关，
+	// 本窗口只当控制台」那种两个进程对着同一端口、各自显示一套状态的情形。
+	// 明明端口被占却没起来，也照旧把窗口打开：错误显示在概览页，用户能手动重试。
+	if err := d.startGateway(); err != nil {
 		log.Printf("首次启动网关失败（窗口照常打开，可在概览页重试）: %v", err)
 	}
 
@@ -143,13 +148,15 @@ func main() {
 	}
 	log.Printf("桌面控制台控制服务: http://%s/  （网关 %s）", ctrlAddr, d.gwAddr)
 
-	uiURL := "http://" + ctrlAddr + "/management.html"
+	uiURL := desktopUIURL(ctrlAddr)
 
 	if *headless {
 		log.Printf("headless 模式：浏览器打开 %s 即可操作；Ctrl+C 退出", uiURL)
 		waitSignal()
 		d.stopFloat()
-		_ = d.stopGateway()
+		// 工具模式：只收自己那份，不按全局开关、不动看门狗——headless 常用于
+		// 临时自检，替用户写 pause 会让真正的看门狗从此不再工作。
+		d.stopHostedGateway()
 		return
 	}
 
@@ -159,6 +166,11 @@ func main() {
 	// CreateWindowExW 与 WM_GETMINMAXINFO 全程按物理像素对话，直接塞 DIP 会在
 	// 高 DPI 屏上把窗口建成「物理 1280 = CSS 1024」的窄窗。
 	pxW, pxH := dipToPx(winW, dpi), dipToPx(winH, dpi)
+	// WebView2 是独立浏览器进程，不继承 Go 的 loopbackTransport。机器开着
+	// 系统代理/VPN 时，它可能把 127.0.0.1 也交给代理，表现为控制服务明明在
+	// 监听，窗口却一直停在 ERR_CONNECTION_TIMED_OUT。控制台只访问本机控制
+	// 服务，不需要任何外部网络，所以强制 WebView2 直连，避免代理层插手。
+	forceWebViewDirect()
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		AutoFocus: true,
 		DataPath:  filepath.Join(exeDir, "data", "webview2"),
@@ -197,13 +209,12 @@ func main() {
 	w.Run() // 阻塞到窗口关闭
 
 	d.stopFloat()
-	// 关窗口只停「本窗口托管」的网关。端口上如果是别的进程（计划任务常驻），
-	// 用户关掉控制台不该顺手把服务停了——那种「关窗口杀服务 → 看门狗一分钟
-	// 后又拉起来」的拉锯，正是端口生命周期看起来没闭环的来源。真停外部进程
-	// 请点页面里的「停止网关」。
+	// 关窗口 = 完全退出：网关、别的残留进程、看门狗一起收掉（stopGateway 的全局语义），
+	// 然后进程自己退出。留一个「窗口没了但网关还在跑、还被看门狗按分钟拉回来」的
+	// 尾巴，正是以前端口上总有多份实例、状态各说各的根因。
 	done := make(chan struct{})
 	go func() {
-		d.stopHostedGateway()
+		_ = d.stopGateway()
 		close(done)
 	}()
 	select {
@@ -265,9 +276,25 @@ func ensureFloatLoop(d *desktop) {
 
 func (d *desktop) startGateway() error {
 	d.mu.Lock()
+	// 托管实例可能已经自己退了：另一个窗口/外部工具点了「停止网关」（走
+	// /admin/shutdown）、监听期致命错误、或调度侧的停机。这时 d.inst 仍非 nil，
+	// 老代码直接 return nil —— 开关从此「点一次成功一次、就是不启动」，页面永远
+	// 停在上次的状态。所以先确认实例还活着，死了就清掉再走正常启动路径。
+	var dead *gateway.Instance
+	var staleLease windows.Handle
 	if d.inst != nil {
-		d.mu.Unlock()
-		return nil
+		select {
+		case <-d.inst.Done():
+			dead = d.inst
+			d.inst = nil
+			// 实例死了，租约也必须一起放掉：否则下一次 startGateway 会撞上
+			// 「控制权还在另一个程序手里」——而那个「另一个」就是它自己。
+			staleLease = d.lease
+			d.lease = 0
+		default:
+			d.mu.Unlock()
+			return nil
+		}
 	}
 	if d.starting {
 		d.mu.Unlock()
@@ -276,6 +303,12 @@ func (d *desktop) startGateway() error {
 	d.starting = true
 	cfgPath := d.cfgPath
 	d.mu.Unlock()
+
+	// 已经退出的实例只剩 cleanups 没跑（Flush / 关 DB）。Stop 幂等，锁外补一刀。
+	if dead != nil {
+		dead.Stop()
+	}
+	releasePortLease(staleLease)
 
 	defer func() {
 		d.mu.Lock()
@@ -286,6 +319,58 @@ func (d *desktop) startGateway() error {
 	// 端口号自己读一遍（宽松解析），真正的配置校验交给 gateway.Start：
 	// 这样「配置写坏了」报的是网关原话，桌面程序不重复实现一套校验规则。
 	listen := resolveListen(cfgPath)
+
+	// 单实例接管：先撤掉上一次「停止」留下的看门狗暂停，再抢端口控制权。
+	// 顺序很重要——先有租约再清场再绑定，两次同时启动也不会互相踩（没有租约
+	// 时，两个进程会各自杀掉对方然后抢同一个端口，最后留下一个半死的控制台）。
+	if err := setKeepalivePaused(d.exeDir, false); err != nil {
+		log.Printf("WARN: 撤掉 keepalive.pause 失败: %v", err)
+	}
+
+	lease, held, lerr := acquirePortLease(listen)
+	if lerr != nil {
+		d.setErr(lerr)
+		return lerr
+	}
+	if held {
+		// 控制权在别人手里：先把这个端口上的免费网关请走，再重抢。
+		d.reclaimOn(listen)
+		for i := 0; i < 15; i++ {
+			time.Sleep(200 * time.Millisecond)
+			lease, held, lerr = acquirePortLease(listen)
+			if lerr != nil {
+				d.setErr(lerr)
+				return lerr
+			}
+			if !held {
+				break
+			}
+		}
+		if held {
+			err := fmt.Errorf("端口 %s 的控制权仍在另一个程序手里（不是本目录的 free2api，已拒绝接管）", listen)
+			d.setErr(err)
+			return err
+		}
+	}
+	holdPortLease(lease)
+	kept := false
+	defer func() {
+		if !kept {
+			releasePortLease(lease)
+		}
+	}()
+
+	// 清场：同目录里别的 free2api（旧版没退干净、另一个窗口自带的实例）一并收掉。
+	d.reclaimOn(listen)
+
+	// 端口上如果坐着别家的程序，别硬绑：报清楚是谁。否则用户只看到
+	// 「bind: Only one usage」，完全不知道该关哪个。
+	if pid, _ := pidListeningOn(listen); pid != 0 && !probeFree2API(listen) {
+		err := fmt.Errorf("端口 %s 已被 %s 占用，它不是 free2api，本程序不接管；请先关掉它，或改配置里的 listen",
+			listen, portOwnerHint(listen))
+		d.setErr(err)
+		return err
+	}
 
 	inst, err := gateway.Start(gateway.Options{ConfigPath: cfgPath})
 	if err != nil {
@@ -307,30 +392,47 @@ func (d *desktop) startGateway() error {
 
 	d.mu.Lock()
 	d.inst = inst
+	d.lease = lease
 	d.gwAddr = listen
 	d.proxy = newProxy(listen)
 	d.lastErr = ""
 	d.probeOK = false
 	d.probeAt = time.Time{}
 	d.mu.Unlock()
-	log.Printf("网关已启动，监听 %s", listen)
+	kept = true // 租约交棒给 d.lease，由 stopGateway 释放
+	log.Printf("网关已启动，监听 %s（已持有端口控制权）", listen)
+	// 清场时被杀掉的旧窗口如果正好走到退出流程，它可能把 pause 又写回来；
+	// 这里补一刀，保证「网关照常跑」和「看门狗别插手」两个信号一致。
+	if err := setKeepalivePaused(d.exeDir, false); err != nil {
+		log.Printf("WARN: 删除 keepalive.pause 失败: %v", err)
+	}
 	d.syncFloatGateway()
 	return nil
 }
 
 // stopHostedGateway 只停本窗口托管的实例，绝不去动端口上别人的进程。
-// 窗口关闭路径用它；页面里的「停止网关」按钮走 stopGateway（含外部进程）。
+// 只给 headless（自检 / 无人值守）的退出路径用 —— 那是工具模式，不该替用户
+// 按全局开关。窗口关闭与页面里的「停止网关」都走 stopGateway。
 func (d *desktop) stopHostedGateway() {
 	d.mu.Lock()
 	inst := d.inst
+	lease := d.lease
 	d.inst = nil
+	d.lease = 0
 	d.mu.Unlock()
 	if inst != nil {
 		inst.Stop()
 		log.Printf("网关已停止（本窗口托管）")
 	}
+	releasePortLease(lease)
 }
 
+// stopGateway 全局关闭：托管实例、端口上的外部进程、以及任何残留的 free2api
+// 进程一起收掉，最后写下 keepalive.pause 让看门狗收手。
+//
+// 「全局」是刻意的：以前只关自己那份，剩下的进程仍然在应答端口，页面上的状态、
+// 账号数、报错就各说各的；用户点一次「停止」，过一分钟又被看门狗拉起来。
+// 现在关就是真关——不再有第二个 free2api 活在后台，也不会有谁悄悄把它开回来。
 func (d *desktop) stopGateway() error {
 	d.mu.Lock()
 	inst := d.inst
@@ -338,28 +440,57 @@ func (d *desktop) stopGateway() error {
 	d.inst = nil
 	d.mu.Unlock()
 
+	// 停完必须让「外部进程」探测缓存失效。托管分支原来直接 return，缓存里还留着
+	// 上一轮为 true 的结果（悬浮窗循环 5s 一次、state 3s 缓存），于是 stop 接口的
+	// 响应体自己就带着 external:true —— 页面据此把「已停止」画成「运行中（外部进程）」，
+	// 按钮还是「停止网关」，用户再点一次只得到「网关本来就没在跑」。
+	defer func() {
+		d.mu.Lock()
+		d.probeAt = time.Time{}
+		d.probeOK = false
+		d.mu.Unlock()
+	}()
+
 	if inst != nil {
 		inst.Stop()
 		log.Printf("网关已停止（本窗口托管）")
-		return nil
 	}
-	// 没有托管实例：端口上那个网关是别的进程拉起来的。用户点的还是「停止网关」，
-	// 所以去把它停掉，而不是无声无息地什么都不做。
-	if !probeFree2API(addr) {
-		log.Printf("网关本来就没在跑")
-		return nil
+	// 没有托管实例也别急着走：端口上那个网关可能是别的进程（计划任务 / 另一个
+	// 窗口 / 旧版残留），既然用户点的是「停止网关」，就得把它一起关掉。
+	if probeFree2API(addr) {
+		if err := stopExternalGateway(addr); err != nil {
+			d.setErr(err)
+			log.Printf("停止外部网关失败: %v", err)
+			return err
+		}
+		log.Printf("网关已停止（外部进程）")
 	}
-	if err := stopExternalGateway(addr); err != nil {
-		d.setErr(err)
-		log.Printf("停止外部网关失败: %v", err)
-		return err
+
+	// 清场：没绑端口的残壳（旧版、另一个窗口自带的实例）也一并收掉。
+	killed, failed := killGatewayProcesses(os.Getpid(), d.exeDir)
+	if len(killed) > 0 {
+		log.Printf("已清掉其它网关进程：%v", killed)
 	}
+	if len(failed) > 0 {
+		log.Printf("WARN: 仍有网关进程没退出：%v", failed)
+	}
+
+	// 最后才按暂停键：顺序反过来的话，看门狗可能在「已经杀掉、还没写 pause」
+	// 的这一秒里把网关重新拉起来。
+	if err := setKeepalivePaused(d.exeDir, true); err != nil {
+		log.Printf("WARN: 写 keepalive.pause 失败: %v", err)
+	}
+
+	// 交还端口控制权。放在最后：清理期间仍然握着租约，别家程序没法趁这个窗口
+	// 挤进来抢 7864。
 	d.mu.Lock()
-	d.probeAt = time.Time{}
-	d.probeOK = false
-	d.lastErr = ""
+	lease := d.lease
+	d.lease = 0
 	d.mu.Unlock()
-	log.Printf("网关已停止（外部进程）")
+	releasePortLease(lease)
+
+	d.setErr(nil)
+	log.Printf("网关已全局关闭（看门狗已暂停，端口控制权已释放）")
 	return nil
 }
 
@@ -501,7 +632,7 @@ func (d *desktop) externalAlive(addr string) bool {
 }
 
 func probeFree2API(addr string) bool {
-	client := &http.Client{Timeout: 900 * time.Millisecond}
+	client := &http.Client{Timeout: 900 * time.Millisecond, Transport: loopbackTransport}
 	resp, err := client.Get(baseURL(addr) + "/healthz")
 	if err != nil {
 		return false
@@ -585,6 +716,34 @@ func serve(d *desktop, port int) (string, error) {
 	return ln.Addr().String(), nil
 }
 
+// desktopUIURL 是 WebView2 加载内嵌管理页的地址。它只指向本机控制服务，
+// 页面资源由 free2api 自己提供，不依赖互联网。
+func desktopUIURL(ctrlAddr string) string {
+	return "http://" + ctrlAddr + "/management.html"
+}
+
+// webViewDirectArgs 给 WebView2 强制直连。WebView2 和 Go 进程不是同一套
+// 网络栈：Go 侧可以给 loopbackTransport 设 Proxy=nil，但 WebView2 仍会读取
+// Windows 系统代理 / VPN 的 PAC。用户开了代理时，控制台的 127.0.0.1 请求
+// 被代理截走，就会出现「服务明明在监听，窗口却 ERR_CONNECTION_TIMED_OUT」。
+// 这里仅对桌面 UI 的浏览器进程生效，不影响网关访问上游。
+func webViewDirectArgs(existing string) string {
+	const direct = "--proxy-server=direct:// --proxy-bypass-list=*"
+	existing = strings.TrimSpace(existing)
+	if strings.Contains(existing, "--proxy-server=direct://") {
+		return existing
+	}
+	if existing == "" {
+		return direct
+	}
+	return existing + " " + direct
+}
+
+func forceWebViewDirect() {
+	const key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+	_ = os.Setenv(key, webViewDirectArgs(os.Getenv(key)))
+}
+
 // page 发内嵌的管理页，并在 <head> 里塞一个「真实网关地址」。
 // 页面的 Base URL 显示必须指向网关端口，而不是这个随机的控制端口。
 func (d *desktop) page(w http.ResponseWriter, r *http.Request) {
@@ -660,6 +819,15 @@ func jsString(s string) string {
 }
 
 // baseURL 把 listen 形态（":7863" / "127.0.0.1:7863"）翻成可点的 URL。
+// loopbackTransport 只用于「必须打到 127.0.0.1」的请求（健康探测、优雅停机、悬浮窗 SSE）。
+//
+// 显式 Proxy: nil 而不是用零值 Client：零值 Client 走 http.DefaultTransport，而它
+// 会读 HTTP(S)_PROXY / 系统代理。Go 对 loopback 目标有豁免，但那是「环境代理」这
+// 一路才有的规则；一旦机器上开着 VPN 客户端（系统代理指向某个本地端口、或 TUN
+// 把 DNS/路由改了一半），这层豁免就成了要赌的东西。探测/停机/SSE 不能赌——
+// 它们失败的表现就是「网关明明在跑，界面说已停止」「浮窗一直未连接」。
+var loopbackTransport = &http.Transport{Proxy: nil}
+
 func baseURL(addr string) string { return "http://" + hostPort(addr) }
 
 func hostPort(addr string) string {
@@ -811,7 +979,7 @@ func primaryWorkArea() (rECT, bool) {
 }
 
 // defaultWindowSize 按主屏工作区算启动尺寸：
-// 宽取工作区的 3/4、高取 6/7，再夹在 [1280x860, 1760x1120] 内，
+// 宽取工作区的 3/4、高取 6/7，再夹在 [1280x860, 1480x1080] 内，
 // 最后不允许超过工作区本身。返回的是 **DIP（CSS 像素）**，不是物理像素。
 //
 // 为什么不是写死：以前固定 1280x860，在 2560x1080 的主屏上只占一半宽，
@@ -825,7 +993,7 @@ func primaryWorkArea() (rECT, bool) {
 func defaultWindowSize() (int, int) {
 	const (
 		minW, minH = 1280, 860
-		maxW, maxH = 1760, 1120
+		maxW, maxH = 1480, 1080
 	)
 	dpi := systemDPI()
 	wa, ok := primaryWorkArea()

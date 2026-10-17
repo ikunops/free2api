@@ -21,12 +21,54 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // realIPDialHosts 需要 DoH 真实 IP 直拨的上游主机（精确匹配或点后缀匹配）。
 // 目前仅国际版 workbuddy.ai 家族——实测被节点侧域名解析破坏的唯一上游。
 var realIPDialHosts = []string{"workbuddy.ai"}
+
+// 直拨策略（upstream.real_ip_dial，process 级，启动前注入一次）：
+//   - auto（默认）：只对 realIPDialHosts 生效，其余上游保持系统解析（现状零回归）；
+//   - always：全部上游一律 DoH 解析 + 真实 IP 直拨。TUN/fake-ip 环境下系统 DNS 只
+//     返回 198.18.x.x，出站完全依赖 mihomo 的假地址重映射；该重映射一旦失配
+//     （换节点、规则改动、fake-ip 池重建）表现为 TLS 握手 EOF，且错误里没有任何
+//     域名线索。always 让出站不再依赖重映射——代价是 CN 域会绕开就近 CDN 解析，
+//     由 GEOIP 规则决定直连还是走节点。
+//   - off：完全不直拨，全部交回系统解析（DoH 本身被 VPN 拦、或需要在代理侧按
+//     域名分流时使用）。
+const (
+	realIPDialAuto   = "auto"
+	realIPDialAlways = "always"
+	realIPDialOff    = "off"
+)
+
+var realIPDialPolicy atomic.Value // string，恒为 realIPDialAuto/Always/Off 之一
+
+func init() { realIPDialPolicy.Store(realIPDialAuto) }
+
+// SetRealIPDialPolicy 注入直拨策略（无法识别的值按 auto 处理，不报错——配置层
+// 已 normalize，这里是防御分支）。只在启动构造 Transport 前调用。
+func SetRealIPDialPolicy(p string) {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case realIPDialAlways:
+		realIPDialPolicy.Store(realIPDialAlways)
+	case realIPDialOff:
+		realIPDialPolicy.Store(realIPDialOff)
+	default:
+		realIPDialPolicy.Store(realIPDialAuto)
+	}
+}
+
+// RealIPDialPolicy 当前生效策略（测试与日志用）。
+func RealIPDialPolicy() string {
+	v, _ := realIPDialPolicy.Load().(string)
+	if v == "" {
+		return realIPDialAuto
+	}
+	return v
+}
 
 // needsRealIPDial 判定主机是否需要走「DoH 解析 + IP 直拨」。
 func needsRealIPDial(host string) bool {
@@ -56,6 +98,10 @@ type dohResolveFunc func(ctx context.Context, host string) []string
 type realIPDialer struct {
 	base       contextDialer
 	dohResolve dohResolveFunc
+	// disabled（policy=off）整体关停直拨，等价于裸系统拨号器。
+	disabled bool
+	// allHosts（policy=always）对所有主机生效，而非只对 realIPDialHosts。
+	allHosts bool
 }
 
 // newRealIPDialer 构造生产拨号器（DoH 走真实网络解析）。
@@ -63,10 +109,28 @@ func newRealIPDialer(base contextDialer) *realIPDialer {
 	return &realIPDialer{base: base, dohResolve: resolveRealIPViaDoH}
 }
 
+// newPolicyDialer 按当前 realIPDialPolicy 构造生产拨号器。
+func newPolicyDialer(base contextDialer) *realIPDialer {
+	d := newRealIPDialer(base)
+	switch RealIPDialPolicy() {
+	case realIPDialOff:
+		d.disabled = true
+	case realIPDialAlways:
+		d.allHosts = true
+	}
+	return d
+}
+
 // DialContext 实现 http.Transport.DialContext 签名。
 func (d *realIPDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if d.disabled {
+		return d.base.DialContext(ctx, network, addr)
+	}
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil || host == "" || net.ParseIP(host) != nil || !needsRealIPDial(host) {
+	if err != nil || host == "" || net.ParseIP(host) != nil {
+		return d.base.DialContext(ctx, network, addr)
+	}
+	if !d.allHosts && !needsRealIPDial(host) {
 		return d.base.DialContext(ctx, network, addr)
 	}
 	var lastErr error

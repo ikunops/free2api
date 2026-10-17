@@ -253,7 +253,8 @@ func TestZCodeFetchModelsParsesOpenAIShape(t *testing.T) {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		_, _ = io.WriteString(w, `{"object":"list","data":[`+
-			`{"id":"glm-4.6","context_window":200000,"max_output_tokens":96000},`+
+			`{"id":"glm-4.6","context_window":200000,"max_output_tokens":96000,`+
+			`"supports_images":true,"supports_tool_call":true,"supports_reasoning":true},`+
 			`{"id":"glm-5.3"}]}`)
 	}))
 	defer srv.Close()
@@ -269,8 +270,9 @@ func TestZCodeFetchModelsParsesOpenAIShape(t *testing.T) {
 	if len(infos) != 2 || infos[0].ID != "glm-4.6" || infos[1].ID != "glm-5.3" {
 		t.Fatalf("infos = %+v", infos)
 	}
-	if infos[0].ContextWindow != 200000 || infos[0].MaxTokens != 96000 {
-		t.Errorf("智谱扩展字段未取到: %+v", infos[0])
+	if infos[0].ContextWindow != 200000 || infos[0].MaxTokens != 96000 ||
+		!infos[0].SupportsImages || !infos[0].SupportsToolCall || !infos[0].SupportsReasoning {
+		t.Errorf("智谱扩展字段/能力未取到: %+v", infos[0])
 	}
 	if infos[0].Name != "glm-4.6" {
 		t.Errorf("name 缺省应回落 id: %q", infos[0].Name)

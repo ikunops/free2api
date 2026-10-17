@@ -177,6 +177,12 @@ func Start(opts Options) (*Instance, error) {
 		return 0
 	}
 
+	// 出站 DNS 策略必须在构造 Transport 之前注入（newTransport 读这个 process 级
+	// 策略决定是否给拨号器套 DoH 真实 IP 直拨，见 upstream/dial_realip.go）。
+	upstream.SetRealIPDialPolicy(cfg.Upstream.RealIPDial)
+	log.Printf("出站 DNS 策略: real_ip_dial=%s（%s）", upstream.RealIPDialPolicy(),
+		realIPDialDescription(upstream.RealIPDialPolicy()))
+
 	up := upstream.New()
 	// 短 RPC 总时长上限（refresh/checkin/balance/FetchModels），语义不变。
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -476,4 +482,16 @@ func Run(ctx context.Context, configPath string) error {
 	err = inst.Wait()
 	inst.Stop()
 	return err
+}
+
+// realIPDialDescription 把 real_ip_dial 策略翻成一句人话（启动日志用）。
+func realIPDialDescription(policy string) string {
+	switch policy {
+	case "always":
+		return "全部上游走 DoH 真实 IP 直拨，不依赖 TUN 假地址重映射"
+	case "off":
+		return "关闭直拨，全部上游走系统解析（fake-ip 由代理侧接管）"
+	default:
+		return "仅 workbuddy.ai 家族直拨，其余上游走系统解析"
+	}
 }

@@ -371,14 +371,8 @@ func (c *Client) FetchZCodeModels(ctx context.Context, a *auth.Auth) ([]ModelInf
 			continue
 		}
 		mi := ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id)}
-		if m.ContextWindow > 0 {
-			mi.ContextWindow = m.ContextWindow
-		} else if m.MaxInputTokens > 0 {
-			mi.ContextWindow = m.MaxInputTokens
-		}
-		if m.MaxOutputTokens > 0 {
-			mi.MaxTokens = m.MaxOutputTokens
-		}
+		m.modelCapFields.apply(&mi)
+		mi.DevBase = c.zcodeBase(a)
 		out = append(out, mi)
 	}
 	if len(out) == 0 {
@@ -389,12 +383,10 @@ func (c *Client) FetchZCodeModels(ctx context.Context, a *auth.Auth) ([]ModelInf
 
 // zcodeModelEntry 智谱 /models 单条（兼容 OpenAI 标准字段与智谱扩展字段）。
 type zcodeModelEntry struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	ContextWindow   int64  `json:"context_window"`
-	MaxInputTokens  int64  `json:"max_input_tokens"`
-	MaxOutputTokens int64  `json:"max_output_tokens"`
-	OwnedBy         string `json:"owned_by"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	OwnedBy string `json:"owned_by"`
+	modelCapFields
 }
 
 func firstNonEmptyStr(vals ...string) string {

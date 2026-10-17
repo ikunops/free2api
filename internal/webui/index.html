@@ -131,7 +131,7 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 /* 加工设置 / 接入信息：两张独立的 section 左右并排，标题在框外、面板底边对齐。
    之前标题被包进卡片 padding 里，和"概览"等页的层级语言不一致；这里把
    标题提到面板上方（框外），面板本体只装内容，两栏 grid stretch 等高。 */
@@ -170,10 +170,21 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
   .app{grid-template-columns:1fr}.side{position:static;height:auto}.main{padding:20px}}
 
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
-  padding:12px 14px;box-shadow:var(--sh)}
+  padding:12px 14px;box-shadow:var(--sh);
+  /* grid 项必须 min-width:0：否则 1fr 列会被 nowrap 的内容撑大，
+     Tokens 卡永远「放得下」，宽度检测失效、缩写永不触发。 */
+  min-width:0}
 .stat .k{font-size:12px;color:var(--fg3);display:flex;align-items:center;gap:6px}
 .stat .v{font-size:25px;font-weight:750;line-height:1.25;margin:3px 0 1px;
-  font-variant-numeric:tabular-nums;letter-spacing:-.5px;transition:color .18s}
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px;transition:color .18s;
+  overflow:hidden;white-space:nowrap}
+/* Tokens 卡的双形态：默认显示完整数字（精确好读），只有撑破卡宽才切带单位缩写。
+   两份都渲染在 DOM 里，由 fitTokens 按实际宽度选一份——比按字符数猜宽度靠谱。
+   .v 上 overflow:hidden + nowrap 兜底：JS 没跑之前也不会换行把卡片撑高。 */
+.stat .v .tk-full{display:inline-block}
+.stat .v .tk-compact{display:none}
+.stat .v.compact .tk-full{display:none}
+.stat .v.compact .tk-compact{display:inline-block}
 .stat .n{font-size:11.5px;color:var(--fg4)}
 /* 数字滚动期间的过渡高亮：只染字不动布局，颜色走 --acc-fg，浅深色通用。 */
 .stat .v.bump{color:var(--acc-fg)}
@@ -187,6 +198,8 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
   vertical-align:super;margin-left:5px;opacity:0;pointer-events:none;
   font-variant-numeric:tabular-nums;white-space:nowrap}
 .ldelta.show{animation:ldeltaPop 2.4s ease-out forwards}
+/* 角标动画时长：与 .ldelta.show 的 2.4s 同步。回放时长要对齐它，
+   否则缩写数字会在角标还没淡出时就缩回，看着像「刚跳出来就被收走」。 */
 @keyframes ldeltaPop{
   0%{opacity:0;transform:translateY(4px)}
   12%{opacity:1;transform:translateY(0)}
@@ -251,7 +264,7 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .bar-fill{height:100%;background:var(--acc);border-radius:3px}
 
 /* 概览：KPI 行 5 列（宽屏一排放得下），窄屏自动降列。 */
-.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px}
+.grid5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:12px}
 @media(max-width:1400px){.grid5{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:1000px){.grid5{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.grid5{grid-template-columns:1fr}}
@@ -263,6 +276,9 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 /* 回填日（输入 token 缺失）：用邪纹区分于完整日，不靠颜色变化 */
 .trend .tb.part{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.35) 0 3px,transparent 3px 6px)}
 .trend-x{display:flex;gap:4px;margin-top:7px;font-size:10.5px;color:var(--fg4)}
+/* 并排的概览卡等高：短的那张（趋势）柱区自动撑开，底部不再留大空白。 */
+.grid2>.card{display:flex;flex-direction:column}
+.grid2>.card>.trend{flex:1 1 auto}
 .trend-x .tx{flex:1 1 0;min-width:5px;max-width:46px;text-align:center;white-space:nowrap;overflow:hidden}
 /* 占比条：表格里的横向比例。 */
 .sharetrack{display:inline-block;width:100%;height:6px;border-radius:3px;background:var(--hover);
@@ -401,6 +417,16 @@ label.f{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:5px}
   border:1px solid var(--line2)}
 .tablewrap{overflow-x:auto;margin:0 -2px}
 .tablewrap table{min-width:100%}
+/* 兜底：卡内表格里任意一格都不得因为一段超长、不可断的字符串（供应商名 join、
+   完整路径、Base URL）把整张表顶宽，进而把主容器撑出横向滚动。overflow-wrap:anywhere
+   会参与 min-content 计算，让 auto 表格能收缩到容器内；tfit 的 nowrap 与固定布局表
+   各自的 text-overflow 不受影响。 */
+.tablewrap table th,.tablewrap table td{overflow-wrap:anywhere}
+/* 「识别到的供应商」「改动预览」两张表列宽差异大，用固定布局按列预算，别让某一条
+   长 URL / 长模型名把整卡拖宽。 */
+.tablewrap table.ztable{table-layout:fixed}
+.tablewrap table.ztable th,.tablewrap table.ztable td{overflow:hidden;text-overflow:ellipsis}
+.tablewrap table.ztable td.zw{white-space:normal;word-break:break-all}
 /* ptable：账号池这种列多的表用固定布局，列宽预算写死，
    不让「原因」这种长文本列在宽屏上吞掉一半宽度（正文本身有 2 行 clamp + tooltip）。 */
 table.ptable{table-layout:fixed;min-width:1100px}
@@ -662,7 +688,12 @@ const ICON = {
   image: "M4 4h16v16H4zM4 15l4.5-4.5 4 4L16 11l4 4M9 8.5a1.2 1.2 0 11-2.4 0 1.2 1.2 0 012.4 0z",
   tools: "M14.5 4.5a4 4 0 005 5l-8.4 8.4a2.1 2.1 0 01-3-3zM4 20l3.2-3.2M16.5 4.5l3 3",
   brain: "M9.5 4A3.5 3.5 0 006 7.5 3 3 0 004.5 13 3 3 0 007 18.5a3 3 0 005-1.5V5.5A2.5 2.5 0 009.5 4zM14.5 4A3.5 3.5 0 0118 7.5 3 3 0 0119.5 13 3 3 0 0117 18.5a3 3 0 01-5-1.5",
-  sliders: "M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M7 14v6"
+  sliders: "M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M7 14v6",
+  /* 账号池「操作」列：power=启用，ban=停用。动作按钮带图标后，和「状态」列的
+     纯文本标签在形状上彻底分开，用户不会再把它误读成账号当前状态。 */
+  mouse: "M4 8a8 8 0 0116 0v5a8 8 0 01-16 0zM12 3v7",
+  power: "M12 3v9M6.3 6.5a8 8 0 1011.4 0",
+  ban: "M12 21a9 9 0 100-18 9 9 0 000 18zM5.6 5.6l12.8 12.8"
 };
 function svg(k, cls){
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
@@ -895,7 +926,10 @@ function go(tab, opt){
   // 切到统计页时先画骨架、数据回来再重画：少了这个 then，用户会一直停在「读取中」
   // 直到后台 30s 轮询把数据填上（踩过——`if (!S.stats) loadStats();` 之后没人 render）。
   if (tab === "stats" && !S.stats){
-    loadStats().then(function(){ if (S.tab === "stats") render(); });
+    // 概览页也有区间选择器，趋势图不在 live 局部更新覆盖范围内——
+  // 之前只对 stats 页重画，结果概览切区间后标题变了（statsRangeFor 是当前选择），
+  // 趋势图还挂着上一次的 series，看着就是「点今天、画7天」。
+  loadStats().then(function(){ if (S.tab === "stats" || S.tab === "overview") render(); });
   }
   if (tab === "runtime" && !S.schedule){
     loadRuntime().then(function(){ if (S.tab === "runtime") render(); });
@@ -949,6 +983,7 @@ function render(opt){
   updateSvcDot();
   // 整页重画会换掉所有 DOM：把「实时数字」重新登记一遍，下一次 patchLive /
   // refreshLiveNumbers 才能找到新元素继续播滚动。
+  fitAllTokens();   // DOM 换新后重算 Tokens 卡该显示完整数字还是缩写
   registerLiveNumbers();
 }
 /* updateSvcDot 只刷页脚那个服务状态点。健康轮询用它就够了（见 loadHealth），
@@ -1038,7 +1073,9 @@ function kv(pairs){
 /* ovRangeName 概览里的区间名：与「请求统计」共用同一个区间口径，标题里写清楚，
    免得用户把概览上的数字当成「实时」或「今日」。 */
 function ovRangeName(){
-  return statsRangeName((S.stats && S.stats.range) || statsRangeFor() || "7d");
+  // 读 UI 当前选择而不是 S.stats.range：S.stats 是上一帧回来的数据，
+  // 切区间后到新数据落地之间标题会显示旧口径，看起来像「点了没反应」。
+  return statsRangeName(statsRangeFor() || "7d");
 }
 /* ---------- 实时局部更新（live patch） ----------
    动机：SSE 每来一帧就 render() 整页，概览 11 张卡、统计页 85 行模型表全被
@@ -1383,7 +1420,7 @@ function viewOverview(){
       "CN " + (cn.total || 0) + " · 国际 " + (gl.total || 0) + " · 冷却 " + cooling + " · 禁用 " + disabled) +
     ovKpi("对外模型", fmtInt(m.length), m.length ? "GET /v1/models" : "需要健康账号") +
     ovKpi(rn + "请求", fmtInt(t.requests), "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed), "ov.requests", "cum") +
-    ovKpi(rn + " Tokens", ((s && s.partial_days) ? "≥" : "") + fmtInt(t.total_tokens),
+    ovKpi(rn + " Tokens", tkHtml(t.total_tokens, s && s.partial_days),
       (s && s.partial_days) ? ("下限：" + s.partial_days + " 天缺输入 token · 缓存命中率 " + fmtPct(t.cache_hit_rate))
         : ("缓存命中率 " + fmtPct(t.cache_hit_rate)), "ov.tokens", "cum") +
     ovKpi("平均延迟", fmtDur(t.avg_latency_ms), "首字 " + fmtDur(t.avg_ttfb_ms) + " · 在飞 " + fmtInt(inFlight), "ov.latency", "avg") +
@@ -1454,10 +1491,11 @@ function gwCard(d, running){
   } else if (running){
     state = "运行中";
     desc = "网关由本窗口托管，监听 " + esc((d && d.listen) || "") + "。关掉窗口会一并停掉它（端口即时释放）；" +
-           "想只停网关不关窗口，点右边按钮。";
+           "点「停止网关」是全局关闭：残留进程一起收掉，看门狗也暂停，不会再被自动拉起。";
   } else {
     state = "已停止";
-    desc = "网关当前不承接请求。点「启动网关」在当前进程里把它拉起来，不需要另开 exe。";
+    desc = "网关当前不承接请求，看门狗已暂停。点「启动网关」会在当前进程里把它拉起来，" +
+           "并接管端口、清掉同目录里其它的网关进程。";
   }
   var btn = running
     ? '<button class="pri gwbtn" data-action="gw-stop"' + (busy ? " disabled" : "") + '>停止网关</button>'
@@ -1936,10 +1974,21 @@ function acctReason(a){
   return r || "—";
 }
 function acctActions(a){
+  // 这里是「可执行的动作」，不是账号状态。以前只有纯文字 pill（复活 / 启用 / 停用），
+  // 和「状态」列的标签长得几乎一样，于是整列清一色「停用」看着像所有号都被关了。
+  // 现在每个动作都带图标 + tooltip，形状上就和只读的 .tag 分开；文案也改成动词短语。
   var out = "";
-  if (a.disabled) out += '<button class="tiny" data-action="acct" data-op="revive" data-uid="' + esc(a.uid) + '">复活</button> ';
-  if (a.manual_disabled) out += '<button class="tiny" data-action="acct" data-op="enable" data-uid="' + esc(a.uid) + '">启用</button>';
-  else if (!a.disabled) out += '<button class="tiny" data-action="acct" data-op="disable" data-uid="' + esc(a.uid) + '">停用</button>';
+  if (a.disabled){
+    out += '<button class="tiny withico" data-action="acct" data-op="revive" data-uid="' + esc(a.uid) +
+      '" title="被系统判定为坏号，点这里清掉禁用标记、重新放回池子">' + svg("undo") + '复活</button>';
+  }
+  if (a.manual_disabled){
+    out += '<button class="tiny withico" data-action="acct" data-op="enable" data-uid="' + esc(a.uid) +
+      '" title="你手动停用过的号，点这里重新启用">' + svg("power") + '启用</button>';
+  } else if (!a.disabled){
+    out += '<button class="tiny withico" data-action="acct" data-op="disable" data-uid="' + esc(a.uid) +
+      '" title="手动把这个号移出池子，不再承接请求">' + svg("ban") + '停用</button>';
+  }
   if (!out) out = '<span class="hint">—</span>';
   return out;
 }
@@ -2670,6 +2719,8 @@ function viewOutput(){
         '</select>' +
         '<button class="tiny" data-action="mfilter-clear">清除筛选</button>' +
         '<span class="hint" style="margin:0" id="mFilterCount"></span>' +
+        '<span class="grow"></span>' +
+        '<button class="pri tiny" data-action="save-models">保存发布清单</button>' +
       '</div>' +
       '<div class="row" style="margin-bottom:9px">' +
         '<button class="tiny" data-action="model-all">全选</button>' +
@@ -2688,7 +2739,6 @@ function viewOutput(){
           '<input type="checkbox" id="realmScoped"' + (S.realmScoped ? ' checked' : '') + '>国际版单独控制</label>' +
         '<span class="grow"></span>' +
         '<span class="hint" style="margin:0" id="mSelCount">' + gcountText(entAvail, unentAvail, sel) + '</span>' +
-        '<button class="pri tiny" data-action="save-models">保存发布清单</button>' +
       '</div>' +
       '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + (S.onlyFree ? ' freeonly' : '') + '" id="mList">' + rows + '</div>' +
       '<div class="hint" style="margin-top:9px">勾上的才出现在 <span class="mono">GET /v1/models</span>，一个都不勾 = 全部放开。</div>';
@@ -2708,6 +2758,24 @@ function viewOutput(){
   return html;
 }
 /* ---------- 请求统计（/v1/stats） ---------- */
+/* fmtCompact 大数缩写：只在 KPI 卡放不下完整数字时兜底用，表格/悬停仍用 fmtInt 保精度。
+   节点：≥1亿用 B、≥1000万用 M，保留两位小数——一位在小基数上跳动太粗（1.7B→1.8B
+   会盖住几千万的差）。低于千万照常显示完整数字（小数字缩写反而难读）。 */
+function fmtCompact(n){
+  n = Number(n) || 0;
+  if (n >= 1e8) return (Math.round(n / 1e6) / 100) + "B";
+  if (n >= 1e7) return (Math.round(n / 1e4) / 100) + "M";
+  return fmtInt(n);
+}
+/* tkHtml Tokens KPI 的双形态标记：完整数字 + 带单位缩写两份都在 DOM 里，
+   fitAllTokens 按实际渲染宽度选一份显示。默认显示完整数字（精确、好读），
+   只有宽到会撑破卡片才切缩写——这比按固定字符数猜宽度靠谱。 */
+function tkHtml(n, partial){
+  var pre = partial ? "\u2265 " : "";
+  var title = esc(fmtInt(n));
+  return '<span class="tk-full" title="' + title + '">' + esc(pre + fmtInt(n)) + '</span>' +
+         '<span class="tk-compact" title="' + title + '">' + esc(pre + fmtCompact(n)) + '</span>';
+}
 function fmtInt(n){
   n = Number(n) || 0;
   return n.toLocaleString("en-US");
@@ -2772,10 +2840,11 @@ function statsRangeName(id){
    变位数的（1,203 → 1,999）也照样补齐，最后一帧强制写真值，
    避免四舍五入让显示值和真实值长期差 1。 */
 var TWEEN_MS = 620;
+
 var tweenRAF = null;
-/* LIVE_NUMERIC 判定「纯数字读数」（含千分位/小数/末尾单位）——只有这类才值得滚动，
+/* LIVE_NUMERIC 判定「纯数字读数」（含千分位/小数/末尾单位 B/M）——只有这类才值得滚动，
    带中文的读数（3 个模型）由 liveValue 自己格式化，不走补间。 */
-var LIVE_NUMERIC = /^(≥\s*)?-?[\d,]+(\.\d+)?(\s*(tok\/s|%|ms|s|亿|万))?$/;
+var LIVE_NUMERIC = /^(≥\s*)?-?[\d,]+(\.\d+)?(\s*(tok\/s|%|ms|s|B|M))?$/;
 /* tweenNumber 把 el 里的数字从 from 滚到 to，fmt 决定显示格式。
    返回 true 表示安排了动画，false 表示无变化或格式不支持，直接跳过。 */
 function tweenNumber(el, from, to, fmt){
@@ -2808,7 +2877,7 @@ function numericTextSpec(txt){
   // 只认「数字 + 可选单位」的形态：日期（10-13 21:05）、「3 个模型」这类残留会被拒，
   // 免得它们被当成数字滚出「10-13 21:05」这种荒唐结果。
   if (!/^(≥\s*)?$/.test(pre)) return null;
-  if (rest !== "" && !/^\s*(tok\/s|%|ms|s|亿|万)$/.test(rest)) return null;
+  if (rest !== "" && !/^\s*(tok\/s|%|ms|s|B|M)$/.test(rest)) return null;
   var dec = m[2] ? m[2].length - 1 : 0;
   var value = parseFloat(m[0].replace(/,/g, ""));
   if (!isFinite(value)) return null;
@@ -3254,9 +3323,10 @@ async function deskCtl(op){
   } catch (e) {
     toast("err", "控制服务连不上：" + e.message, 9000);
   }
-  await loadDesktop();
-  await refreshAll(true);
+  await loadDesktop();   // 先拿到 Running/Stopped 就立刻画，不等全量刷新
   render();
+  // 全量刷新异步补齐：网关刚启动时部分端点还在暖机，串行 await 会拖慢按钮反馈。
+  refreshAll(true).then(render).catch(function(){});
 }
 
 /* ---------- 设置页（悬浮窗） ---------- */
@@ -3325,6 +3395,7 @@ function floatSwitchItem(it, on, icon){
     (S.floatBusy ? " disabled" : "") + ' aria-label="' + esc(it.Name) + '">' +
     '<span class="knob"></span></button></div>';
 }
+var FLOAT_ICONS = { inflight: "pulse", rate: "chart", requests: "clock", tokens: "copy", source: "inbox", topmost: "layers", passthru: "mouse" };
 function viewSettings(){
   var html = head("设置", "本机偏好。");
   if (!DESKTOP){
@@ -3350,7 +3421,8 @@ function viewSettings(){
 
     if (on || items.length){
       var rows = avail.map(function(it){
-        return floatSwitchItem(it, items.indexOf(it.ID) >= 0, it.ID === "passthru" ? "mouse" : (it.ID === "topmost" ? "layers" : ""));
+        return floatSwitchItem(it, items.indexOf(it.ID) >= 0, (FLOAT_ICONS[it.ID] || "sliders"));
+        // 图标口径：每个设置项都有——只有个别行有图标会让用户以为"有图标的是另一类开关"。
       }).join("");
       html += card("显示哪些内容", "",
         rows +
@@ -3370,7 +3442,7 @@ function viewSettings(){
     }
   }
   html += card("网关密钥", "配置 api_key 后，外部客户端需带密钥。",
-    '<div class="row"><button class="tiny" data-action="open-key">' + svg("key") + '设置网关密钥</button>' +
+    '<div class="row"><button class="tiny withico" data-action="open-key">' + svg("key") + '设置网关密钥</button>' +
     '<span class="hint" style="margin:0">' + (S.apiKey ? "本机已保存密钥。" : "当前未保存密钥（本机直连免密钥）。") + '</span></div>');
   return html;
 }
@@ -3449,7 +3521,10 @@ function liveValue(key, snap){
   case "ov.requests.n":
     return { text: "成功 " + fmtInt(t.success) + " · 失败 " + fmtInt(t.failed), html: true };
   case "ov.tokens":
-    return { text: partial + fmtInt(t.total_tokens), html: true, delta: t.total_tokens };
+    // 与 ovPage 首屏一致：KPI 卡用缩写（fmtCompact），完整数字在 title 里。
+    // 之前这里还是 fmtInt，SSE 推帧后局部 patch 会把 2.9B 改回完整数字。
+    // 双形态：完整数字 + 缩写都渲染，fitTokens 按实际宽度选一份显示。
+    return { text: tkHtml(t.total_tokens, !!partial), html: true, delta: t.total_tokens };
   case "ov.tokens.n":
     return { text: (s && s.partial_days)
       ? ("下限：" + s.partial_days + " 天缺输入 token · 缓存命中率 " + fmtPct(t.cache_hit_rate))
@@ -3561,54 +3636,59 @@ function liveValue(key, snap){
 function patchLive(prevStats){
   var nodes = document.querySelectorAll("#view [data-live]");
   if (!nodes.length) return false;   // 这页没有实时节点 → 调用方整页重画
-  var changed = false;
-  var oldT = (prevStats && prevStats.total) || {};
   for (var i = 0; i < nodes.length; i++){
     var el = nodes[i];
     var key = el.getAttribute("data-live");
     var got = liveValue(key);
     if (!got) continue;
-    var txt = String(got.text == null ? "" : got.text);
-    if (el.textContent !== txt){
-      // 纯数字读数（无标签、非时间/模型名）带旧值走补间：数字从旧值滚到新值。
-      // 大 KPI（请求总数 / 今天 Tokens）身上挂着 data-live-html，但当前值本身就是纯数字
-      //（带标签的值如「17 / 17」不会通过 LIVE_NUMERIC 两道校验），所以这类照样滚。
-      var plainNum = !el.children.length && LIVE_NUMERIC.test(txt) && LIVE_NUMERIC.test(String(el.textContent));
-      var wantTween = (got.tween === true) || (got.tween !== false && plainNum);
-      if (wantTween){
-        // 数值补间：从当前显示值滚到新值（前缀/单位/小数位原样保留）。
-        var spec = numericTextSpec(txt);
-        if (spec){
-          var oldNum = parseFloat(String(el.textContent).replace(/,/g, "").replace(/^[^\d\-]*/, ""));
-          if (!isFinite(oldNum)) oldNum = 0;
-          if (!tweenNumber(el, oldNum, spec.value, spec.fmt)) el.textContent = txt;
+
+    // ① 常规文字更新。
+    {
+      var txt = String(got.text == null ? "" : got.text);
+      var isHtml = !!el.getAttribute("data-live-html");
+      // HTML 节点（带 title 的 Tokens 卡）比较 innerHTML；纯文本节点比较 textContent。
+      // 否则带 title 的 HTML 永远不等于渲染后的纯文本，每帧都会白白重写一次 DOM。
+      var cur = isHtml ? el.innerHTML : String(el.textContent);
+      if (cur !== txt){
+        var plainNum = !isHtml && LIVE_NUMERIC.test(txt) && LIVE_NUMERIC.test(cur);
+        var wantTween = (got.tween === true) || (got.tween !== false && plainNum);
+        if (wantTween){
+          var spec = numericTextSpec(txt);
+          if (spec){
+            var oldNum = parseFloat(String(el.textContent).replace(/,/g, "").replace(/^[^\d\-]*/, ""));
+            if (!isFinite(oldNum)) oldNum = 0;
+            if (!tweenNumber(el, oldNum, spec.value, spec.fmt)) el.textContent = txt;
+          } else {
+            el.textContent = txt;
+          }
         } else {
-          el.textContent = txt;
+          if (isHtml) el.innerHTML = txt;
+          else el.textContent = txt;
         }
-        changed = true;
-      } else {
-        if (el.getAttribute("data-live-html")) el.innerHTML = txt;
-        else el.textContent = txt;
-        changed = true;
       }
-      /* 增量角标：只有「带 delta 语义」的累计量才闪，且要真的有增量。
-         均值类（成功率 / 延迟 / 命中率）不加角标——它们本来就该迟钝，
-         让它们闪反而在暗示「这里在实时」，那是假的。 */
-      var d = el.parentNode && el.parentNode.querySelector('[data-delta="' + key + '"]');
-      if (d && typeof got.delta === "number" && isFinite(got.delta)){
-        var prev = Number(oldT[liveDeltaKey(key)]) || 0;
-        var inc = got.delta - prev;
-        if (inc > 0){
-          d.textContent = "+" + fmtInt(inc);
-          d.classList.remove("show");
-          void d.offsetWidth;      // 强制重排，让动画能重播
-          d.classList.add("show");
-        }
+      // Tokens 卡换了内容：重算该显示完整数字还是缩写（宽度可能刚好越界/回落）。
+      if (el.querySelector && el.querySelector(".tk-full")) fitTokens(el);
+    }
+
+    // ② 增量角标。
+    //    基线只认节点自己上一帧记的真值 __lastDelta：绝不依赖统计快照——
+    //    /status 那条 2 秒轮询传的是 null，用快照算增量会得到「全量」这种巨数
+    //    （+677,003,171 就是这么来的）。没有基线（首次见）只记录、不弹角标。
+    var d = el.parentNode && el.parentNode.querySelector('[data-delta="' + key + '"]');
+    if (d && typeof got.delta === "number" && isFinite(got.delta)){
+      var prev = (typeof el.__lastDelta === "number") ? el.__lastDelta : null;
+      el.__lastDelta = got.delta;
+      var inc = (prev === null) ? 0 : (got.delta - prev);
+      if (inc > 0){
+        d.textContent = "+" + fmtInt(inc);
+        d.classList.remove("show");
+        void d.offsetWidth;      // 强制重排，让角标动画能重播
+        d.classList.add("show");
+
       }
     }
   }
   // 「正在发生」整条的活性态：有请求在跑时点亮（.livebar.on 会让 5 个圆点呼吸）。
-  // 这个类不在 data-live 体系里（它是容器状态，不是数字），所以单独同步一次。
   var bar = document.querySelector("#view [data-live-bar]");
   if (bar){
     var n = 0;
@@ -3616,8 +3696,33 @@ function patchLive(prevStats){
     ((stt && stt.accounts) || []).forEach(function(a){ n += (a.in_flight || 0); });
     bar.classList.toggle("on", n > 0);
   }
-  // 无条件 true：这页有实时节点，局部更新已经负责完毕（changed 只用于日志/调试）。
   return true;
+}
+
+/* fitTokens 按实际渲染宽度在「完整数字 / 带单位缩写」之间二选一。
+   为什么要测量而不是按字符数猜：KPI 卡是 5 列自适应，窗口一窄卡就窄，
+   固定阈值会在宽屏上过早缩写、窄屏上又来不及缩写。用 scrollWidth 比 clientWidth
+   是唯一跟真实布局一致的口径。两份形态都在 DOM 里（.tk-full / .tk-compact），
+   这里只管显隐，不重建节点。 */
+function fitTokens(el){
+  var full = el.querySelector(".tk-full");
+  if (!full) return;
+  // 用容器类切换显隐（而不是写子节点内联 style）：patchLive 靠 innerHTML 比对新旧值，
+  // 一旦往子节点塞 style 属性，innerHTML 每帧都不同，就会误判「变了」反复重写。
+  el.classList.remove("compact");
+  // 只量完整数字本身的宽度：`.v` 里还挂着一个 opacity:0 的增量角标，它虽然不可见
+  // 仍占布局宽度——用容器 scrollWidth 会把这部分算进去，导致过早缩写。
+  // 留 1px 余量：亚像素布局下 offsetWidth/clientWidth 会取整，刚好相等时
+  // 可能仍被 overflow:hidden 裁到最后一两位。宁可早一点缩写，也别裁字。
+  if (full.offsetWidth > el.clientWidth - 1) el.classList.add("compact");
+}
+/* fitAllTokens 整页/局部更新后重算所有 Tokens 卡。窗口 resize 也要调——
+   卡宽随窗口变，上一次的选择可能已经不对。 */
+function fitAllTokens(){
+  var list = document.querySelectorAll("#view .stat .v");
+  for (var i = 0; i < list.length; i++){
+    if (list[i].querySelector(".tk-full")) fitTokens(list[i]);
+  }
 }
 /* liveDeltaKey 把 live key 映射回 /v1/stats total 里的字段名（算增量用）。
    只有 total.* 下的标量才需要；其余返回 null。 */
@@ -3649,7 +3754,9 @@ function statsShape(st){
   var models = (st.models || []).map(function(m){ return m.model; }).join("|");
   var prod = (st.producers || []).map(function(p){ return p.producer; }).join("|");
   var days = (st.series || []).map(function(d){ return d.day; }).join("|");
-  return models + "#" + prod + "#" + days;
+  // range 也要进指纹：切区间后模型/来源/日期集合可能恰好相同（比如 today→7d 都是同一批），
+  // 只比这几个会让 patchLive 误判「骨架没变」而不重画，趋势图就停在旧区间。
+  return String(st.range || "") + "#" + models + "#" + prod + "#" + days;
 }
 function applyStatsSnapshot(next, prev){
   if (!next) return false;
@@ -4132,17 +4239,24 @@ function zcodeCard(){
   var hit = provs.filter(function(p){ return p.matched; });
   var miss = provs.filter(function(p){ return !p.matched; });
   var provRows = hit.map(function(p){
-    return "<tr><td>" + esc(p.name || p.id) + '</td><td class="mono">' + esc(p.base_url) + "</td>" +
+    return "<tr><td>" + esc(p.name || p.id) + '</td><td class="mono zw">' + esc(p.base_url) + "</td>" +
       '<td class="num">' + p.model_count + "</td>" +
       '<td><span class="tag ok">会同步</span></td></tr>';
   });
   if (miss.length){
-    provRows.push('<tr><td colspan="4" class="dim" style="padding-top:8px">以下供应商直连官方上游，不动：' +
-      esc(miss.map(function(p){ return p.name || p.id; }).join("、")) + "</td></tr>");
+    // 这一串供应商名 join 起来可能很长，塞进单行 <td> 会把整张表顶宽、进而把主容器
+    // 撑出横向滚动，看起来就像"窗口被某一列撑大了"。改成可折行的标签流：宽度只由
+    // 卡片决定，内容再长也只是多换几行。
+    var missChips = miss.map(function(p){
+      return '<span class="tag mut" style="margin:3px 5px 0 0">' + esc(p.name || p.id) + "</span>";
+    }).join("");
+    provRows.push('<tr><td colspan="4" class="dim" style="padding-top:8px;white-space:normal">' +
+      '<div>以下供应商直连官方上游，不动：</div>' +
+      '<div style="margin-top:4px">' + missChips + "</div></td></tr>");
   }
   body += '<div class="sep"></div><div class="f"><label class="f">识别到的供应商</label>' +
     '<div class="hint">按 <b>Base URL</b> 识别。</div>' +
-    '<div class="tablewrap"><table><thead><tr><th>名称</th><th>Base URL</th><th class="num">模型</th><th>处理</th></tr></thead>' +
+    '<div class="tablewrap"><table class="ztable"><thead><tr><th style="width:22%">名称</th><th>Base URL</th><th class="num" style="width:72px">模型</th><th style="width:90px">处理</th></tr></thead>' +
     "<tbody>" + provRows.join("") + "</tbody></table></div></div>";
 
   // 预览
@@ -4159,7 +4273,7 @@ function zcodeCard(){
       body += '<div class="sep"></div><div class="f"><label class="f">改动预览</label>' +
         '<div class="hint">共 ' + chg.length + " 处改动（ZCode 读不到 /v1/models 的上下文字段，只能写它的配置）。" +
         (pl.backup_path ? "落盘前会备份到 " + esc(pl.backup_path) : "") + "</div>" +
-        '<div class="tablewrap"><table><thead><tr><th>模型</th><th>字段</th><th class="num">改前</th><th class="num">改后</th><th>动作</th></tr></thead>' +
+        '<div class="tablewrap"><table class="ztable"><thead><tr><th>模型</th><th style="width:130px">字段</th><th class="num" style="width:96px">改前</th><th class="num" style="width:96px">改后</th><th style="width:64px">动作</th></tr></thead>' +
         "<tbody>" + rows2.join("") +
         (chg.length > 12 ? '<tr><td colspan="5" class="dim"><button class="gh" data-action="zcode-toggle-all" style="margin-top:6px">' +
           (S.zcodeShowAll ? "收起" : "展开全部 " + chg.length + " 处") + "</button></td></tr>" : "") +
@@ -4628,12 +4742,16 @@ function statsRangeSet(r){
   S.statsRangeByTab = S.statsRangeByTab || {};
   S.statsRangeByTab[S.tab] = r;
   S.statsRange = r;
-  S.stats = null; // 先清掉旧区间的数字，避免新数据回来前显示错口径的统计
+  // 不清旧数据：series（逐日）跨区间兼容，KPI 数字等新数据回来直接覆盖。
+  // 以前这里 S.stats = null 导致切换区间时趋势卡闪空态，用户看到「还没有请求」。
   render();
   // SSE 的 range 在建连时就定死了，换区间必须重连；同时先拉一帧，
   // 免得新连接握手完之前页面是空的。
   resetStatsStream();
-  loadStats().then(function(){ if (S.tab === "stats") render(); });
+  // 概览页也有区间选择器，趋势图不在 live 局部更新覆盖范围内——
+  // 之前只对 stats 页重画，结果概览切区间后标题变了（statsRangeFor 是当前选择），
+  // 趋势图还挂着上一次的 series，看着就是「点今天、画7天」。
+  loadStats().then(function(){ if (S.tab === "stats" || S.tab === "overview") render(); });
 }
 /* statsReset 清空累计统计（含逐日历史；观测，不影响路由）。 */
 async function statsReset(){
@@ -4974,6 +5092,7 @@ document.addEventListener("click", function(ev){
   openStatsStream();
   startStatsPolling(); // 先挂上，SSE open 后会把它停掉；这样首个 2s 内也有兜底
   setInterval(function(){ loadHealth(); }, 15000);
+  window.addEventListener("resize", fitAllTokens);   // 卡宽随窗口变，重算 Tokens 双形态
   setInterval(function(){ loadStatus().then(function(changed){ if (changed) render(); }); }, 30000);
   // 概览页的「正在发生」需要知道此刻有几个请求在飞、跑的是哪个模型，而这两个只
   // 在 /status 里（accounts[].in_flight / live_models）——跟 SSE 的统计线无关。

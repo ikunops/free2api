@@ -1380,10 +1380,9 @@ func TestModelsDynamicZeroContextFallback(t *testing.T) {
 			real = m
 		}
 	}
-	// 缺 maxInputTokens → 知识表/1M 兜底（其余字段保持真实）。
-	// dyn-zero-ctx 不在知识表 → 1M；绝不再透出假 131072。
-	if zc, _ := zero["context_length"].(float64); zc != 1000000 {
-		t.Errorf("zero-ctx context_length=%v want 1000000 (unknown → 1M fallback)", zc)
+	// 缺 maxInputTokens → 未知时省略 context_length（不再编造 1M）；其余字段保持真实。
+	if zc, ok := zero["context_length"]; ok {
+		t.Errorf("zero-ctx context_length=%v want omitted (unknown must not fabricate 1M)", zc)
 	}
 	if zo, _ := zero["max_output_tokens"].(float64); zo != 4096 {
 		t.Errorf("zero-ctx max_output_tokens=%v want 4096 (real value preserved)", zo)

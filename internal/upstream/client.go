@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,21 +25,21 @@ import (
 type ErrKind int
 
 const (
-	ErrNone           ErrKind = iota // 成功
-	ErrHardCredit                    // 余额不足（402 或 body 关键词）→ 长冷却
-	ErrSoftRate                      // 429 软限流 → 短冷却
-	ErrSessionDead                   // 401 + 12153 offline session 失效 → 禁用
-	ErrNotFound                      // 404 上游偶发 → 短冷却，不累计错误计数（防雪崩）
-	ErrServer                        // 5xx 上游故障
-	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
-	ErrBadParams                     // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 不罚账号，仍轮转
-	ErrAccountFault                  // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
-	ErrModelBlocked                  // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
-	ErrWafBlock                      // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避（WAF 403 修复 P0-1）
-	ErrPromptTooLong                 // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
-	ErrImageInvalid                  // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
-	ErrModelParamInvalid             // 11133 model_param_invalid「请求参数不符合当前模型要求」→ 与 ErrImageInvalid 同性质：同一份 body 换任何账号都是同样的 400。不罚号、**不轮转**、不冷却，末端 400 透传原文
-	ErrClient                        // 其他 4xx / 业务错误
+	ErrNone              ErrKind = iota // 成功
+	ErrHardCredit                       // 余额不足（402 或 body 关键词）→ 长冷却
+	ErrSoftRate                         // 429 软限流 → 短冷却
+	ErrSessionDead                      // 401 + 12153 offline session 失效 → 禁用
+	ErrNotFound                         // 404 上游偶发 → 短冷却，不累计错误计数（防雪崩）
+	ErrServer                           // 5xx 上游故障
+	ErrContentBlocked                   // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
+	ErrBadParams                        // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 不罚账号，仍轮转
+	ErrAccountFault                     // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
+	ErrModelBlocked                     // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
+	ErrWafBlock                         // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避（WAF 403 修复 P0-1）
+	ErrPromptTooLong                    // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
+	ErrImageInvalid                     // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
+	ErrModelParamInvalid                // 11133 model_param_invalid「请求参数不符合当前模型要求」→ 与 ErrImageInvalid 同性质：同一份 body 换任何账号都是同样的 400。不罚号、**不轮转**、不冷却，末端 400 透传原文
+	ErrClient                           // 其他 4xx / 业务错误
 )
 
 func (k ErrKind) String() string {
@@ -1133,24 +1134,59 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	// 不可达 cancel() 是潜伏 nil-panic，已删；chatPaths 恒非空由构造保证）。
 	for _, path := range c.chatPaths(a) {
 		url := c.chatBase(a) + path
-		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		c.ChatHeaders(req, a, clientIP, meta)
 		// 从调用方 ctx 派生：保留取消传播（父 ctx 取消 → 本 ctx 取消），
 		// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
 		reqCtx, cancel := context.WithCancel(ctx)
-		req = req.WithContext(reqCtx)
-		resp, err := c.chatHTTP().Do(req)
-		if err != nil {
-			cancel()
-			log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", logfmt.Label(a.UID, a.Nickname), err)
+		// 传输层抖动原地重试（策略见 transport.go 的 transportRetries 注释）：
+		// 连接建立/写请求阶段的失败与账号无关，换号治不了，只会把号池打穿。
+		// remote 记录本次实际连到的地址，只用于错误日志定位（fake-ip 还是公网 IP）。
+		var resp *http.Response
+		var err error
+		var remote string
+		for attempt := 0; ; attempt++ {
+			req, rerr := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))
+			if rerr != nil {
+				cancel()
+				return nil, 0, nil, rerr
+			}
+			c.ChatHeaders(req, a, clientIP, meta)
+			remote = ""
+			trace := &httptrace.ClientTrace{
+				ConnectDone: func(_, addr string, cerr error) {
+					if cerr == nil {
+						remote = addr
+					}
+				},
+				GotConn: func(info httptrace.GotConnInfo) {
+					if info.Conn != nil {
+						remote = info.Conn.RemoteAddr().String()
+					}
+				},
+			}
+			req = req.WithContext(httptrace.WithClientTrace(reqCtx, trace))
+			resp, err = c.chatHTTP().Do(req)
+			if err == nil {
+				break
+			}
 			// 传输层失败 → 清空共享连接池的空闲连接（连接层加固第 5 件）：
 			// 失败连接可能仍留在空闲池里，下一个请求会继续捡到它（kongjianguan
 			// 实测：仅靠 IdleConnTimeout 等过期不够，主动清池才断根）。
 			roundTripCloseIdle(c.chatHTTP().Transport)
-			return nil, 0, nil, err
+			if attempt >= transportRetries || reqCtx.Err() != nil {
+				cancel()
+				log.Printf("ERR: [upstream] chat_stream acct=%s: transport error（已重试 %d 次，末次目标=%s）: %v",
+					logfmt.Label(a.UID, a.Nickname), attempt, dialTargetLabel(remote), err)
+				return nil, 0, nil, err
+			}
+			delay := transportRetryDelay(attempt)
+			log.Printf("WARN: [upstream] chat_stream acct=%s: 传输层抖动（目标=%s）: %v；%v 后原地重试 %d/%d",
+				logfmt.Label(a.UID, a.Nickname), dialTargetLabel(remote), err, delay, attempt+1, transportRetries)
+			if !sleepCtx(reqCtx, delay) {
+				cancel()
+				log.Printf("ERR: [upstream] chat_stream acct=%s: 传输层重试被取消（客户端断开）: %v",
+					logfmt.Label(a.UID, a.Nickname), err)
+				return nil, 0, nil, err
+			}
 		}
 		if resp.StatusCode >= 400 {
 			raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -1226,6 +1262,12 @@ type ModelInfo struct {
 	// 用途是选号分层（免费模型不必按余额加权，见 pool.pickWith 的 freeModel 分支），
 	// 与"展示用 credits 原文"解耦——credits 只负责显示，Free 只负责策略。
 	Free bool
+
+	// DevBase 这条模型实际出站的上游 base URL。models.dev 的能力/limit 必须按
+	// 该 base 的 host + 具体模型名精确匹配，不能只按裸 model id 跨渠道合并——
+	// 同名模型在免费层、付费层、聚合网关上的上下文上限可以完全不同。空 = 该
+	// 来源没有可对齐的 models.dev 记录（例如 workbuddy）。
+	DevBase string
 }
 
 // dynModelEntry 上游模型目录（CN /console 与 global /v2 同构）的单条模型解析形态，
@@ -1259,6 +1301,8 @@ type dynModelEntry struct {
 // CN FetchModels 与 global 探测共用，杜绝两域映射漂移）。
 func (m dynModelEntry) modelInfo() ModelInfo {
 	return ModelInfo{
+		// 具体渠道由调用方（FetchModels / globalModelsOnce）填：同一模型在 CN、
+		// global、第三方镜像上的上下文/能力可能不同，不能只靠裸 model id 判断。
 		ID:                m.ID,
 		Name:              m.Name,
 		ContextWindow:     m.MaxInputTokens,
@@ -1368,6 +1412,15 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	out := mergeModelInfos(v3.infos, enterprise.infos)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
+	}
+	// 给 CN/global 目录条目补“实际出站渠道”。模型对象里的 maxInputTokens 等
+	// 仍最权威；这里只是让 models.dev / model.json 的查找按渠道隔离，避免同名
+	// 模型在 CN、global、镜像之间互相串值（尤其是免费层/付费层不同）。
+	devBase := c.chatBase(a)
+	for i := range out {
+		if out[i].DevBase == "" {
+			out[i].DevBase = devBase
+		}
 	}
 	// 刷新 effort 能力缓存（供请求体降级；无 supportedEfforts 的模型不入 efforts 桶）。
 	// 空桶时跳过写：避免「某探测无档位数据」清掉既有桶（例：cn 桶已有档位，再次探测返回全无等级 → 不应清空）。
@@ -1520,7 +1573,7 @@ func (c *Client) fetchV3Models(a *auth.Auth) ([]ModelInfo, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("v3 config status %d: %s", resp.StatusCode, truncate(string(raw), 120))
 	}
-	names, infos, _, _, err := parseGlobalModelNames(raw)
+	names, infos, _, _, err := parseGlobalModelNames(raw, c.chatBase(a))
 	if err != nil {
 		return nil, fmt.Errorf("v3 config parse: %w", err)
 	}

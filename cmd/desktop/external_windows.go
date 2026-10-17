@@ -33,13 +33,13 @@ var (
 )
 
 const (
-	afInet                 = 2
-	tcpTableOwnerPidAll    = 5
-	mibTCPStateListen      = 2
-	processQueryLimited    = 0x1000
-	processTerminate       = 0x0001
-	processSetInformation  = 0x0200
-	stillActive            = 259
+	afInet                = 2
+	tcpTableOwnerPidAll   = 5
+	mibTCPStateListen     = 2
+	processQueryLimited   = 0x1000
+	processTerminate      = 0x0001
+	processSetInformation = 0x0200
+	stillActive           = 259
 )
 
 // pidListeningOn 找占用 addr 端口、且处于 LISTEN 的进程 PID。找不到返回 0。
@@ -159,7 +159,7 @@ var lastHTTPErr error
 // shutdownViaHTTP 让网关自己停。带上本机免鉴权的便利：admin 端点对回环地址放行，
 // 但网关若配了 api_key 且监听在非回环地址，这一步会 401 —— 那就走进程级兜底。
 func shutdownViaHTTP(addr string) error {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: loopbackTransport}
 	req, err := http.NewRequest(http.MethodPost, baseURL(addr)+"/admin/shutdown", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return err

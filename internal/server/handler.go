@@ -218,8 +218,8 @@ func NewHandler(cfg Config) *Handler {
 		// /admin/credits 余额只读查询（按需直查上游 billing，补上「刚装好还没到签到点」的空窗）。
 		h.mux.HandleFunc("GET /admin/credits", h.withLocalOrAuth(h.adminCredits))
 		h.mux.HandleFunc("POST /admin/credits/refresh", h.withLocalOrAuth(h.adminCreditsRefresh))
-	// 手动重打模型目录：上游刚上新模型时不必等 30m 周期刷新或重启网关。
-	h.mux.HandleFunc("POST /admin/catalog/refresh", h.withLocalOrAuth(h.adminCatalogRefresh))
+		// 手动重打模型目录：上游刚上新模型时不必等 30m 周期刷新或重启网关。
+		h.mux.HandleFunc("POST /admin/catalog/refresh", h.withLocalOrAuth(h.adminCatalogRefresh))
 		// Codex 一键接入：Codex 没有「自定义供应商」入口，只能代它改 config.toml。
 		// 读现状 / 预览（不落盘）/ 落盘（先备份）。
 		h.mux.HandleFunc("GET /admin/codex", h.withLocalOrAuth(h.adminCodexGet))
@@ -682,6 +682,19 @@ func (h *Handler) applyModelInfoFields(entry map[string]any, mi upstream.ModelIn
 	if mi.SupportsToolCall {
 		entry["supports_tool_call"] = true
 	}
+	if mi.DevBase != "" {
+		if caps, ok := upstream.ModelsDevCapsFor(mi.ID, mi.DevBase); ok {
+			if caps.Attachment && !mi.SupportsImages {
+				entry["supports_images"] = true
+			}
+			if caps.Reasoning && !mi.SupportsReasoning {
+				entry["supports_reasoning"] = true
+			}
+			if caps.ToolCall && !mi.SupportsToolCall {
+				entry["supports_tool_call"] = true
+			}
+		}
+	}
 	if mi.OnlyReasoning {
 		entry["only_reasoning"] = true
 	}
@@ -730,13 +743,14 @@ func (h *Handler) modelList() []map[string]any {
 			"owned_by": "workbuddy",
 		}
 		// context_length / max_output_tokens 四级查找（upstream.context_catalog +
-		// model_catalog）：上游动态值（maxInputTokens/maxOutputTokens）权威 → 静态
-		// 种子表 → model.json 本地缓存 → models.dev 按需拉取（异步不阻塞本次响应，
-		// 拉到后写 model.json 供下次命中）→ 1M 兜底 / max_output_tokens 省略。
-		// 上游零值不再透出假 131072（误导 Codex/ZCode 等按 context_length 提前
-		// 截断、白白丢上下文）。
-		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
-		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+		// model_catalog）：上游动态值（maxInputTokens/maxOutputTokens）权威 →
+		// 精确渠道目录 / model.json → models.dev 按需拉取（异步不阻塞本次响应，
+		// 拉到后写 model.json 供下次命中）。渠道已知但精确值未知 → 两个字段都省略，
+		// 不拿别的渠道同名值或 1M 猜测顶上。
+		if ctx, ok := upstream.ContextWindowListingV4Known(mi.ID, mi.DevBase, mi.ContextWindow, h.cfg.Upstream.HTTP); ok {
+			entry["context_length"] = ctx
+		}
+		if mo, ok := upstream.MaxOutputTokensListingV4For(mi.ID, mi.DevBase, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
 			entry["max_output_tokens"] = mo
 		}
 		// 上游模型对象全字段透出（name/描述/标签/倍率/能力旗标等，空值省略）。
@@ -781,8 +795,10 @@ func (h *Handler) modelList() []map[string]any {
 			"created":  1753600000,
 			"owned_by": upstream.ProducerZCode,
 		}
-		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
-		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+		if ctx, ok := upstream.ContextWindowListingV4Known(mi.ID, mi.DevBase, mi.ContextWindow, h.cfg.Upstream.HTTP); ok {
+			entry["context_length"] = ctx
+		}
+		if mo, ok := upstream.MaxOutputTokensListingV4For(mi.ID, mi.DevBase, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
 			entry["max_output_tokens"] = mo
 		}
 		entry = h.applyModelInfoFields(entry, mi)
@@ -795,6 +811,13 @@ func (h *Handler) modelList() []map[string]any {
 	var opencodeModels []upstream.ModelInfo
 	if h.producerAllowed(upstream.ProducerOpenCode) {
 		opencodeModels = h.fetchOpenCodeCatalog()
+		// 冷启动第一帧：OpenCode 目录不带上下文字段，能力/limit 只能靠 models.dev。
+		// 若文档尚未就绪，第一条 /v1/models 会先返回空能力、第二次才正常。这里在
+		// 首次目录出现 DevBase 模型时做一次有界等待（最多 5s）；后续请求文档已在内存，
+		// 立即返回。只对确有渠道对齐模型的来源触发，不拖累纯 WorkBuddy 形态。
+		if len(opencodeModels) > 0 {
+			upstream.EnsureModelsDevDocument(h.cfg.Upstream.HTTP)
+		}
 	}
 	for _, mi := range opencodeModels {
 		if !h.publishAllows(published, known, "cn", upstream.ProducerOpenCode, mi.ID) {
@@ -809,8 +832,10 @@ func (h *Handler) modelList() []map[string]any {
 			"created":  1753600000,
 			"owned_by": upstream.ProducerOpenCode,
 		}
-		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
-		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+		if ctx, ok := upstream.ContextWindowListingV4Known(mi.ID, mi.DevBase, mi.ContextWindow, h.cfg.Upstream.HTTP); ok {
+			entry["context_length"] = ctx
+		}
+		if mo, ok := upstream.MaxOutputTokensListingV4For(mi.ID, mi.DevBase, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
 			entry["max_output_tokens"] = mo
 		}
 		entry = h.applyModelInfoFields(entry, mi)
@@ -836,8 +861,10 @@ func (h *Handler) modelList() []map[string]any {
 			"created":  1753600000,
 			"owned_by": upstream.ProducerKilo,
 		}
-		entry["context_length"] = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
-		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+		if ctx, ok := upstream.ContextWindowListingV4Known(mi.ID, mi.DevBase, mi.ContextWindow, h.cfg.Upstream.HTTP); ok {
+			entry["context_length"] = ctx
+		}
+		if mo, ok := upstream.MaxOutputTokensListingV4For(mi.ID, mi.DevBase, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
 			entry["max_output_tokens"] = mo
 		}
 		entry = h.applyModelInfoFields(entry, mi)
@@ -886,15 +913,16 @@ func (h *Handler) modelList() []map[string]any {
 				"owned_by": "workbuddy",
 			}
 			// context_length / max_output_tokens 四级查找（upstream.model_catalog，
-			// 与 CN 动态分支同口径）：探测富条目真实值权威 → 静态种子表 →
-			// model.json 缓存 → models.dev 按需拉取（异步）→ 1M 兜底/省略。
-			// 裸 ID 条目（窄表探测）也经种子表补齐，不再裸 131072。
+			// 与 CN 动态分支同口径）：探测富条目真实值权威 → 精确渠道目录 →
+			// model.json 缓存 → models.dev 按需拉取（异步）。未知省略，不编 1M。
 			var remoteCtx, remoteOut int64
 			if hasInfo {
 				entry = h.applyModelInfoFields(entry, gmi)
 				remoteCtx, remoteOut = gmi.ContextWindow, gmi.MaxTokens
 			}
-			entry["context_length"] = upstream.ContextWindowListingV4(id, remoteCtx, h.cfg.Upstream.HTTP)
+			if ctx, ok := upstream.ContextWindowListingV4Known(id, "", remoteCtx, h.cfg.Upstream.HTTP); ok {
+				entry["context_length"] = ctx
+			}
 			if mo, ok := upstream.MaxOutputTokensListingV4(id, remoteOut, h.cfg.Upstream.HTTP); ok {
 				entry["max_output_tokens"] = mo
 			}
@@ -1036,18 +1064,31 @@ func (h *Handler) outputCfgBaselineSet() map[string]bool {
 // 没挂 Upstream（单测里构造的裸 Handler）时跳过整条链、直接用模型自带值：那条链的第
 // 四级会异步打外网，而这里没有可用的 HTTP client 也不该有网络行为。
 func (h *Handler) decorateModelEntry(e map[string]any, mi upstream.ModelInfo, realm, producer string, sel, known map[string]bool) {
-	ctx, maxOut, hasMaxOut := mi.ContextWindow, mi.MaxTokens, mi.MaxTokens > 0
+	ctx, maxOut, hasMaxOut, hasCtx := mi.ContextWindow, mi.MaxTokens, mi.MaxTokens > 0, mi.ContextWindow > 0
 	if h.cfg.Upstream != nil {
-		ctx = upstream.ContextWindowListingV4(mi.ID, mi.ContextWindow, h.cfg.Upstream.HTTP)
-		if mo, ok := upstream.MaxOutputTokensListingV4(mi.ID, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+		ctx, hasCtx = upstream.ContextWindowListingV4Known(mi.ID, mi.DevBase, mi.ContextWindow, h.cfg.Upstream.HTTP)
+		if mo, ok := upstream.MaxOutputTokensListingV4For(mi.ID, mi.DevBase, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
 			maxOut, hasMaxOut = mo, true
 		}
 	}
-	if ctx > 0 {
+	if hasCtx && ctx > 0 {
 		e["context"] = ctx
 	}
 	if hasMaxOut && maxOut > 0 {
 		e["max_output"] = maxOut
+	}
+	if h.cfg.Upstream != nil {
+		if caps, ok := upstream.ModelsDevCapsFor(mi.ID, mi.DevBase); ok {
+			if caps.Attachment && !mi.SupportsImages {
+				e["vision"] = true
+			}
+			if caps.Reasoning && !mi.SupportsReasoning {
+				e["reasoning"] = true
+			}
+			if caps.ToolCall && !mi.SupportsToolCall {
+				e["tools"] = true
+			}
+		}
 	}
 	if mi.SupportsImages {
 		e["vision"] = true

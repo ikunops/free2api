@@ -18,7 +18,7 @@ func TestParseGlobalModelNamesEfforts(t *testing.T) {
 		{"id":"deepseek-v4.1-flash","reasoning":{"supportedEfforts":["high"]}},
 		{"id":"no-effort"}
 	]}}`
-	names, _, efforts, defaults, err := parseGlobalModelNames([]byte(raw))
+	names, _, efforts, defaults, err := parseGlobalModelNames([]byte(raw), "")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestParseGlobalModelNamesSingleEffort(t *testing.T) {
 	raw := `{"code":0,"data":{"models":[
 		{"id":"glm-5.2","reasoning":{"effort":"high"}}
 	]}}`
-	_, _, efforts, defaults, err := parseGlobalModelNames([]byte(raw))
+	_, _, efforts, defaults, err := parseGlobalModelNames([]byte(raw), "")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

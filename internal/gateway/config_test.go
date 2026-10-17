@@ -261,6 +261,43 @@ func TestUpstreamEnvOverride(t *testing.T) {
 	}
 }
 
+// TestRealIPDialNormalize 出站 DNS 策略：缺省/空/非法一律 auto，显式 always/off
+// 原样生效（大小写与空白容错）。这是排查「开 VPN 上游 TLS EOF」的逃生门，
+// 归一必须先于 upstream.New 生效，且不能因为写错值就挡住启动。
+func TestRealIPDialNormalize(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct{ in, want string }{
+		{``, "auto"},
+		{`"real_ip_dial":"always"`, "always"},
+		{`"real_ip_dial":"off"`, "off"},
+		{`"real_ip_dial":"  ALWAYS "`, "always"},
+		{`"real_ip_dial":"bogus"`, "auto"},
+	}
+	for i, tc := range cases {
+		fp := filepath.Join(dir, "c"+string(rune('a'+i))+".json")
+		if tc.in == "" {
+			os.WriteFile(fp, []byte(`{}`), 0o600)
+		} else {
+			os.WriteFile(fp, []byte(`{"upstream":{`+tc.in+`}}`), 0o600)
+		}
+		c, err := Load(fp)
+		if err != nil {
+			t.Fatalf("case %d load: %v", i, err)
+		}
+		if c.Upstream.RealIPDial != tc.want {
+			t.Errorf("case %d real_ip_dial=%q want %q", i, c.Upstream.RealIPDial, tc.want)
+		}
+	}
+	t.Setenv("WB2A_REAL_IP_DIAL", "always")
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Upstream.RealIPDial != "always" {
+		t.Errorf("env override real_ip_dial=%q want always", c.Upstream.RealIPDial)
+	}
+}
+
 // TestRetiredTravelIntervalKeyIgnored 退役的 travel_interval_minutes 键按未知字段忽略，不报错。
 func TestRetiredTravelIntervalKeyIgnored(t *testing.T) {
 	dir := t.TempDir()

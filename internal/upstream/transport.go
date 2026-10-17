@@ -6,6 +6,7 @@
 package upstream
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"net/http"
@@ -74,16 +75,16 @@ func newDialer() *net.Dialer {
 func newTransport() *http.Transport {
 	dialer := newDialer()
 	return &http.Transport{
-		// DialContext = 系统拨号器外面套一层「workbuddy.ai 家族 DoH 真实 IP 直拨」
-		// 加固（见 dial_realip.go）：TUN/fake-ip 环境（如 FlClash）下按域名经节点
-		// 连接会被节点侧二次解析破坏（TLS EOF 风暴）；按真实 IP 直拨实测可用。
-		// 非目标主机 / DoH 失败 / 直拨失败 → 原样回落系统拨号，行为与加固前
-		// 完全一致（CN 域不受任何影响）。
-		DialContext: newRealIPDialer(dialer).DialContext,
+		// DialContext = 系统拨号器外面套一层「DoH 真实 IP 直拨」加固（见
+		// dial_realip.go）：TUN/fake-ip 环境（如 FlClash）下按域名经节点连接会被
+		// 节点侧二次解析破坏（TLS EOF 风暴）；按真实 IP 直拨实测可用。
+		// 生效范围由 upstream.real_ip_dial 决定（auto 只覆盖 workbuddy.ai / always
+		// 全部上游 / off 关闭），非目标主机、DoH 失败、直拨失败均原样回落系统拨号。
+		DialContext: newPolicyDialer(dialer).DialContext,
 		// 空 TLSNextProto（非 nil）真正禁 h2：见函数注释。必须 make 而非 nil——
 		// nil 表示「让标准库注入默认 h2 映射」（kongjianguan 实测：设
 		// ForceAttemptHTTP2=false 后日志仍报 h2 timeout，正是这个陷阱）。
-		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 		TLSHandshakeTimeout:   tlsHandshakeTimeout,
 		MaxIdleConns:          maxIdleConns,
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
@@ -92,8 +93,7 @@ func newTransport() *http.Transport {
 	}
 }
 
-// closeIdler 实现该接口的 RoundTripper 支持清空空闲连接池（*http.Transport、
-// http2.Transport 等均满足；测试注入的自定义 RoundTripper 可选择性实现）。
+// closeIdler 实现该接口的 RoundTripper 支持清空空闲连接池（*http.Transport、// http2.Transport 等均满足；测试注入的自定义 RoundTripper 可选择性实现）。
 type closeIdler interface {
 	CloseIdleConnections()
 }
@@ -118,4 +118,63 @@ func roundTripCloseIdle(rt http.RoundTripper) {
 	if ci, ok := rt.(closeIdler); ok {
 		ci.CloseIdleConnections()
 	}
+}
+
+// transportRetries 单个 chat 请求在传输层失败后的原地重试次数。
+//
+// 为什么需要它：VPN/TUN 开合、节点切换、fake-ip 池重建都会在一两秒内把所有在途
+// TCP 打死（表现为 EOF / wsasend 强制关闭 / RST）。这类失败与账号无关，旧行为是
+// 把错误抛回 handler 由它换号——于是号池里每个号都被打一遍、全失败，客户端拿到的
+// 就是 503，体感「一开 VPN 网关就挂」。原地清池 + 短退避重试能直接跨过这个空窗，
+// 代价只是几百毫秒。
+//
+// 安全性：只在 http.Client.Do 返回错误时重试——此时响应体还没开始读，不存在
+// 「已经吐了一半再重试」的重复输出问题；请求体由 bytes.Reader 重建，可安全重放。
+const transportRetries = 2
+
+// transportRetryDelay 第 attempt 次（0-based）重试前的等待。VPN 空窗通常 1s 内
+// 恢复，300ms + 800ms 两次足够跨过，又不至于让客户端干等。
+func transportRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 300 * time.Millisecond
+	}
+	return 800 * time.Millisecond
+}
+
+// sleepCtx 可取消的等待（ctx 取消立即返回 false）。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// fakeIPNet TUN 模式的 fake-ip 缺省网段（mihomo/clash 常用 198.18.0.0/15）。
+var fakeIPNet = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("198.18.0.0/15")
+	return n
+}()
+
+// dialTargetLabel 把「本次请求实际连到的地址」格式化成日志片段。
+// fake-ip 段显式标注——这是区分「出站走 TUN 假地址重映射」与「真实 IP 直拨」
+// 的唯一凭据；空字符串表示 TCP 都没建立起来。
+func dialTargetLabel(remote string) string {
+	if remote == "" {
+		return "未建立连接"
+	}
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return remote
+	}
+	if ip := net.ParseIP(host); ip != nil && fakeIPNet.Contains(ip) {
+		return remote + "(fake-ip/TUN)"
+	}
+	return remote
 }

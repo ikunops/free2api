@@ -15,8 +15,8 @@ import (
 // 这条断言把「读配置」这个动作钉住，避免有人再把它删掉。
 func TestWantsWindowFollowsPersistedEnabled(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		want    bool
+		name string
+		want bool
 	}{
 		{"上次开着", true},
 		{"上次关着", false},

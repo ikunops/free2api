@@ -721,7 +721,7 @@ func (f *floatWin) streamOnce() error {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	client := &http.Client{Timeout: 0}
+	client := &http.Client{Timeout: 0, Transport: loopbackTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

@@ -116,6 +116,13 @@ type Config struct {
 		// PassthroughIP 是否透传客户端 IP（X-Forwarded-For/X-Real-IP 首段）给上游。
 		// 缺省 false（反代安全边界：不把内网/代理 IP 暴露给上游）；true 才透传。
 		PassthroughIP bool `json:"passthrough_ip"`
+		// RealIPDial 出站 DNS 策略（issue: 开 VPN/TUN 时上游 TLS 握手 EOF）：
+		//   - auto（缺省）只对 workbuddy.ai 家族用 DoH 真实 IP 直拨，其余上游走系统解析；
+		//   - always 全部上游都 DoH 解析 + 真实 IP 直拨——TUN/fake-ip 环境下出站不再
+		//     依赖 mihomo 的假地址重映射，适合「一开 VPN 就不稳」的现场；
+		//   - off 关闭直拨，全部交回系统解析（DoH 本身被 VPN 拦时用）。
+		// 非法值归一为 auto（不报错：这是排查用的逃生门，不该挡住启动）。
+		RealIPDial string `json:"real_ip_dial"`
 	} `json:"upstream"`
 
 	Features struct {
@@ -228,6 +235,8 @@ func Default() *Config {
 	// （upstream.Client 的 attributionClientName 空值也回落 WorkBuddy，双保险）；
 	// 显式 client_name="SaaS" 还原旧行为。
 	c.Upstream.ClientName = "WorkBuddy"
+	// 出站 DNS 缺省 auto：只对 workbuddy.ai 家族做 DoH 真实 IP 直拨。
+	c.Upstream.RealIPDial = "auto"
 	c.Features.SanitizeBlacklistFingerprints = true
 	// 目录周期刷新默认 30m：启动预热一次后每 30 分钟重打各来源目录，同步上游上下架。
 	c.Features.ModelCatalogRefresh = "30m"
@@ -315,6 +324,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WB2A_USER_AGENT"); v != "" {
 		c.Upstream.UserAgent = v
+	}
+	if v := os.Getenv("WB2A_REAL_IP_DIAL"); v != "" {
+		c.Upstream.RealIPDial = v
 	}
 	if v := os.Getenv("WB2A_DEVICE_TOKEN"); v != "" {
 		c.Upstream.DeviceToken = v
@@ -504,6 +516,16 @@ func (c *Config) normalize() error {
 	}
 	if c.Upstream.IdleTimeoutSeconds <= 0 {
 		c.Upstream.IdleTimeoutSeconds = 300
+	}
+	// 出站 DNS 策略归一：空/非法一律 auto（逃生门不该挡住启动；applyEnv 之后
+	// 归一，env 与 config 两条入口最终语义一致）。
+	switch strings.ToLower(strings.TrimSpace(c.Upstream.RealIPDial)) {
+	case "always":
+		c.Upstream.RealIPDial = "always"
+	case "off":
+		c.Upstream.RealIPDial = "off"
+	default:
+		c.Upstream.RealIPDial = "auto"
 	}
 	if !strings.HasPrefix(c.Listen, ":") && !strings.Contains(c.Listen, ":") {
 		c.Listen = ":" + c.Listen

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,25 @@ func TestHostPort(t *testing.T) {
 	}
 	if got := baseURL(":7863"); got != "http://127.0.0.1:7863" {
 		t.Errorf("baseURL(:7863) = %q", got)
+	}
+}
+
+func TestDesktopUIURLAndWebViewProxyBypass(t *testing.T) {
+	if got := desktopUIURL("127.0.0.1:27106"); got != "http://127.0.0.1:27106/management.html" {
+		t.Fatalf("desktopUIURL = %q", got)
+	}
+
+	got := webViewDirectArgs("")
+	if !strings.Contains(got, "--proxy-server=direct://") || !strings.Contains(got, "--proxy-bypass-list=*") {
+		t.Fatalf("WebView2 没强制直连: %q", got)
+	}
+	// 用户已有的额外参数不能丢，重复调用也不能越叠越长。
+	got = webViewDirectArgs("--disable-gpu")
+	if !strings.HasPrefix(got, "--disable-gpu ") || strings.Count(got, "--proxy-server=direct://") != 1 {
+		t.Fatalf("额外参数合并异常: %q", got)
+	}
+	if again := webViewDirectArgs(got); again != got {
+		t.Fatalf("重复调用改变了参数: %q -> %q", got, again)
 	}
 }
 

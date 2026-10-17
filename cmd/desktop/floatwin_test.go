@@ -5,10 +5,10 @@ package main
 import (
 	"encoding/json"
 	"math"
-	"unsafe"
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 )
 
 // TestFloatConfigSanitizeDropsUnknownItems 配置里混进未知项 / 非法区间 / 重复项时，
@@ -259,13 +259,13 @@ func TestApplyRoundedAlphaRadiusClamped(t *testing.T) {
 	}
 	applyRoundedAlpha(px, w, h, 999, 255)
 
-	center := (30*w + w/2) * 4 + 3
+	center := (30*w+w/2)*4 + 3
 	if px[center] != 255 {
 		t.Fatalf("center alpha = %d, want 255 (radius clamp broke the shape)", px[center])
 	}
 	// 夹到 w/2=10 之后，行中心左右应当都是满 alpha（形状退化成胶囊）。
-	l := (30*w + 0) * 4 + 3
-	r := (30*w + w-1) * 4 + 3
+	l := (30*w+0)*4 + 3
+	r := (30*w+w-1)*4 + 3
 	if px[l] == 0 && px[r] == 0 {
 		t.Fatalf("clamped radius ate the whole row (l=%d r=%d)", px[l], px[r])
 	}

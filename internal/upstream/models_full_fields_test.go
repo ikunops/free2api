@@ -77,7 +77,7 @@ func TestFetchModelsParsesFullFields(t *testing.T) {
 // 解析产出 names + 完整 ModelInfo（富字段）+ effort 桶（数组优先）。
 func TestParseGlobalModelNamesFullFields(t *testing.T) {
 	raw := `{"code":0,"data":{"models":[` + fullFieldsEntry + `]}}`
-	names, infos, efforts, defaults, err := parseGlobalModelNames([]byte(raw))
+	names, infos, efforts, defaults, err := parseGlobalModelNames([]byte(raw), "")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

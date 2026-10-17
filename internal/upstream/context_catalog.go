@@ -1,14 +1,11 @@
 // context_catalog.go context_length / max_output_tokens 字段级静态兜底知识表。
 //
-// 数据来源四级（model-json-dynamic 任务书；查找链入口在 model_catalog.go 的
-// ContextWindowListingV4 / MaxOutputTokensListingV4，本文件是第 2 级）：
+// 查找链（model-json-dynamic 任务书；入口在 model_catalog.go）：
 //   - 上游动态值（ModelInfo.ContextWindow/MaxTokens，即 maxInputTokens/maxOutputTokens）权威，优先；
-//   - 本文件静态知识表（远端零值时补齐；model.json 缺失/损坏时的编译期兜底）；
-//   - model.json 本地缓存（数据目录，含运行时 models.dev 按需补值，见 model_catalog.go）；
-//   - models.dev 按需拉取（异步不阻塞；仍未知 → context_length 1M 兜底——宁可高估
-//     不低估：高估代价是客户端不截断、上游报错可重试；低估代价是下游客户端
-//     （Codex/ZCode/Claude Code 按 context_length 提前截断）白白丢上下文；
-//     max_output_tokens 未知 → 省略字段（输出上限无合估算据，不编造））。
+//   - 精确渠道目录（models.dev / 渠道自带 limit / model.json 精确键）；
+//   - 本文件静态知识表**只在渠道未知时**作为裸名兜底；
+//   - 渠道已知但精确条目缺失 → 省略 context_length（未知不是 1M）；
+//   - max_output_tokens 未知 → 省略（不编造）。
 //
 // 知识表**一处定义、CN/global 两域共用**：context_length 是模型固有属性——fork
 // 706412584 实测结论「两区是同一套 API 的两次部署」，同 id 上下文一致，无按 realm
@@ -22,8 +19,14 @@
 //     官方源如 moonshotai/zai 优先）。未收录或歧义大者不编造。
 package upstream
 
-// DefaultContextWindow 知识表也未收录的模型的 context_length 兜底：1M。
-// 上游多数大窗口模型的实际量级；高估优于低估（见文件头）。
+// DefaultContextWindow 仅在调用方无法识别真实渠道时的历史兜底。
+//
+// 渠道已知（ModelInfo.DevBase 非空）时**绝不**用它：同名模型在免费层、付费层、
+// 聚合网关上的窗口可能不同，未知不等于 1M。此时调用方应省略 context_length，
+// 让客户端不要按错误上限提前截断或把超限请求发出去。
+//
+// 保留这个常量只服务旧的三参数 API 与没有渠道信息的兼容调用；新代码应优先走
+// ContextWindowListingV4For 并检查 ok。
 const DefaultContextWindow int64 = 1000000
 
 // contextCap 一个模型的上下文能力（字段级兜底条目）。
@@ -53,10 +56,10 @@ var contextCapFallback = map[string]contextCap{
 	"kimi-k2.8-preview": {context: 1048576, maxOutput: 0},      // models.dev（Kimi K2.8 Preview 1M；输出上限未收录，省略）
 
 	// ---- MiniMax / 混元（tencent）----
-	"minimax-m3":   {context: 512000, maxOutput: 512000},  // 实测（CN 512K）；输出 models.dev 共识 512000
-	"hy3":          {context: 192000, maxOutput: 64000},   // 实测（CN 192K/64K，repo hy3 抓取样本同值）
-	"hy3-preview":  {context: 262144, maxOutput: 64000},   // models.dev（共识 262144/64000）
-	"hy4-preview":  {context: 1000000, maxOutput: 64000},  // 实测外推 + models.dev（~1M/64000）
+	"minimax-m3":    {context: 512000, maxOutput: 512000}, // 实测（CN 512K）；输出 models.dev 共识 512000
+	"hy3":           {context: 192000, maxOutput: 64000},  // 实测（CN 192K/64K，repo hy3 抓取样本同值）
+	"hy3-preview":   {context: 262144, maxOutput: 64000},  // models.dev（共识 262144/64000）
+	"hy4-preview":   {context: 1000000, maxOutput: 64000}, // 实测外推 + models.dev（~1M/64000）
 	"hy4-preview-x": {context: 1000000, maxOutput: 64000}, // 实测外推（1M）；输出同族 hy4-preview 估算
 
 	// ---- DeepSeek 家族 ----

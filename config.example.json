@@ -54,7 +54,8 @@
     "device_token": "",
     "device_token_file": "",
     "client_name": "WorkBuddy",
-    "passthrough_ip": false
+    "passthrough_ip": false,
+    "real_ip_dial": "auto"
   },
   "features": {
     "sanitize_blacklist_fingerprints": true

@@ -17,13 +17,27 @@ import (
 func fakeModelsDevDoc(providers map[string]map[string][2]int64) string {
 	var b strings.Builder
 	b.WriteString("{")
+	apis := map[string]string{
+		"opencode":   "https://opencode.ai/inference/openai/v1",
+		"kilo":       "https://api.kilo.ai/api/gateway",
+		"zai":        "https://api.z.ai/api/paas/v4",
+		"moonshotai": "https://api.moonshot.ai/v1",
+		"openai":     "https://api.openai.com/v1",
+		"google":     "https://generativelanguage.googleapis.com/v1beta",
+		"deepseek":   "https://api.deepseek.com/v1",
+		"minimax":    "https://api.minimax.io/v1",
+	}
 	firstP := true
 	for p, models := range providers {
 		if !firstP {
 			b.WriteString(",")
 		}
 		firstP = false
-		b.WriteString(`"` + p + `":{"models":{`)
+		b.WriteString(`"` + p + `":{`)
+		if api := apis[p]; api != "" {
+			b.WriteString(`"api":"` + api + `",`)
+		}
+		b.WriteString(`"models":{`)
 		firstM := true
 		for id, lim := range models {
 			if !firstM {
@@ -134,11 +148,11 @@ func TestParseModelsDevDocSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if e, ok := doc["glm-5.2"]; !ok || e.Context != 1000000 || e.Output != 131072 {
+	if e, ok := doc.byBare["glm-5.2"]; !ok || e.Context != 1000000 || e.Output != 131072 {
 		t.Errorf("glm-5.2: %+v ok=%v", e, ok)
 	}
 	// 命名空间 id 尾段索引。
-	if e, ok := doc["gpt-fake-x"]; !ok || e.Context != 400000 {
+	if e, ok := doc.byBare["gpt-fake-x"]; !ok || e.Context != 400000 {
 		t.Errorf("namespaced id should index by tail: %+v ok=%v", e, ok)
 	}
 }
@@ -156,7 +170,7 @@ func TestParseModelsDevDocVendorPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if e := doc["glm-5.2"]; e.Context != 1000000 {
+	if e := doc.byBare["glm-5.2"]; e.Context != 1000000 {
 		t.Errorf("vendor source should win: context=%d want 1000000", e.Context)
 	}
 }
@@ -174,7 +188,7 @@ func TestParseModelsDevDocMajorityVote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if e := doc["kimi-k3"]; e.Context != 1000000 {
+	if e := doc.byBare["kimi-k3"]; e.Context != 1000000 {
 		t.Errorf("majority vote: context=%d want 1000000", e.Context)
 	}
 }
@@ -197,11 +211,11 @@ func TestParseModelsDevDocValueValidation(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	for _, bad := range []string{"bad-zero", "bad-neg", "bad-huge", "bad-out-neg", "bad-out-huge"} {
-		if _, ok := doc[bad]; ok {
+		if _, ok := doc.byBare[bad]; ok {
 			t.Errorf("%s: dirty value must be rejected", bad)
 		}
 	}
-	if _, ok := doc["ok-model"]; !ok {
+	if _, ok := doc.byBare["ok-model"]; !ok {
 		t.Error("ok-model must be indexed")
 	}
 }
@@ -214,10 +228,10 @@ func TestParseModelsDevDocEmptyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if _, ok := doc["no-limit-model"]; ok {
+	if _, ok := doc.byBare["no-limit-model"]; ok {
 		t.Error("model without limit must be skipped")
 	}
-	if _, ok := doc["with-limit"]; !ok {
+	if _, ok := doc.byBare["with-limit"]; !ok {
 		t.Error("model with limit must be indexed")
 	}
 }
@@ -650,7 +664,7 @@ func TestModelsDevNegativesEvictsExpired(t *testing.T) {
 
 	// 索引就绪（doc 非 nil）+ fetched=true：ensureDocAsync 直接短路，全程零网络。
 	modelsDev.mu.Lock()
-	modelsDev.doc = map[string]modelsDevEntry{"known-model": {Context: 100000, Output: 8192}}
+	modelsDev.doc = &modelsDevDoc{byBare: map[string]modelsDevEntry{"known-model": {Context: 100000, Output: 8192}}}
 	modelsDev.fetched = true
 	modelsDev.lastFetch = time.Now()
 	modelsDev.mu.Unlock()
@@ -703,7 +717,7 @@ func TestModelsDevNegativesReStampBlocksEviction(t *testing.T) {
 	resetModelCatalog()
 
 	modelsDev.mu.Lock()
-	modelsDev.doc = map[string]modelsDevEntry{"known-model": {Context: 100000, Output: 8192}}
+	modelsDev.doc = &modelsDevDoc{byBare: map[string]modelsDevEntry{"known-model": {Context: 100000, Output: 8192}}}
 	modelsDev.fetched = true
 	modelsDev.lastFetch = time.Now()
 	modelsDev.mu.Unlock()
@@ -735,9 +749,9 @@ func TestModelsDevNegativesReStampBlocksEviction(t *testing.T) {
 // model.json 不可复现覆盖）。
 func TestParseModelsDevDocTieBreakDeterministic(t *testing.T) {
 	raw := fakeModelsDevDoc(map[string]map[string][2]int64{
-		"agg-a": {"kimi-k3": {1000000, 131072}},
-		"agg-b": {"kimi-k3": {1000000, 131072}},
-		"agg-c": {"kimi-k3": {1000000, 131072}},
+		"agg-a":    {"kimi-k3": {1000000, 131072}},
+		"agg-b":    {"kimi-k3": {1000000, 131072}},
+		"agg-c":    {"kimi-k3": {1000000, 131072}},
 		"z-vendor": {"kimi-k3": {200000, 131072}},
 		"y-vendor": {"kimi-k3": {200000, 131072}},
 		"a-vendor": {"kimi-k3": {200000, 131072}},
@@ -747,7 +761,7 @@ func TestParseModelsDevDocTieBreakDeterministic(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		return doc["kimi-k3"].Context
+		return doc.byBare["kimi-k3"].Context
 	}
 	first := run()
 	if first != 200000 {
@@ -762,7 +776,7 @@ func TestParseModelsDevDocTieBreakDeterministic(t *testing.T) {
 }
 
 // TestParseModelsDevDocVendorTieBreakByProviderName T1 多官方源同票分歧
-//（zai 与 moonshotai 都报 kimi-k3 且值不同）：两候选都 vendor=true 同票，
+// （zai 与 moonshotai 都报 kimi-k3 且值不同）：两候选都 vendor=true 同票，
 // 旧实现「先到先得」不确定，必须由 provider 字典序（moonshotai < zai）收敛。
 func TestParseModelsDevDocVendorTieBreakByProviderName(t *testing.T) {
 	raw := fakeModelsDevDoc(map[string]map[string][2]int64{
@@ -774,7 +788,7 @@ func TestParseModelsDevDocVendorTieBreakByProviderName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		return doc["kimi-k3"].Context
+		return doc.byBare["kimi-k3"].Context
 	}
 	first := run()
 	if first != 200000 {
@@ -811,6 +825,6 @@ func TestFetchDocNilClientDoesNotHitNetwork(t *testing.T) {
 	doc := modelsDev.doc
 	modelsDev.mu.Unlock()
 	if doc != nil {
-		t.Fatalf("nil client 时 doc 应保持 nil（拉取失败语义），got %d 条", len(doc))
+		t.Fatalf("nil client 时 doc 应保持 nil（拉取失败语义），got %+v", doc)
 	}
 }

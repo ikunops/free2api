@@ -17,14 +17,14 @@
 // 把 CLI 自己的 195KB 真实请求原样重放即 200，说明上游不看指纹；换成小请求逐字段
 // 二分，才定位到下面三条）：
 //
-//	1. x-opencode-session 头必须是 **"ses_" 前缀 + 恰好 26 位小写十六进制** 的合法
-//	   形态。缺头 / 长度不对 / 含非 [0-9a-f] 字符 / 大写字母 → 一律 403 FreeTierError。
-//	   上游不校验 id 对应的"真实会话"——随机生成的合规 id（如 ses_0123456789abcdef0123456789）
-//	   也 200。这是**本适配器最易踩的一闸**：opencodeSessionID 用 sha256 前 13 字节
-//	   （= 26 个小写 hex）派生，恰好合规；若把长度改成 12/14 字节就会全池静默 403。
-//	2. stream=true —— 免费层只走流式。同一条请求把 stream 改 false 立刻 403。
-//	3. tools 里同时含名为 bash 与 read 的工具（opencode 本体内置的两个工具名）。
-//	   只给 bash 或只给 read 仍 403。
+//  1. x-opencode-session 头必须是 **"ses_" 前缀 + 恰好 26 位小写十六进制** 的合法
+//     形态。缺头 / 长度不对 / 含非 [0-9a-f] 字符 / 大写字母 → 一律 403 FreeTierError。
+//     上游不校验 id 对应的"真实会话"——随机生成的合规 id（如 ses_0123456789abcdef0123456789）
+//     也 200。这是**本适配器最易踩的一闸**：opencodeSessionID 用 sha256 前 13 字节
+//     （= 26 个小写 hex）派生，恰好合规；若把长度改成 12/14 字节就会全池静默 403。
+//  2. stream=true —— 免费层只走流式。同一条请求把 stream 改 false 立刻 403。
+//  3. tools 里同时含名为 bash 与 read 的工具（opencode 本体内置的两个工具名）。
+//     只给 bash 或只给 read 仍 403。
 //
 // 实测（2026-09-30，本机，Go net/http 直连，Bearer public 即可、无需任何 key）：
 //
@@ -60,6 +60,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -117,6 +118,23 @@ func (c *Client) opencodeBase(a *auth.Auth) string {
 		return strings.TrimRight(b, "/")
 	}
 	return defaultOpenCodeChatBase
+}
+
+// opencodeModelsDevBase 把实际出站 base 映射到 models.dev provider 声明的 API。
+// 这只做“渠道身份对齐”，不写死任何模型能力：opencode 官方实际对话端点是
+// /zen/v1，而 models.dev 描述同一渠道用的 canonical API 是
+// /inference/openai/v1（Go 为 /inference/go/openai/v1），路径不同但 host 相同。
+// 自建镜像/自定义 host 不套官方目录，避免把官方额度错误套到第三方镜像。
+func (c *Client) opencodeModelsDevBase(a *auth.Auth) string {
+	base := c.opencodeBase(a)
+	u, err := neturl.Parse(base)
+	if err != nil || !strings.EqualFold(u.Hostname(), "opencode.ai") {
+		return base
+	}
+	if strings.Contains(strings.ToLower(u.Path), "/zen/go/") {
+		return "https://opencode.ai/inference/go/openai/v1"
+	}
+	return "https://opencode.ai/inference/openai/v1"
 }
 
 // opencodeSessionID 派生一枚**稳定**的 x-opencode-session 值。
@@ -376,6 +394,7 @@ func (c *Client) FetchOpenCodeModels(ctx context.Context, a *auth.Auth) ([]Model
 		ID      string `json:"id"`
 		Name    string `json:"name"`
 		OwnedBy string `json:"owned_by"`
+		modelCapFields
 	}
 	var env struct {
 		Data []ocEntry `json:"data"`
@@ -387,12 +406,15 @@ func (c *Client) FetchOpenCodeModels(ctx context.Context, a *auth.Auth) ([]Model
 		return nil, fmt.Errorf("opencode models: 无法解析响应: %w", err)
 	}
 	out := make([]ModelInfo, 0, len(list))
+	devBase := c.opencodeModelsDevBase(a)
 	for _, m := range list {
 		id := strings.TrimSpace(m.ID)
 		if id == "" {
 			continue
 		}
-		out = append(out, ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id), Free: isOpenCodeFreeTierModel(id)})
+		mi := ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id), Free: isOpenCodeFreeTierModel(id), DevBase: devBase}
+		m.modelCapFields.apply(&mi)
+		out = append(out, mi)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("opencode models: 上游返回空清单")

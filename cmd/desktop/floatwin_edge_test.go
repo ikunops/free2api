@@ -25,8 +25,8 @@ func TestFloatAlphaEdgeIsFeatheredAllFourSides(t *testing.T) {
 
 	midX, midY := w/2, h/2
 	cases := []struct {
-		name       string
-		outer, in  int
+		name      string
+		outer, in int
 	}{
 		{"左边", at(0, midY), at(1, midY)},
 		{"右边", at(w-1, midY), at(w-2, midY)},

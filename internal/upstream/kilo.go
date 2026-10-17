@@ -93,6 +93,15 @@ func (c *Client) kiloModelsURL(a *auth.Auth) string {
 	return defaultKiloModelsBase + kiloModelsPath
 }
 
+// kiloModelsDevBase 返回目录所在渠道的 canonical base（models.dev provider 对齐用）。
+// Kilo 的对话 base 是 /api/openrouter，而模型目录与 models.dev 的 kilo provider
+// 都是 /api/gateway；能力/上下文应跟目录渠道走。自定义 upstream_base 若直接是
+// gateway，也自然沿用；否则保留实际 host，不套官方值。
+func (c *Client) kiloModelsDevBase(a *auth.Auth) string {
+	u := c.kiloModelsURL(a)
+	return strings.TrimSuffix(strings.TrimRight(u, "/"), kiloModelsPath)
+}
+
 // kiloHeaders Kilo 端点要的头。鉴权用凭据自带的 key；空则用匿名占位值
 // （Kilo 对匿名是放行的，这样"没导入任何 key 也能跑"）。
 func (c *Client) kiloHeaders(req *http.Request, a *auth.Auth) {
@@ -196,21 +205,14 @@ func (c *Client) kiloChatStreamContext(ctx context.Context, a *auth.Auth, body [
 // pricing 是**字符串**（"0" / "0.0000012"），不是数字——按 string 收再解析，
 // 避免上游把 "0" 写成字符串时整条解析失败。
 type kiloModelEntry struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ContextLength int64  `json:"context_length"`
-	IsFree        bool   `json:"isFree"`
-	Pricing       struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	IsFree  bool   `json:"isFree"`
+	Pricing struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
-	TopProvider struct {
-		ContextLength int64 `json:"context_length"`
-	} `json:"top_provider"`
-	Architecture struct {
-		InputModalities  []string `json:"input_modalities"`
-		OutputModalities []string `json:"output_modalities"`
-	} `json:"architecture"`
+	modelCapFields
 }
 
 // kiloModelIsFree 判定一条目录模型是否属于免费层。三条判据取或：
@@ -279,17 +281,8 @@ func (c *Client) FetchKiloModels(ctx context.Context, a *auth.Auth) ([]ModelInfo
 		}
 		// Kilo 目录在 FetchKiloModels 里已按零价过滤，留下的全是免费层，故恒 true。
 		mi := ModelInfo{ID: id, Name: firstNonEmptyStr(m.Name, id), Free: true}
-		if m.ContextLength > 0 {
-			mi.ContextWindow = m.ContextLength
-		} else if m.TopProvider.ContextLength > 0 {
-			mi.ContextWindow = m.TopProvider.ContextLength
-		}
-		for _, mod := range m.Architecture.InputModalities {
-			if strings.EqualFold(strings.TrimSpace(mod), "image") {
-				mi.SupportsImages = true
-				break
-			}
-		}
+		m.modelCapFields.apply(&mi)
+		mi.DevBase = c.kiloModelsDevBase(a)
 		out = append(out, mi)
 	}
 	if len(out) == 0 {

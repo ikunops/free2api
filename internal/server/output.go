@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"free2api/internal/upstream"
 )
 
 // 已跑通的输出协议。anthropic / gemini 仍在 /admin/output 里**列出来但不给选**：
@@ -56,6 +58,7 @@ const (
 //     兜底表）；模型之间档位可以不同，与接入本开关之前完全一致。
 //   - fixed：所有模型统一暴露同一组七档（minimal/low/medium/high/xhigh/max/ultra），
 //     不管上游声明什么。发给上游时仍由出站降级管线收敛到真实支持的档位（不会 400）。
+//
 // 定义在输出侧：这是「网关对外长什么样」的选择，与模型前缀/费率同层。
 const (
 	EffortUpstream = "upstream"
@@ -582,6 +585,17 @@ func (h *Handler) adminOutputGet(w http.ResponseWriter, r *http.Request) {
 // 重新探测成功就整体换新，失败也不会把旧清单擦掉（保持展示连续性）。
 // 这是管理端点的手动动作，不是常规路径，调用频率以用户点击为准。
 func (h *Handler) invalidateCatalogCaches() {
+	// 管理面“刷新”先同步拉一次 models.dev：旧实现先清文档再异步拉，刷新响应的
+	// 第一帧会没有 context/能力，看起来像数据被擦掉。拉取失败时保留旧文档和旧缓存，
+	// 让页面继续展示上一份可用数据，而不是把清单打空。
+	modelsDevRefreshed := false
+	if h.cfg.Upstream != nil {
+		modelsDevRefreshed = upstream.RefreshModelsDevDocumentNow(h.cfg.Upstream.HTTP)
+	}
+	// 只有拿到新文档才失效运行时值；旧文档仍在时清缓存只会制造空洞。
+	if modelsDevRefreshed {
+		upstream.InvalidateModelsDevCapsForRefresh()
+	}
 	dynamicModelsCache.Lock()
 	dynamicModelsCache.fetched = time.Time{}
 	dynamicModelsCache.lastFail = time.Time{}

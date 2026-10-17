@@ -313,6 +313,46 @@ func TestOpenCodeFetchModelsKeepsAll(t *testing.T) {
 
 // TestOpenCodeUpstreamBasePriority 凭据自带 upstream_base 优先于 Client 覆盖
 // （「用户自己选 url」的落点），缺省回落 zen 直连 base。
+// TestOpenCodeFetchModelsParsesDynamicCapabilities 上游目录若返回上下文/输出/
+// 多模态/工具/推理同义字段，必须动态写入 ModelInfo；不得靠模型名白名单。
+func TestOpenCodeFetchModelsParsesDynamicCapabilities(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"object":"list","data":[
+			{"id":"future-vision-free","limit":{"context":200000,"output":32000},
+			 "architecture":{"input_modalities":["text","image"]},"supports_tool_call":true,
+			 "supports_reasoning":true},
+			{"id":"future-camel-free","maxInputTokens":1048576,"maxOutputTokens":65536,
+			 "supportsImages":true,"supportsToolCall":true,"supportsReasoning":true},
+			{"id":"future-openrouter-free","context_length":262144,"top_provider":{"context_length":131072,
+			 "max_completion_tokens":8192},"tools":true,"reasoning":true}
+		]}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{HTTP: &http.Client{}, ChatBaseOpenCode: srv.URL}
+	a := &auth.Auth{UID: "oc-dyn", AccessToken: "sk-dyn"}
+	a.SetProducer(ProducerOpenCode)
+	infos, err := c.FetchOpenCodeModels(context.Background(), a)
+	if err != nil {
+		t.Fatalf("FetchOpenCodeModels: %v", err)
+	}
+	if len(infos) != 3 {
+		t.Fatalf("infos=%+v", infos)
+	}
+	if infos[0].ContextWindow != 200000 || infos[0].MaxTokens != 32000 ||
+		!infos[0].SupportsImages || !infos[0].SupportsToolCall || !infos[0].SupportsReasoning {
+		t.Errorf("limit/architecture capabilities not parsed: %+v", infos[0])
+	}
+	if infos[1].ContextWindow != 1048576 || infos[1].MaxTokens != 65536 ||
+		!infos[1].SupportsImages || !infos[1].SupportsToolCall || !infos[1].SupportsReasoning {
+		t.Errorf("camel-case capabilities not parsed: %+v", infos[1])
+	}
+	if infos[2].ContextWindow != 262144 || infos[2].MaxTokens != 8192 ||
+		!infos[2].SupportsToolCall || !infos[2].SupportsReasoning {
+		t.Errorf("OpenRouter-shaped capabilities not parsed: %+v", infos[2])
+	}
+}
+
 func TestOpenCodeUpstreamBasePriority(t *testing.T) {
 	c := &Client{ChatBaseOpenCode: "https://client-override.example/zen/v1"}
 	a := &auth.Auth{UID: "oc1", AccessToken: "k"}

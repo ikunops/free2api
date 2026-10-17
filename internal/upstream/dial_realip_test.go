@@ -198,6 +198,98 @@ func TestRealIPDialerBadAddrPassthrough(t *testing.T) {
 	}
 }
 
+// TestRealIPDialPolicyDefaultIsAuto 缺省策略 auto：行为与加固前完全一致（只有
+// workbuddy.ai 家族直拨），CN 上游零影响。
+func TestRealIPDialPolicyDefaultIsAuto(t *testing.T) {
+	if got := RealIPDialPolicy(); got != realIPDialAuto {
+		t.Fatalf("default policy=%q want %q", got, realIPDialAuto)
+	}
+}
+
+// TestNewPolicyDialerOffBypassesDoH off 策略：直拨整体关停，DoH 零调用，地址原样
+// 交给系统解析（DoH 被 VPN 拦时的逃生门）。
+func TestNewPolicyDialerOffBypassesDoH(t *testing.T) {
+	defer SetRealIPDialPolicy(realIPDialAuto)
+	SetRealIPDialPolicy("off")
+	resolveCalls := 0
+	base := &fakeDialer{}
+	d := newPolicyDialer(base)
+	d.dohResolve = func(context.Context, string) []string {
+		resolveCalls++
+		return []string{"1.2.3.4"}
+	}
+	if !d.disabled || d.allHosts {
+		t.Fatalf("disabled=%v allHosts=%v want true false", d.disabled, d.allHosts)
+	}
+	if _, err := d.DialContext(context.Background(), "tcp", "www.workbuddy.ai:443"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got := base.recorded(); len(got) != 1 || got[0] != "www.workbuddy.ai:443" {
+		t.Fatalf("dialed=%v want raw passthrough", got)
+	}
+	if resolveCalls != 0 {
+		t.Errorf("DoH called %d times under policy=off, want 0", resolveCalls)
+	}
+}
+
+// TestNewPolicyDialerAlwaysCoversAllHosts always 策略：CN 上游也走 DoH 真实 IP
+// 直拨——TUN/fake-ip 下不再依赖代理侧的假地址重映射。
+func TestNewPolicyDialerAlwaysCoversAllHosts(t *testing.T) {
+	defer SetRealIPDialPolicy(realIPDialAuto)
+	SetRealIPDialPolicy("always")
+	base := &fakeDialer{}
+	d := newPolicyDialer(base)
+	d.dohResolve = func(context.Context, string) []string { return []string{"115.150.39.190"} }
+	if d.disabled || !d.allHosts {
+		t.Fatalf("disabled=%v allHosts=%v want false true", d.disabled, d.allHosts)
+	}
+	if _, err := d.DialContext(context.Background(), "tcp", "copilot.tencent.com:443"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got := base.recorded(); len(got) != 1 || got[0] != "115.150.39.190:443" {
+		t.Fatalf("dialed=%v want [115.150.39.190:443]", got)
+	}
+}
+
+// TestNewPolicyDialerAutoKeepsCNOnSystemResolver auto 策略：CN 上游不直拨
+// （保 CDN 就近解析 + 代理侧域名规则）。
+func TestNewPolicyDialerAutoKeepsCNOnSystemResolver(t *testing.T) {
+	defer SetRealIPDialPolicy(realIPDialAuto)
+	SetRealIPDialPolicy("auto")
+	resolveCalls := 0
+	base := &fakeDialer{}
+	d := newPolicyDialer(base)
+	d.dohResolve = func(context.Context, string) []string {
+		resolveCalls++
+		return []string{"115.150.39.190"}
+	}
+	if _, err := d.DialContext(context.Background(), "tcp", "copilot.tencent.com:443"); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got := base.recorded(); len(got) != 1 || got[0] != "copilot.tencent.com:443" {
+		t.Fatalf("dialed=%v want raw passthrough", got)
+	}
+	if resolveCalls != 0 {
+		t.Errorf("DoH called %d times under policy=auto for CN host, want 0", resolveCalls)
+	}
+}
+
+// TestSetRealIPDialPolicyUnknownFallsBackAuto 未知/空值归一 auto（配置层已 normalize，
+// 这里是防御分支：逃生门不该把网关挡在启动之外）。
+func TestSetRealIPDialPolicyUnknownFallsBackAuto(t *testing.T) {
+	defer SetRealIPDialPolicy(realIPDialAuto)
+	for _, in := range []string{"", "  ", "whatever", "ALWAYSS"} {
+		SetRealIPDialPolicy(in)
+		if got := RealIPDialPolicy(); got != realIPDialAuto {
+			t.Errorf("SetRealIPDialPolicy(%q) -> %q want auto", in, got)
+		}
+	}
+	SetRealIPDialPolicy(" Always ")
+	if got := RealIPDialPolicy(); got != realIPDialAlways {
+		t.Errorf("case/space insensitive: got %q want always", got)
+	}
+}
+
 // TestDoHCacheHitAndNegativeCache 缓存行为：正结果在 TTL 内零重复解析；
 // 负结果短缓存后允许重探（用手工过期模拟 30s 窗口）。
 func TestDoHCacheHitAndNegativeCache(t *testing.T) {

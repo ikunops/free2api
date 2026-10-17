@@ -464,7 +464,7 @@ func TestGlobalE2EFetchModels(t *testing.T) {
 		captureNonZeroCodes(t, "models:"+p, status, body)
 		if status == 200 {
 			logResp(t, "GlobalModels "+p, status, body, 1200)
-			names, infos, _, _, perr := parseGlobalModelNames(body)
+			names, infos, _, _, perr := parseGlobalModelNames(body, "")
 			if perr != nil {
 				t.Logf("结论#5: %s 200 但解析失败: %v", p, perr)
 			} else {

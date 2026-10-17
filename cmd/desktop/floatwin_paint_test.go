@@ -5,7 +5,6 @@ package main
 import (
 	"testing"
 	"unsafe"
-
 )
 
 // TestDrawFloatTextWritesPixels 直接对着一个内存 DIB 画一行字，数一下有多少像素

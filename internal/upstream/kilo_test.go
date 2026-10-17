@@ -85,8 +85,11 @@ func TestFetchKiloModelsFiltersFreeAndKeepsOrder(t *testing.T) {
 			{"id": "paid/model", "name": "Paid", "context_length": 1000,
 				"pricing": map[string]any{"prompt": "0.5", "completion": "1"}},
 			{"id": "free/model:free", "name": "Free One", "context_length": 2000,
-				"pricing": map[string]any{"prompt": "0", "completion": "0"},
-				"architecture": map[string]any{"input_modalities": []string{"text", "image"}}},
+				"max_output_tokens": 512,
+				"pricing":           map[string]any{"prompt": "0", "completion": "0"},
+				"architecture":      map[string]any{"input_modalities": []string{"text", "image"}},
+				"supportsToolCall":  true,
+				"supportsReasoning": true},
 			{"id": "flagged/free", "name": "Flagged", "isFree": true,
 				"pricing": map[string]any{"prompt": "0.1", "completion": "0.2"}},
 		},
@@ -119,8 +122,8 @@ func TestFetchKiloModelsFiltersFreeAndKeepsOrder(t *testing.T) {
 	if infos[0].ContextWindow != 2000 {
 		t.Errorf("context window not carried: %d", infos[0].ContextWindow)
 	}
-	if !infos[0].SupportsImages {
-		t.Errorf("image modality should set SupportsImages")
+	if !infos[0].SupportsImages || !infos[0].SupportsToolCall || !infos[0].SupportsReasoning || infos[0].MaxTokens != 512 {
+		t.Errorf("dynamic capabilities not carried: %+v", infos[0])
 	}
 }
 

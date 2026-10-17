@@ -196,8 +196,10 @@ func TestChatStreamTransportErrorCleansIdleConnections(t *testing.T) {
 	if _, _, _, err := c.ChatStream(a, []byte(`{}`), "", ChatMeta{}); err == nil {
 		t.Fatal("second chat should fail with transport error")
 	}
-	if closeCalls != 1 {
-		t.Errorf("CloseIdleConnections calls after transport error = %d, want 1", closeCalls)
+	// 每次传输层失败都先清池再决定是否重试（清池正是为了让重试拿到新连接），
+	// 因此计数 = 1 次原始尝试 + transportRetries 次重试。
+	if want := int32(1 + transportRetries); closeCalls != want {
+		t.Errorf("CloseIdleConnections calls after transport error = %d, want %d（每次失败清一次池）", closeCalls, want)
 	}
 }
 

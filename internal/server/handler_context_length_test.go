@@ -12,7 +12,7 @@ import (
 )
 
 // TestModelListContextLengthThreeLevelLookup CN 动态分支 context_length/max_output_tokens
-// 三级查找（context_catalog）端到端：动态值权威 → 知识表 → 1M 兜底；零值不透出假 131072。
+// 三级查找（context_catalog）端到端：动态值权威 → 知识表；未知省略，不再编造 1M。
 func TestModelListContextLengthThreeLevelLookup(t *testing.T) {
 	resetModelsCache()
 	upstream.ResetLookupChainForTest()
@@ -40,23 +40,24 @@ func TestModelListContextLengthThreeLevelLookup(t *testing.T) {
 	if o := byID["cn:dyn-full"]["max_output_tokens"]; o != int64(8192) {
 		t.Errorf("dyn-full max_output_tokens=%v want 8192 (remote wins)", o)
 	}
-	// 2) 知识表命中：glm-5.2 上游零值 → 表值 1M/131072（fork 实测）。
-	if c := byID["cn:glm-5.2"]["context_length"]; c != int64(1000000) {
-		t.Errorf("glm-5.2 context_length=%v want 1000000 (knowledge table)", c)
+	// 2) 动态值缺失且渠道已知（CN chat base）时，没有精确渠道记录就省略，
+	// 不再用裸名静态表冒充该渠道能力。glm-5.2 的真实值必须由上游直接下发。
+	if _, ok := byID["cn:glm-5.2"]["context_length"]; ok {
+		t.Error("known channel with zero remote context must omit, not apply bare-name table")
 	}
-	if o := byID["cn:glm-5.2"]["max_output_tokens"]; o != int64(131072) {
-		t.Errorf("glm-5.2 max_output_tokens=%v want 131072 (knowledge table)", o)
+	if _, ok := byID["cn:glm-5.2"]["max_output_tokens"]; ok {
+		t.Error("known channel with zero remote output must omit")
 	}
-	// 3) 未知 → 1M 兜底；max_output_tokens 未知省略。
-	if c := byID["cn:never-seen-model"]["context_length"]; c != int64(1000000) {
-		t.Errorf("unknown context_length=%v want 1000000 (1M fallback)", c)
+	// 3) 未知 → 省略；max_output_tokens 未知同样省略。
+	if _, ok := byID["cn:never-seen-model"]["context_length"]; ok {
+		t.Error("unknown model context_length must be omitted (no fabricated 1M)")
 	}
 	if _, ok := byID["cn:never-seen-model"]["max_output_tokens"]; ok {
 		t.Error("unknown model max_output_tokens must be omitted")
 	}
-	// 4) 知识表条目但输出上限未知（auto）→ context 走表 168000，输出省略。
-	if c := byID["cn:auto"]["context_length"]; c != int64(168000) {
-		t.Errorf("auto context_length=%v want 168000 (knowledge table)", c)
+	// 4) 渠道已知但精确值未知（auto）→ context 也省略，输出同样省略。
+	if _, ok := byID["cn:auto"]["context_length"]; ok {
+		t.Error("auto context_length must be omitted when channel-specific value is unknown")
 	}
 	if _, ok := byID["cn:auto"]["max_output_tokens"]; ok {
 		t.Error("auto max_output_tokens must be omitted (output unknown)")
@@ -106,7 +107,7 @@ func TestModelListGlobalContextLengthLookup(t *testing.T) {
 }
 
 // TestModelListGlobalNarrowContextLookup 窄表探测（纯 ID 数组）→ 裸条目 context_length
-// 经知识表补齐（不再裸 131072）；不在表中的窄表 ID → 1M 兜底。
+// 经知识表补齐（不再裸 131072）；不在表中的窄表 ID → 省略（未知不编造）。
 func TestModelListGlobalNarrowContextLookup(t *testing.T) {
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
@@ -128,8 +129,8 @@ func TestModelListGlobalNarrowContextLookup(t *testing.T) {
 	if c := byID["global:gpt-5.6-luna"]["context_length"]; c != int64(1050000) {
 		t.Errorf("narrow gpt-5.6-luna context_length=%v want 1050000 (knowledge table, not 131072)", c)
 	}
-	if c := byID["global:narrow-unknown"]["context_length"]; c != int64(1000000) {
-		t.Errorf("narrow-unknown context_length=%v want 1000000 (unknown → 1M fallback)", c)
+	if _, ok := byID["global:narrow-unknown"]["context_length"]; ok {
+		t.Error("narrow-unknown context_length must be omitted (unknown is not 1M)")
 	}
 	if _, ok := byID["global:narrow-unknown"]["max_output_tokens"]; ok {
 		t.Error("narrow-unknown max_output_tokens must be omitted")
@@ -137,8 +138,8 @@ func TestModelListGlobalNarrowContextLookup(t *testing.T) {
 }
 
 // TestModelListContextLengthLevel4Fetch 端到端四级闭环（model-json-dynamic 任务书）：
-// 动态值缺失 + 静态表未收录 + model.json 未缓存 → 第 4 级异步拉 models.dev → 值写
-// model.json → 第二次 /v1/models 命中第 3 级缓存（不再 1M 兜底）。
+// 动态值缺失 + 静态表未收录 + model.json 未缓存 → 第 4 级拉 models.dev → 值写
+// model.json → 下一次 /v1/models 命中精确渠道缓存；未知时不编 1M。
 func TestModelListContextLengthLevel4Fetch(t *testing.T) {
 	resetModelsCache()
 	upstream.ResetLookupChainForTest()
@@ -166,15 +167,15 @@ func TestModelListContextLengthLevel4Fetch(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
 	h := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: false})
 
-	// 第一次：全链 miss → 1M 兜底（异步拉取已触发）。
-	var first int64
+	// CN 分支不带 DevBase，不会走冷启动同步等待；首次全链 miss 时省略。
+	var first any
 	for _, m := range h.modelList() {
 		if m["id"] == "cn:future-model-x" {
-			first, _ = m["context_length"].(int64)
+			first = m["context_length"]
 		}
 	}
-	if first != 1000000 {
-		t.Fatalf("first lookup context_length=%d want 1000000 (async fetch, immediate 1M)", first)
+	if first != nil {
+		t.Fatalf("first lookup context_length=%v want omitted (models.dev pending)", first)
 	}
 
 	// 等异步拉取回流 model.json（有界轮询）。
@@ -192,7 +193,7 @@ func TestModelListContextLengthLevel4Fetch(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if second != 3000000 {
-		t.Fatalf("second lookup context_length=%d want 3000000 (model.json hit after backfill)", second)
+		t.Fatalf("later lookup context_length=%d want 3000000 (model.json hit after backfill)", second)
 	}
 	// max_output_tokens 同步回流（999000 而非省略）。
 	var out any

@@ -337,7 +337,7 @@ func (c *Client) globalModelsOnce(a *auth.Auth, path string) ([]string, []ModelI
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil, nil, nil, fmt.Errorf("global models status %d: %s", resp.StatusCode, truncate(string(raw), 120))
 	}
-	return parseGlobalModelNames(raw)
+	return parseGlobalModelNames(raw, c.chatBase(a))
 }
 
 // parseGlobalModelNames 容忍两种形态解析模型名：
@@ -350,7 +350,7 @@ func (c *Client) globalModelsOnce(a *auth.Auth, path string) ([]string, []ModelI
 // EffortListing）。窄表形态无元数据 → infos/桶为空。
 //
 // 解析成功但名单为空 → 返回错误（调用方回落静态，等价"该端点没给全"）。
-func parseGlobalModelNames(raw []byte) (names []string, infos []ModelInfo, efforts map[string][]string, defaults map[string]string, err error) {
+func parseGlobalModelNames(raw []byte, devBase string) (names []string, infos []ModelInfo, efforts map[string][]string, defaults map[string]string, err error) {
 	var env struct {
 		Code int             `json:"code"`
 		Data json.RawMessage `json:"data"`
@@ -400,6 +400,9 @@ func parseGlobalModelNames(raw []byte) (names []string, infos []ModelInfo, effor
 		out = append(out, id)
 		mi := m.modelInfo()
 		mi.ID = id // name 兜底形态下 id 取自 name，对齐 names 输出
+		// 渠道身份给 /v1/models 的四级查找链用：global 模型的能力必须按
+		// workbuddy.ai 这条真实出站渠道匹配，不能回落跨渠道裸名静态表。
+		mi.DevBase = devBase
 		infos = append(infos, mi)
 		// effort 桶：supportedEfforts 数组优先；缺数组但 reasoning.effort 单档非空 → 视作单档表。
 		if len(m.Reasoning.SupportedEfforts) > 0 {
