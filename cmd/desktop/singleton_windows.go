@@ -162,13 +162,64 @@ func (d *desktop) reclaimOn(addr string) {
 			log.Printf("接管时停机失败（继续按进程清理）：%v", err)
 		}
 	}
-	killed, failed := killGatewayProcesses(os.Getpid(), d.exeDir)
+	// 清场必须按部署目录，而不是 exe 目录：升级时新 exe 在别的文件夹，
+	// 旧实例仍在原部署目录运行，按 exeDir 根本清不到它。
+	killed, failed := killGatewayProcesses(os.Getpid(), d.deployDir)
+	// 同端口上的残留也要收掉：升级前那份部署可能还在另一个目录（例如
+	// dist-bak / dist-v113），它不归本次 deployDir 管，却握着同一个端口。
+	// 端口租约已经证明「这个端口该由我控制」，此时清掉的是同一服务的旧宿主，
+	// 不是别人的服务；pidListeningOn 只能拿到 PID，所以先确认映像名里带
+	// free2api 再动手。
+	extra, extraFailed := killGatewayPIDs(os.Getpid(), []uint32{portPID(addr)})
+	killed = append(killed, extra...)
+	failed = append(failed, extraFailed...)
 	if len(killed) > 0 {
 		log.Printf("已清掉其它网关进程：%v", killed)
 	}
 	if len(failed) > 0 {
 		log.Printf("WARN: 仍有网关进程没退出：%v", failed)
 	}
+}
+
+// portPID 返回监听 addr 的 PID；拿不到或为 0 时返回 0（killGatewayPIDs 会跳过）。
+func portPID(addr string) uint32 {
+	pid, err := pidListeningOn(addr)
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// killGatewayPIDs 强杀给定 PID 里「确实是 free2api」的那些。
+//
+// 与 killGatewayProcesses 的区别：这里不按目录筛，只按映像名筛。调用方必须
+// 已经确认这些 PID 占的是本服务该接管的端口（否则会误杀别家进程）。
+func killGatewayPIDs(self int, pids []uint32) (killed []uint32, failed []string) {
+	for _, pid := range pids {
+		if pid == 0 || int(pid) == self {
+			continue
+		}
+		h, err := windows.OpenProcess(processQueryLimited|windows.PROCESS_TERMINATE, false, pid)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%d(打不开:%v)", pid, err))
+			continue
+		}
+		name, nerr := processImageName(h)
+		if nerr != nil || !strings.Contains(strings.ToLower(name), "free2api") {
+			windows.CloseHandle(h)
+			// 端口上不是本服务的进程：绝不强杀，交给 startGateway 的占用检查报错。
+			failed = append(failed, fmt.Sprintf("%d(不是 free2api，已跳过)", pid))
+			continue
+		}
+		_, _, _ = procTerminateProcess.Call(uintptr(h), 1)
+		windows.CloseHandle(h)
+		if waitExit(pid, 3*time.Second) {
+			killed = append(killed, pid)
+		} else {
+			failed = append(failed, fmt.Sprintf("%d(未退出)", pid))
+		}
+	}
+	return killed, failed
 }
 
 // ---------------------------------------------------------------- 端口租约

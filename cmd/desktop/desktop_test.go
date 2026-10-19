@@ -86,7 +86,7 @@ func TestStartStopCycle(t *testing.T) {
 	}
 	defer os.Chdir(old)
 
-	d := &desktop{cfgPath: cfgPath, exeDir: dir, gwAddr: addr}
+	d := &desktop{cfgPath: cfgPath, deployDir: dir, exeDir: dir, gwAddr: addr}
 	d.proxy = newProxy(addr)
 
 	if err := d.startGateway(); err != nil {

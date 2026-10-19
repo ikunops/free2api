@@ -55,7 +55,15 @@ const iconResourceID = 2
 type desktop struct {
 	mu      sync.Mutex
 	cfgPath string
-	exeDir  string
+	// deployDir 是「运行态归属目录」：config.json / auths / data 都相对它解析。
+	// 默认等于 config.json 所在目录；如果 exe 被单独放进一个新文件夹，
+	// discoverDeployDir 会选回本机已有部署，而不是就地在空目录里新建一套。
+	//
+	// 为什么不能继续只认 exeDir：升级时用户常常只把新 exe 解压到新目录再双击。
+	// 那样 ensureConfig 会就地生成空配置，网关随后按 ./auths 读空目录，
+	// 表现就是「一升级账号全没了」。账号其实还在旧目录，只是程序看错了地方。
+	deployDir string
+	exeDir    string
 
 	inst     *gateway.Instance
 	starting bool
@@ -89,19 +97,31 @@ func main() {
 	exeDir := filepath.Dir(exe)
 
 	cfgPath := *cfgFlag
+	var deployDir string
 	if cfgPath == "" {
-		cfgPath = filepath.Join(exeDir, "config.json")
+		// 没显式 -config 时，先找回本机已有部署，再退回 exe 同目录。
+		// 必须在 ensureConfig 之前做：一旦在新目录写出空配置，
+		// 之后就再也分不清「这是新部署」还是「升级时放错了位置」。
+		deployDir = discoverDeployDir(exeDir)
+		cfgPath = filepath.Join(deployDir, "config.json")
 	}
 	if abs, aerr := filepath.Abs(cfgPath); aerr == nil {
 		cfgPath = abs
 	}
+	if deployDir == "" {
+		deployDir = filepath.Dir(cfgPath)
+	}
+	log.Printf("部署目录: %s（exe: %s）", deployDir, exeDir)
+	// 记下「这次用的就是这里」：下次无论 exe 被解压到哪个目录，都能靠这份
+	// 指针回到同一份账号/状态，而不是在空目录里重新开始。
+	writeDeployPointer(deployDir)
 	// 工作目录跟着 config.json 走：config 里的 auth_dir / state_file 都是相对路径，
 	// 「exe + config.json + auths/ + data/ 放一个文件夹」整体迁移才成立。
 	if werr := os.Chdir(filepath.Dir(cfgPath)); werr != nil {
 		log.Printf("WARN: chdir %s: %v", filepath.Dir(cfgPath), werr)
 	}
 
-	setupLogging(exeDir)
+	setupLogging(deployDir)
 	// 网络自检只用于写日志，绝不能挡在窗口创建之前：开启 VPN/TUN 时
 	// net.LookupHost 可能等到系统 DNS 超时，表现为「exe 点了半天不开」。
 	// 放到后台并让自检自身带预算，窗口/本地 WebView 控制台不依赖外网。
@@ -113,7 +133,7 @@ func main() {
 		log.Printf("WARN: 生成默认配置失败: %v", err)
 	}
 
-	d := &desktop{cfgPath: cfgPath, exeDir: exeDir}
+	d := &desktop{cfgPath: cfgPath, deployDir: deployDir, exeDir: exeDir}
 	d.gwAddr = resolveListen(cfgPath)
 	d.proxy = newProxy(d.gwAddr)
 
@@ -125,7 +145,7 @@ func main() {
 		log.Printf("首次启动网关失败（窗口照常打开，可在概览页重试）: %v", err)
 	}
 
-	d.floatWin = newFloatWin(filepath.Join(exeDir, "data", "floatwin.json"), d.gwAddr, "")
+	d.floatWin = newFloatWin(filepath.Join(deployDir, "data", "floatwin.json"), d.gwAddr, "")
 	floatOwner = d.floatWin
 	go d.syncFloatGateway()
 
@@ -176,7 +196,7 @@ func main() {
 	forceWebViewDirect()
 	w := webview.NewWithOptions(webview.WebViewOptions{
 		AutoFocus: true,
-		DataPath:  filepath.Join(exeDir, "data", "webview2"),
+		DataPath:  filepath.Join(deployDir, "data", "webview2"),
 		WindowOptions: webview.WindowOptions{
 			Title: "Free2API · 网关控制台",
 			// 窗口与任务栏用嵌入的图标组；不传的话是系统默认图标。
@@ -326,7 +346,7 @@ func (d *desktop) startGateway() error {
 	// 单实例接管：先撤掉上一次「停止」留下的看门狗暂停，再抢端口控制权。
 	// 顺序很重要——先有租约再清场再绑定，两次同时启动也不会互相踩（没有租约
 	// 时，两个进程会各自杀掉对方然后抢同一个端口，最后留下一个半死的控制台）。
-	if err := setKeepalivePaused(d.exeDir, false); err != nil {
+	if err := setKeepalivePaused(d.deployDir, false); err != nil {
 		log.Printf("WARN: 撤掉 keepalive.pause 失败: %v", err)
 	}
 
@@ -406,7 +426,7 @@ func (d *desktop) startGateway() error {
 	log.Printf("网关已启动，监听 %s（已持有端口控制权）", listen)
 	// 清场时被杀掉的旧窗口如果正好走到退出流程，它可能把 pause 又写回来；
 	// 这里补一刀，保证「网关照常跑」和「看门狗别插手」两个信号一致。
-	if err := setKeepalivePaused(d.exeDir, false); err != nil {
+	if err := setKeepalivePaused(d.deployDir, false); err != nil {
 		log.Printf("WARN: 删除 keepalive.pause 失败: %v", err)
 	}
 	d.syncFloatGateway()
@@ -470,7 +490,7 @@ func (d *desktop) stopGateway() error {
 	}
 
 	// 清场：没绑端口的残壳（旧版、另一个窗口自带的实例）也一并收掉。
-	killed, failed := killGatewayProcesses(os.Getpid(), d.exeDir)
+	killed, failed := killGatewayProcesses(os.Getpid(), d.deployDir)
 	if len(killed) > 0 {
 		log.Printf("已清掉其它网关进程：%v", killed)
 	}
@@ -480,7 +500,7 @@ func (d *desktop) stopGateway() error {
 
 	// 最后才按暂停键：顺序反过来的话，看门狗可能在「已经杀掉、还没写 pause」
 	// 的这一秒里把网关重新拉起来。
-	if err := setKeepalivePaused(d.exeDir, true); err != nil {
+	if err := setKeepalivePaused(d.deployDir, true); err != nil {
 		log.Printf("WARN: 写 keepalive.pause 失败: %v", err)
 	}
 
@@ -1068,9 +1088,9 @@ func centerWindowInWorkArea(hwnd uintptr, w, h int) {
 		uintptr(ow), uintptr(oh), swpNoZOrder|swpNoActivate)
 }
 
-func setupLogging(exeDir string) {
+func setupLogging(deployDir string) {
 	log.SetFlags(log.LstdFlags)
-	dir := filepath.Join(exeDir, "data")
+	dir := filepath.Join(deployDir, "data")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.SetOutput(io.Discard)
 		return

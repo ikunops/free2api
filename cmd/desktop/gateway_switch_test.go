@@ -126,7 +126,7 @@ func TestKeepalivePauseFollowsGatewaySwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := &desktop{cfgPath: cfgPath, exeDir: dir}
+	d := &desktop{cfgPath: cfgPath, deployDir: dir, exeDir: dir}
 	d.gwAddr = resolveListen(cfgPath)
 	d.proxy = newProxy(d.gwAddr)
 

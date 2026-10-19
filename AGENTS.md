@@ -38,6 +38,11 @@
 - `data/state.json` 是号池运行态；`data/output.json` 是运行期输出参数与多出口；`data/model.json` 是模型能力缓存；`data/zcode_entitled.json` 是 ZCode 权益快照。
 - `data/stats.json` 是统计持久化；`data/server.*.log` 与 `data/desktop.log` 是运行日志。
 - 迁移一个完整部署时，至少带走 `config.json`、`auths/`、`data/`；只带 exe 会丢账号和状态。
+- 部署目录固定：升级只覆盖同一个部署目录里的 exe，不按版本另开目录。桌面程序在
+  exe 同目录没有配置时会按「最近使用」接手本盘 / 用户目录里的已有部署
+  （见 `cmd/desktop/deploydir_windows.go`），但运行态仍以 `config.json` /
+  `auths/` / `data/` 所在目录为准；备份目录名（*bak*、*backup*、*old*、
+  `dist-v*`、日期目录）不会被当成当前部署。
 
 ### 模型路由与对外命名
 
