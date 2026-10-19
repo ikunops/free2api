@@ -178,6 +178,11 @@ var contentBlockedRule = errorRule{kind: ErrContentBlocked, mode: matchLower, pa
 	"blocked by security policy",
 	"unapproved channel",
 	"illegal api invocation",
+	// WorkBuddy global 的风控拦截：code=11-128 + "request illegal" +
+	// displayMsg "Request blocked. Please send it again". 这是请求级拦截，
+	// 不是账号授权封禁；同一请求换号也会被同样拦截。
+	"request blocked. please send it again",
+	"请求被拦截，请重新发送",
 }}
 
 // badParamsRule 请求体解析失败关键词（issue #41 连带）：HTTP 400 + 上游
@@ -221,10 +226,36 @@ var alreadyCheckinRule = errorRule{mode: matchFold, patterns: []string{"已签�
 // 先命中）。故此处只收 msg 关键词 "request illegal"（auth_forbidden 的真实文案），
 // 120 与 private 均落同一分类。14017 文案唯一（无软限流歧义），可安全收录。
 var accountFaultRule = errorRule{kind: ErrAccountFault, mode: matchFold, patterns: []string{
+	// 11-128 的 "request illegal" 已在 accountFaultRule 之前由 isUpstreamRequestBlocked
+	// 分流为 ErrContentBlocked；这里保留裸文案是为了兼容真正的 11140 auth_forbidden
+	// 响应（部分网关形态不带 code / 带 403 纯文本）。
 	"request illegal",
 	"trial not activated",
 	"trial version is not yet activated",
 }}
+
+// isUpstreamRequestBlocked 识别上游请求级风控拦截（11-128）。
+//
+// 关键：11-128 的 msg 也是 "request illegal"，历史上被字符串 "request illegal"
+// 误判成 11140 账号授权封禁，导致同一份请求在多个 global 账号之间轮转时把整批号
+// 连续硬禁用。11-128 的 displayMsg 明确要求"重新发送"，换账号不会改变结果，因此
+// 归为内容/请求拦截（ErrContentBlocked）——不罚账号，按既有降级/透传路径处理。
+func isUpstreamRequestBlocked(body, lower string) bool {
+	return codeMarker(lower, "11-128") ||
+		strings.Contains(lower, `"code":"11-128"`) ||
+		strings.Contains(body, "请求被拦截") ||
+		contentBlockedRule.hit(body, lower)
+}
+
+// IsAccountAuthForbidden 判断是否是真的 11140 账号授权封禁，供 handler 的
+// applyErrorPolicy 二次防线使用（Classify 已经先分流 11-128；这里防防御路径误伤）。
+func IsAccountAuthForbidden(body string) bool {
+	lower := strings.ToLower(body)
+	if isUpstreamRequestBlocked(body, lower) {
+		return false
+	}
+	return strings.Contains(lower, "request illegal")
+}
 
 // promptTooLongRule 11115「prompt is too long」判定（任务书 prompt-too-long §1）。
 // 定位：上下文超限是**请求的问题不是账号的问题**——同一个 body 换任何账号发都会
@@ -567,11 +598,19 @@ func Classify(status int, body string) ErrKind {
 		return ErrHardCredit
 	}
 	lower := strings.ToLower(body)
+	// 11-128 请求级风控必须最先分流：它的 msg 同样是 "request illegal"，若先走
+	// accountFaultRule 会把健康账号硬禁用，并在同一请求上连续误伤整批 global 号。
+	if isUpstreamRequestBlocked(body, lower) {
+		return ErrContentBlocked
+	}
 	// sessionDead / accountFault 先于 status==429（原顺序已如此，此处只是跟随
 	// 429 前移保持相对次序）：账号级终态等不来自愈，限流状态码不得掩盖它们
 	// （429+14017 必须 accountFault，401+12153 混排 "rate limit" 必须 sessionDead）。
 	if sessionDeadRule.hit(body, lower) {
 		return ErrSessionDead
+	}
+	if IsAccountAuthForbidden(body) {
+		return ErrAccountFault
 	}
 	if accountFaultRule.hit(body, lower) {
 		return ErrAccountFault

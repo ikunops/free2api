@@ -2444,15 +2444,13 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 偶发路径缺失不是限流信号，不该按限流惩罚升级。
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
 	case upstream.ErrAccountFault:
-		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
-		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：软冷却到期也不会自动
-		//     恢复（需重新 OAuth 登录），到期后重新选号只会再撞 403 浪费一次轮换——
-		//     硬禁用（Disable），不再参与选号。/status 以 disabled + disabled_reason 呈现。
-		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
-		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
-		// 两条路径对坏号都立刻换号（同一请求轮转出池），只是后续可恢复性不同。
-		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
-		if strings.Contains(strings.ToLower(body), "request illegal") {
+		// 账号级授权/配额故障按 msg/code 分野：
+		//   - 真正的 11140 request illegal → 账号级授权封禁，硬禁用等待重登。
+		//   - 14017 trial not activated → register 未完成，保持软冷却，补完 register 可自愈。
+		//   - 11-128 request illegal 是请求级风控（"Request blocked. Please send it again"），
+		//     绝不能按 "request illegal" 子串误判成账号封禁。Classify 已在前面把它分流到
+		//     ErrContentBlocked；这里保留二次防线，防防御调用路径把同批账号逐个禁用。
+		if upstream.IsAccountAuthForbidden(body) {
 			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
 			return
 		}

@@ -102,7 +102,10 @@ func main() {
 	}
 
 	setupLogging(exeDir)
-	logNetSelfCheck()
+	// 网络自检只用于写日志，绝不能挡在窗口创建之前：开启 VPN/TUN 时
+	// net.LookupHost 可能等到系统 DNS 超时，表现为「exe 点了半天不开」。
+	// 放到后台并让自检自身带预算，窗口/本地 WebView 控制台不依赖外网。
+	go logNetSelfCheck()
 
 	// 第一次运行还没有 config.json：生成一份最小可用的，而不是让窗口里只显示一条
 	// 「load config: ... no such file」。生成的内容全部可以在「输出 API」页里改。

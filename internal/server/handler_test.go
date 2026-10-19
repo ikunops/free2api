@@ -627,6 +627,21 @@ func TestApplyErrorPolicyAccountFaultSplit(t *testing.T) {
 		}
 	})
 
+	t.Run("11-128 request blocked must not disable", func(t *testing.T) {
+		p := pool.New("")
+		p.Add(&auth.Auth{UID: "u1"})
+		h := NewHandler(Config{Pool: p, SoftCooldown: 600 * time.Second})
+
+		// 防御路径：即使有人把 11-128 传进 ErrAccountFault，也不能按
+		// "request illegal" 子串硬禁用健康账号。真实分类应走 ErrContentBlocked。
+		body := `{"code":11-128,"msg":"request illegal","displayMsg":{"en":"Request blocked. Please send it again","zh":"请求被拦截，请重新发送"}}`
+		h.applyErrorPolicy("u1", upstream.ErrAccountFault, body, "deepseek-v4.1-flash-free", nil)
+		st, _ := p.Status("u1")
+		if st.Disabled {
+			t.Fatalf("11-128 request blocked 不应硬禁用: %+v", st)
+		}
+	})
+
 	t.Run("14017 trial stays soft cool", func(t *testing.T) {
 		p := pool.New("")
 		p.Add(&auth.Auth{UID: "u1"})

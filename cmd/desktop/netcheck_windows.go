@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"os"
@@ -77,8 +78,10 @@ func proxyProbeAddr(server string) string {
 // fakeIPActive 看系统解析结果是不是落在 fake-ip 网段。
 // 用两个与业务无关的域名，避免把自检结果和 upstream 的 DNS 缓存混在一起。
 func fakeIPActive() (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
 	for _, host := range []string{"www.gstatic.com", "example.com"} {
-		ips, err := net.LookupHost(host)
+		ips, err := net.DefaultResolver.LookupHost(ctx, host)
 		if err != nil {
 			continue
 		}

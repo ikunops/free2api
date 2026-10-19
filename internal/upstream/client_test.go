@@ -44,6 +44,8 @@ func TestClassify(t *testing.T) {
 		{400, `Illegal API invocation from an unapproved channel`, ErrContentBlocked},
 		{400, `{"code":11128,"msg":"blocked by security policy"}`, ErrContentBlocked},
 		{400, `unapproved channel`, ErrContentBlocked},
+		{400, `{"code":11-128,"msg":"request illegal","displayMsg":{"en":"Request blocked. Please send it again","zh":"请求被拦截，请重新发送"}}`, ErrContentBlocked},
+		{400, `{"code":"11-128","msg":"request illegal","displayMsg":{"zh":"请求被拦截，请重新发送"}}`, ErrContentBlocked},
 		// 通用 4xx（非审核文案）：仍判 ErrClient，只换号不罚。
 		{400, `bad request`, ErrClient},
 		// ErrBadParams：请求体解析失败（HTTP 400 + Unmarshal chat params failed / code 11101）。
@@ -154,7 +156,7 @@ func TestIsWafBlocked(t *testing.T) {
 	}{
 		{403, "", true},
 		{403, "<html>blocked</html>", true},
-		{403, `{"code":1}`, false},               // 有 "code": 字段
+		{403, `{"code":1}`, false},                // 有 "code": 字段
 		{403, `{"msg":"request illegal"}`, false}, // 有 "msg": 字段（且该文案本就该走 accountFault）
 		{402, "", false},                          // 非 403
 		{429, "", false},
