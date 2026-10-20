@@ -78,11 +78,11 @@ func TestAttributionIncludesIDEVersion(t *testing.T) {
 			t.Errorf("%s = %q want %q", tc.header, got, tc.want)
 		}
 	}
-	// X-IDE-Version 缺省（client_version 空）= 内置默认 5.5.4，且四头齐全。
+	// X-IDE-Version 缺省（client_version 空）= 内置默认 5.8.4，且四头齐全。
 	c2 := &Client{ClientName: "WorkBuddy"}
 	h2 := chatHeadersReq(t, c2, a, "")
-	if got := h2.Get("X-IDE-Version"); got != "5.5.4" {
-		t.Errorf("X-IDE-Version = %q want %q (default)", got, "5.5.4")
+	if got := h2.Get("X-IDE-Version"); got != "5.8.4" {
+		t.Errorf("X-IDE-Version = %q want %q (default)", got, "5.8.4")
 	}
 	// 显式 ClientName="SaaS" 时 X-IDE-Version 不设（还原旧行为：只有 X-Product=SaaS）。
 	c3 := &Client{ClientName: "SaaS"}
@@ -102,7 +102,7 @@ func TestProductDefaultWorkBuddyFingerprint(t *testing.T) {
 		"X-Product":       "WorkBuddy",
 		"X-IDE-Name":      "WorkBuddy",
 		"X-IDE-Type":      "WorkBuddy",
-		"X-IDE-Version":   "5.5.4",
+		"X-IDE-Version":   "5.8.4",
 		"X-Agent-Purpose": "conversation",
 	} {
 		if got := h.Get(hdr); got != want {
