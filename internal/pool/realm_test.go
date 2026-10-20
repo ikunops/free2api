@@ -120,3 +120,27 @@ func TestPickExcludingForRealmTried(t *testing.T) {
 		t.Fatalf("picked non-cn %s", a.UID)
 	}
 }
+
+// TestHasCandidateForModel 11158 收敛判定：tried 与 realm/producer 过滤后是否仍有
+// 该模型的健康候选。只有 false 时才允许把模型标记为池级不可用。
+func TestHasCandidateForModel(t *testing.T) {
+	auth.SetGlobalEnabled(true)
+	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+	p := New("")
+	cn1 := &auth.Auth{UID: "cn1", AccessToken: "at1", Domain: "www.codebuddy.cn"}
+	cn1.SetProducer("zcode")
+	p.Add(cn1)
+	p.Add(&auth.Auth{UID: "g1", AccessToken: "at2", Domain: "www.workbuddy.ai"})
+	if !p.HasCandidateForModel(nil, "gpt-6-luna", "workbuddy", "global") {
+		t.Fatal("global 健康号应算候选")
+	}
+	if p.HasCandidateForModel(map[string]bool{"g1": true}, "gpt-6-luna", "workbuddy", "global") {
+		t.Fatal("唯一 global 号已 tried 后不应再有候选")
+	}
+	if p.HasCandidateForModel(nil, "gpt-6-luna", "workbuddy", "cn") {
+		t.Fatal("realm=cn 不应把 global 号算作候选")
+	}
+	if !p.HasCandidateForModel(nil, "gpt-6-luna", "", "") {
+		t.Fatal("不带 realm/producer 过滤时应看到任一健康号")
+	}
+}

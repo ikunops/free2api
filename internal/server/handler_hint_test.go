@@ -467,6 +467,70 @@ func TestChat11133FailFastSingleAccount(t *testing.T) {
 	}
 }
 
+// TestChat11158SingleAccountMarksModelDead 11158 是模型存在但账号类型无权使用：
+// 单账号池轮转耗尽后应收敛为池级不可用，并从 /v1/models 与发布清单消失。
+func TestChat11158SingleAccountMarksModelDead(t *testing.T) {
+	resetModelsCache()
+	defer resetModelsCache()
+	const body = `{"code":11158,"msg":"model [gpt-6-luna] is not allowed for user type [personal_free_user]"}`
+	calls := 0
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		return 400, body, false
+	})
+	a := &auth.Auth{UID: "g1", AccessToken: "at1", Domain: "www.workbuddy.ai", ExpiresAt: 9999999999}
+	p := testPoolWith(a)
+	h := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: true, AuthDir: t.TempDir()})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"global:gpt-6-luna","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want 503 (all eligible accounts rejected), body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Errorf("upstream calls=%d want 1 for single-account pool", calls)
+	}
+	if !h.modelDead.active("global", "workbuddy", "gpt-6-luna") {
+		t.Fatal("11158 在所有适用账号拒绝后应标记池级不可用")
+	}
+	if st, ok := p.Status("g1"); !ok || st.Disabled || st.Cooling {
+		t.Errorf("11158 must not penalize the account itself: status=%+v", st)
+	}
+}
+
+// TestChat11158MixedPoolDoesNotMarkDead 混合池：免费号 11158 但付费号成功时，
+// 不得把模型判死（否则发布清单会误删一个实际能用的模型）。
+func TestChat11158MixedPoolDoesNotMarkDead(t *testing.T) {
+	resetModelsCache()
+	defer resetModelsCache()
+	const rejected = `{"code":11158,"msg":"model [gpt-6-luna] is not allowed for user type [personal_free_user]"}`
+	calls := 0
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		if authz == "Bearer paid" {
+			return 200, sseOK, true
+		}
+		return 400, rejected, false
+	})
+	p := testPoolWith(
+		&auth.Auth{UID: "free", AccessToken: "free", Domain: "www.workbuddy.ai", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "paid", AccessToken: "paid", Domain: "www.workbuddy.ai", ExpiresAt: 9999999999},
+	)
+	h := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: true, AuthDir: t.TempDir()})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"global:gpt-6-luna","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 when another account can serve it, body=%s", rec.Code, rec.Body.String())
+	}
+	if calls < 2 {
+		t.Errorf("calls=%d want rotation until a capable account succeeds", calls)
+	}
+	if h.modelDead.active("global", "workbuddy", "gpt-6-luna") {
+		t.Fatal("mixed pool must NOT mark model dead when another account succeeds")
+	}
+}
+
 // TestChatClientErrStillRotates 对照锚：同样 400 但**不是** 11133 的普通客户端错
 // 误仍走轮转（换号有意义 —— 不同账号可能模型权限不同）。没有这条，上面
 // fail-fast 测试里 "calls==1" 可能只是脚手架坏了而不是真 fail-fast。

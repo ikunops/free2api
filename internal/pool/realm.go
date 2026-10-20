@@ -37,6 +37,34 @@ func (p *Pool) PickExcludingForProducerRealmFree(tried map[string]bool, reqModel
 	return p.pick(tried, reqModel, realm, producer, freeModel)
 }
 
+// HasCandidateForModel 报告在 (realm, producer, tried) 过滤后，是否仍有对该模型
+// 健康的候选账号（不要求在途未满）。11158「账号类型不支持该模型」的收敛判定用它：
+// 只有连一个未尝试过的适用账号都没有时，才能把模型判成池级不可用；否则可能误杀
+// 混合账号池里持有更高套餐、实际能调用该模型的号。
+func (p *Pool) HasCandidateForModel(tried map[string]bool, reqModel, producer, realm string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for uid, e := range p.byUID {
+		if tried != nil && tried[uid] {
+			continue
+		}
+		if realm != "" && e.a.Realm() != realm {
+			continue
+		}
+		if !servableProducer(p.producerFor(uid)) {
+			continue
+		}
+		if !p.producerMatch(uid, producer) {
+			continue
+		}
+		if e.healthyForModel(now, reqModel) {
+			return true
+		}
+	}
+	return false
+}
+
 // PickForProducer 在某生产者的号池里选一个号（无 realm 谓词、无 tried）。
 //
 // DeptestOnly: 生产侧（server.fetchZCodeCatalog）需要多号重试，走的是

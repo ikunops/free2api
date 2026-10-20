@@ -72,6 +72,13 @@ func TestClassify(t *testing.T) {
 		// （请求的问题不是账号的问题）。归独立类别是为了**不轮转**——早先落进
 		// ErrClient 会轮转 MaxRotate 个号，每个号都拿到同样的 11133，最后对外
 		// 报成 503 no_healthy_account：上游说「参数不对」，客户端收到「没号可用」。
+		// 11158：模型存在，但当前账号类型（如 personal_free_user）无权使用。
+		// 必须独立归类，既不能误罚账号，也不能落通用 ErrClient 后轮转整池。
+		{400, `{"code":11158,"msg":"model [gpt-6-luna] is not allowed for user type [personal_free_user]"}`, ErrModelEntitlement},
+		{400, `{"code": 11158, "msg": "not allowed"}`, ErrModelEntitlement},
+		{400, `{"error":{"code":"11158","message":"not allowed"}}`, ErrModelEntitlement},
+		{400, `{"requestId":"11158","code":1,"msg":"ok"}`, ErrClient},
+		{429, `{"code":11158,"msg":"not allowed"}`, ErrSoftRate},
 		{400, `{"code":11133,"msg":"Invalid request parameters"}`, ErrModelParamInvalid},
 		{400, `{"code": 11133, "msg": "Invalid request parameters"}`, ErrModelParamInvalid},
 		{400, `{"extError":{"code":"model_param_invalid"},"msg":"x"}`, ErrModelParamInvalid},

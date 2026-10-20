@@ -35,6 +35,7 @@ const (
 	ErrBadParams                        // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 不罚账号，仍轮转
 	ErrAccountFault                     // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
 	ErrModelBlocked                     // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
+	ErrModelEntitlement                 // 11158「账号类型不支持该模型」→ (账号,模型) 负缓存避让；全部适用账号都拒绝时收敛为池级不可用
 	ErrWafBlock                         // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避（WAF 403 修复 P0-1）
 	ErrPromptTooLong                    // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
 	ErrImageInvalid                     // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
@@ -62,6 +63,8 @@ func (k ErrKind) String() string {
 		return "account_fault"
 	case ErrModelBlocked:
 		return "model_blocked"
+	case ErrModelEntitlement:
+		return "model_entitlement"
 	case ErrWafBlock:
 		return "waf_block"
 	case ErrPromptTooLong:
@@ -339,6 +342,11 @@ const modelMissingMsgMarker = "模型不存在"
 // （与 6004 条目的 "6004 model rate limit" reason 互不干扰，两者共存于同一 map 键）。
 const ModelBlockReason = "11102 model not available"
 
+// ModelEntitlementReason 11158「账号类型不支持该模型」的 (账号,模型) 负缓存 reason。
+// 与 11102 的区别：模型确实存在，只是当前账号类型（如 personal_free_user）无权使用；
+// 因此不能单凭一次拒绝就判池级死模型——只有该来源全部适用账号都明确拒绝才收敛。
+const ModelEntitlementReason = "11158 model not allowed for account type"
+
 // IsModelBlocked 报告 body 是否是「该后端无此模型」的确定性答复（11102，及智谱
 // 同义的 1211「模型不存在」）。
 //
@@ -386,6 +394,15 @@ func IsModelBlocked(status int, body string) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(msg), modelBlockMsgMarker)
+}
+
+// IsModelEntitlement 报告 body 是否是「账号类型不支持该模型」的确定性答复（11158）。
+// 只看 400，且只认结构化 code 字段，避免把 requestId/文案里的数字误当成业务码。
+func IsModelEntitlement(status int, body string) bool {
+	if status != http.StatusBadRequest || body == "" || !strings.Contains(body, "11158") {
+		return false
+	}
+	return hasBusinessCode(body, "11158")
 }
 
 // hasBusinessCode reports whether a JSON error envelope contains an exact
@@ -593,6 +610,11 @@ func Classify(status int, body string) ErrKind {
 	// 只认 400/404（见 IsModelBlocked），429+11102 落下方 status==429 层走限流语义。
 	if IsModelBlocked(status, body) {
 		return ErrModelBlocked
+	}
+	// 11158 是模型存在、但当前账号类型无权使用：与 11102 一样是模型维度的确定性答复，
+	// 但必须在账号故障/通用 4xx 之前分流，否则会轮转整池并最终误报 no_healthy_account。
+	if IsModelEntitlement(status, body) {
+		return ErrModelEntitlement
 	}
 	if status == http.StatusPaymentRequired {
 		return ErrHardCredit

@@ -31,6 +31,7 @@ func TestGatewayHintKindMap(t *testing.T) {
 		{"12153 session dead", ErrSessionDead, `{"code":12153,"msg":"Offline user session not found"}`, "account session expired at upstream; the account is disabled until re-login"},
 		{"402 hard credit", ErrHardCredit, `{"code":1,"msg":"余额不足"}`, "account credits exhausted at upstream; waiting for daily check-in to restore"},
 		{"11102 model blocked", ErrModelBlocked, `{"code":11102,"msg":"model [glm-4.6v] service info not found"}`, "upstream has no such model on this backend; switch model or retry on another account"},
+		{"11158 model entitlement", ErrModelEntitlement, `{"code":11158,"msg":"model [gpt-6-luna] is not allowed for user type [personal_free_user]"}`, "this model exists upstream but is not available to the current account type; the gateway removed it from the published list after every eligible account was rejected"},
 		{"content blocked", ErrContentBlocked, `{"code":11128,"msg":"blocked by security policy"}`, "request content was rejected by content policy; adjust the prompt and retry"},
 		// 未覆盖形态 → 空串（不带字段）。
 		{"ErrNone 无 hint", ErrNone, "", ""},
@@ -136,9 +137,9 @@ func TestGatewayHintImageForms(t *testing.T) {
 // 字符串形态 + extError 深层 marker + displayMsg 文案家族。
 func TestGatewayHintMarkerTolerance(t *testing.T) {
 	variants := []string{
-		body11133,                                                     // 实测原始 body
-		`{"code":"11133","msg":"..."}`,                                // code 字符串形态
-		`{"extError":{"code":"model_param_invalid"}}`,                 // extError 深层 marker
+		body11133,                      // 实测原始 body
+		`{"code":"11133","msg":"..."}`, // code 字符串形态
+		`{"extError":{"code":"model_param_invalid"}}`,                                 // extError 深层 marker
 		`{"msg":"The request parameters do not meet the current model requirements"}`, // displayMsg en 文案
 	}
 	for _, v := range variants {
@@ -147,7 +148,7 @@ func TestGatewayHintMarkerTolerance(t *testing.T) {
 		}
 	}
 	v11135 := []string{
-		body11135,                                     // 实测原始 body
+		body11135, // 实测原始 body
 		`{"extError":{"code":"invalid_image_data"}}`, // extError 深层 marker
 	}
 	for _, v := range v11135 {

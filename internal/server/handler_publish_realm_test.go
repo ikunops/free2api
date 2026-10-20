@@ -87,6 +87,34 @@ func TestAvailableOutputModelsIncludesGlobalRealm(t *testing.T) {
 	}
 }
 
+// TestAvailableOutputModelsHidesDeadGlobalModel 11158 收敛后的池级不可用模型必须
+// 同时从 /v1/models 与发布清单消失；否则用户还能勾选一个必失败的条目。
+func TestAvailableOutputModelsHidesDeadGlobalModel(t *testing.T) {
+	auth.SetGlobalEnabled(true)
+	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+	resetModelsCache()
+
+	cf := newGlobalModelsHandlerFake(t, 200, modelsProbeBody("gpt-6-luna", "gpt-5.4"))
+	p := testPoolWith(
+		&auth.Auth{UID: "g1", AccessToken: "at_gl", Domain: "www.workbuddy.ai", ExpiresAt: 9999999999},
+	)
+	h := NewHandler(Config{Pool: p, Upstream: cf.up, GlobalEnabled: true})
+	h.modelDead.mark("global", "workbuddy", "gpt-6-luna", "upstream: model not allowed for current account type")
+
+	for _, e := range h.availableOutputModels() {
+		if key, _ := e["key"].(string); key == "global:gpt-6-luna" {
+			t.Fatalf("发布清单不应再出现池级不可用的 global:gpt-6-luna: %+v", e)
+		}
+	}
+	ids := listedIDs(h)
+	if ids["global:gpt-6-luna"] {
+		t.Error("/v1/models 不应再列出池级不可用的 global:gpt-6-luna")
+	}
+	if !ids["global:gpt-5.4"] {
+		t.Error("同来源其他可用模型不应被连带隐藏")
+	}
+}
+
 // TestPublishGateRealmScoped 发布清单是新清单（models_realm_scoped=true）时两域**完全独立**：
 // 国际版只认 "global:<裸 id>"，裸 id 只管 CN。同名型号（fast-model/glm-5.3 之类）各一把开关，
 // 勾国内版不会把国际版一起放开，反之亦然。

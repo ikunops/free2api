@@ -1196,6 +1196,11 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			if id == "" {
 				continue
 			}
+			// 池级可服务性：账号类型无权的模型（11158 已由真实请求收敛）不能继续
+			// 出现在发布清单里，否则用户勾上即必失败。与 modelList 的过滤同口径。
+			if h.modelDead.active("global", "workbuddy", id) {
+				continue
+			}
 			gm := ginfos[id]
 			key := globalModelKey(id)
 			e := map[string]any{
@@ -1759,12 +1764,13 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 		return
 	}
 
-	// 池级死模型快速失败：上游权威答复过「所有账号均无此模型」的，不再烧轮转
-	// （换号注定同样失败）。放在发布清单判定之后——错误语义逐层收窄：先范围、
-	// 再清单、再可服务性。TTL 到期标记自动失效，请求会重新进轮转实测。
+	// 池级死模型快速失败：上游已确定答复「无此模型」或「当前账号类型无权」且
+	// 适用账号轮转耗尽的，不再烧轮转（换号注定同样失败）。放在发布清单判定之后——
+	// 错误语义逐层收窄：先范围、再清单、再可服务性。TTL 到期标记自动失效，
+	// 请求会重新进轮转实测；真实成功会立即撤销标记。
 	if h.modelDead.active(realm, producer, bareModel) {
 		writeOpenAIErrorHint(w, http.StatusServiceUnavailable, "model_unavailable",
-			"模型 "+peek.Model+" 已被标记为池级不可用（上游所有账号均无此模型），标记将于 24h 后自动过期复测",
+			"模型 "+peek.Model+" 已被标记为池级不可用（当前号池实测无法服务），标记将于 24h 后自动过期复测",
 			"从 /v1/models 选一个在列模型；若认为标记有误，DELETE /admin/modeldead 清除后重试")
 		return
 	}
@@ -2153,9 +2159,11 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 			continue
 		}
 		h.cfg.Pool.NoteSuccess(acct.UID)
-		// 11102 负缓存清命：该账号该模型实测成功，立即解除避让（不必等 TTL 到期）。
-		// BlockModelClear 按 "11102" reason 前缀识别，只清 11102 条目、不碰 6004 独立冷却。
+		// 模型级负缓存清命：该账号该模型实测成功，立即解除避让（不必等 TTL 到期）。
+		// BlockModelClear 只清 11102/11158 条目、不碰 6004 独立冷却。池级死标记
+		// 同样撤销——真实成功是比历史目录/权限拒绝更强的新证据。
 		h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
+		h.modelDead.revive(realm, producer, bareModel)
 		// 粘性跟随最终成功号：本轮成功的账号成为该会话的粘性绑定（覆盖旧绑定）。
 		// 若 sticky 号失败、轮换到别的号成功，这里把会话重绑到新号，多轮对话下一跳不再随机抽。
 		if stickyKey != "" && h.cfg.Session != nil {
@@ -2260,11 +2268,20 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 	var ue *upstream.Error
 	if errors.As(lastErr, &ue) {
 		hint = h.hintOf(ue.Kind, ue.Msg, bareModel, reqHasImage, ue)
-		// 池级死模型标记：末态上游错误是「权威性无此模型」（11102/1211 类，
-		// ErrModelBlocked）→ 该模型在当前号池打不通，标记后从目录与路由剔除。
+		// 池级死模型标记：末态上游错误是「权威性不可服务」→ 该模型在当前号池
+		// 打不通，标记后从目录与路由剔除。
+		//   - 11102/1211：后端确实没有这个模型；
+		//   - 11158：模型存在但账号类型无权使用。只有该来源已无未尝试的健康候选时
+		//     才收敛为池级不可用——混合号池里若有更高套餐账号，不能因免费号被拒就
+		//     把模型从发布清单里误删。
 		// 11133 参数类不在此列（可能是请求侧问题，见 modeldead.go 头注）。
-		if ue.Kind == upstream.ErrModelBlocked {
+		switch ue.Kind {
+		case upstream.ErrModelBlocked:
 			h.modelDead.mark(realm, producer, bareModel, "upstream: no such model on backend")
+		case upstream.ErrModelEntitlement:
+			if !h.cfg.Pool.HasCandidateForModel(tried, bareModel, producer, realm) {
+				h.modelDead.mark(realm, producer, bareModel, "upstream: model not allowed for current account type")
+			}
 		}
 		switch ue.Kind {
 		case upstream.ErrSoftRate:
@@ -2486,6 +2503,11 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 24h）。选号侧 healthyForModel 对该账号自动避开该模型；切模型/切账号即可用。
 		// 立即换号（本轮 continue），该账号该模型冷却，下次选号避开。
 		h.cfg.Pool.BlockModelBackoff(uid, model, upstream.ModelBlockReason)
+	case upstream.ErrModelEntitlement:
+		// 11158「模型存在，但当前账号类型无权使用」：账号本身没坏，只避让这一对
+		// (账号, 模型)。仍然换号——同来源可能还有更高套餐的号能调用；只有轮转后
+		// 再无健康候选，末端才收敛为池级不可用（见 chatEndpoint 末端标记）。
+		h.cfg.Pool.BlockModelBackoff(uid, model, upstream.ModelEntitlementReason)
 	default:
 		// 其余（ErrClient/ErrNone）：只换号不罚（防雪崩），不喂熔断。
 		// ErrClient（未知 4xx）喂连败计数（issue #114）：连续 N 次该形态失败 →

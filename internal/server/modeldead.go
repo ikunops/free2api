@@ -8,15 +8,17 @@ package server
 // （错误语义是「模型不在后端」，不是账号故障）。所以目录里「列什么」除了发布清单
 // （用户显式意图）之外，还要过一道池级可服务性判定。
 //
-// 判定来源（自动）：请求在号池轮转耗尽后，末态上游错误为 ErrModelBlocked
-// （11102「该后端无此模型」/ 1211「模型不存在」——权威性答复，语义是「模型不在
-// 后端」）→ 池级标记 realm/producer/裸名 不可用（按裸名标记：倍率后缀只是计费档，
-// 模型本身不在，整个裸名下的变体一起剔除）。
+// 判定来源（自动）：请求在号池轮转耗尽后，末态上游错误为确定性的「不可服务」答复，
+// 才池级标记 realm/producer/裸名（按裸名标记：倍率后缀只是计费档）：
+//   - ErrModelBlocked（11102「该后端无此模型」/ 1211「模型不存在」）——模型不在后端；
+//   - ErrModelEntitlement（11158「当前账号类型无权使用」）——模型在目录里，但该来源
+//     所有未尝试的健康账号都被明确拒绝。混合号池只要还有一个候选能成功，就绝不标死。
 // 参数类错误（11133 model_param_invalid）可能是请求侧问题（带图/历史形态等，
 // 见 responses 翻译层），不自动标记——宁可多列，不误杀。
 //
 // 复活：TTL 到期自动回到目录与路由（上游可能恢复供给、新套餐号入池）；期间首个
-// 请求若仍打不通会在轮转耗尽后再次标记。收敛代价：每个死模型每天至多一次失败请求。
+// 请求若仍打不通会在轮转耗尽后再次标记。成功请求是更强的新证据，会立即撤销该
+// (realm, producer, model) 的池级标记。收敛代价：每个死模型每天至多一次失败请求。
 // 持久化：data/modeldead.json（路径由 AuthDir 同级 data/ 派生，与 state.json 同目录），
 // 重启不丢；/admin/modeldead 可查看，DELETE 可手动清除（用户判定标记有误时）。
 
@@ -114,6 +116,20 @@ func (m *modelDeadList) active(realm, producer, bare string) bool {
 		m.pruneAndSaveLocked()
 		return false
 	}
+	return true
+}
+
+// revive 删除一条死标记（模型在真实请求中已成功，说明先前判定已过期/误杀）。
+// 与 mark 共用锁与落盘路径；不存在时零动作。返回是否实际删除。
+func (m *modelDeadList) revive(realm, producer, bare string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := deadKey(realm, producer, bare)
+	if _, ok := m.entries[key]; !ok {
+		return false
+	}
+	delete(m.entries, key)
+	m.pruneAndSaveLocked()
 	return true
 }
 

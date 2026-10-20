@@ -681,6 +681,21 @@ func TestBlockModelBackoffCooledAndExempt(t *testing.T) {
 	}
 }
 
+// TestBlockModelEntitlementClear 11158 条目与 11102 一样是模型维度负缓存，
+// 该模型后来实测成功时必须能清除；6004 条目仍不得被误删。
+func TestBlockModelEntitlementClear(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1", AccessToken: "at1"})
+	p.BlockModelBackoff("u1", "gpt-6-luna", "11158 model not allowed for account type")
+	if e := p.byUID["u1"]; e.healthyForModel(time.Now(), "gpt-6-luna") {
+		t.Fatal("11158 后该账号该模型应被负缓存")
+	}
+	p.BlockModelClear("u1", "gpt-6-luna")
+	if e := p.byUID["u1"]; !e.healthyForModel(time.Now(), "gpt-6-luna") {
+		t.Fatal("BlockModelClear 应清除 11158 条目")
+	}
+}
+
 // TestBlockModelBackoffExponentialTtl 11102 退避：首次 6h、二次 12h、封顶 24h。
 func TestBlockModelBackoffExponentialTtl(t *testing.T) {
 	p := New("")
