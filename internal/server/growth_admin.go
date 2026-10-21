@@ -8,8 +8,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -30,6 +32,28 @@ func (h *Handler) adminGrowthRun(w http.ResponseWriter, r *http.Request) {
 	out, err := h.cfg.GrowthRun(ctx)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "growth_run_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) adminGrowthRunAccount(w http.ResponseWriter, r *http.Request) {
+	uid := strings.TrimSpace(r.PathValue("uid"))
+	if uid == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "uid is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	defer cancel()
+	out, err := h.cfg.GrowthRunAccount(ctx, uid)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+		} else if strings.Contains(err.Error(), "不存在") || strings.Contains(err.Error(), "不参与") || strings.Contains(err.Error(), "停用") {
+			status = http.StatusBadRequest
+		}
+		writeOpenAIError(w, status, "growth_run_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

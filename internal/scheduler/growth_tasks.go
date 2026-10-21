@@ -7,7 +7,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -16,8 +16,20 @@ import (
 
 	"free2api/internal/auth"
 	"free2api/internal/logfmt"
+	"free2api/internal/pool"
 	"free2api/internal/upstream"
 )
+
+var (
+	errGrowthAccountNotFound = errors.New("成长任务账号不存在")
+	errGrowthAccountDisabled = errors.New("成长任务账号已停用")
+	errGrowthAccountGlobal   = errors.New("国际版账号不参与成长任务")
+)
+
+// IsGrowthAccountNotFound / Disabled / Global 供 server 映射成稳定的 HTTP 语义。
+func IsGrowthAccountNotFound(err error) bool { return errors.Is(err, errGrowthAccountNotFound) }
+func IsGrowthAccountDisabled(err error) bool { return errors.Is(err, errGrowthAccountDisabled) }
+func IsGrowthAccountGlobal(err error) bool   { return errors.Is(err, errGrowthAccountGlobal) }
 
 // GrowthTaskStatus 单账号任务扫描结果。
 type GrowthTaskStatus struct {
@@ -63,6 +75,19 @@ type GrowthClaimReport struct {
 	Results    []GrowthClaimResult `json:"results"`
 }
 
+// GrowthAccountRunReport 是单账号“帮我做”操作的返回。
+// 管理面只展示结果数量，不暴露内部任务白名单或平台口径。
+type GrowthAccountRunReport struct {
+	UID      string    `json:"uid"`
+	Nickname string    `json:"nickname,omitempty"`
+	Started  time.Time `json:"started_at"`
+	Finished time.Time `json:"finished_at"`
+	Reported int       `json:"reported"`
+	Claimed  int       `json:"claimed"`
+	Already  int       `json:"already"`
+	Failed   int       `json:"failed"`
+}
+
 // GrowthTaskExecutor 可点亮任务的执行器。返回 nil 表示本轮已上报，仍需回读确认；
 // 不代表任务已完成。实现必须幂等、可取消，并且不得伪造 PC 限定任务。
 type GrowthTaskExecutor interface {
@@ -94,7 +119,7 @@ var growthClaimDelay = 800 * time.Millisecond
 var growthTaskMu sync.Mutex
 
 // ScanGrowthTasks 扫描全部 CN WorkBuddy 账号的普通任务与小程序任务。
-// 只读，不写上游。global 账号不参与 CN 任务中心，明确跳过并记录原因。
+// 只读，不写上游。global 账号不参与 CN 任务中心，直接跳过。
 func (s *Scheduler) ScanGrowthTasks(ctx context.Context) GrowthScanResult {
 	growthTaskMu.Lock()
 	defer growthTaskMu.Unlock()
@@ -120,10 +145,6 @@ func (s *Scheduler) scanGrowthTasksLocked(ctx context.Context) GrowthScanResult 
 			continue
 		}
 		if a.IsGlobal() {
-			res.Accounts = append(res.Accounts, GrowthTaskStatus{
-				UID: st.UID, Nickname: st.Nickname, Realm: "global", OK: false,
-				Error: "global realm 不适用 CN 成长任务", ScannedAt: time.Now(),
-			})
 			continue
 		}
 		for _, platform := range []upstream.GrowthTaskPlatform{upstream.GrowthPlatformDefault, upstream.GrowthPlatformMiniprogram} {
@@ -166,15 +187,18 @@ func platformLabel(p upstream.GrowthTaskPlatform) string {
 func (s *Scheduler) ClaimCompletedGrowthTasks(ctx context.Context, dryRun bool) GrowthClaimReport {
 	growthTaskMu.Lock()
 	defer growthTaskMu.Unlock()
-	return s.claimCompletedGrowthTasksLocked(ctx, dryRun)
+	return s.claimCompletedGrowthTasksLocked(ctx, dryRun, "")
 }
 
-func (s *Scheduler) claimCompletedGrowthTasksLocked(ctx context.Context, dryRun bool) GrowthClaimReport {
+func (s *Scheduler) claimCompletedGrowthTasksLocked(ctx context.Context, dryRun bool, onlyUID string) GrowthClaimReport {
 	rep := GrowthClaimReport{StartedAt: time.Now(), DryRun: dryRun}
 	scan := s.scanGrowthTasksLocked(ctx)
 	for _, acct := range scan.Accounts {
 		if ctx.Err() != nil {
 			break
+		}
+		if onlyUID != "" && acct.UID != onlyUID {
+			continue
 		}
 		if !acct.OK || len(acct.Tasks) == 0 {
 			continue
@@ -225,7 +249,8 @@ func (s *Scheduler) claimCompletedGrowthTasksLocked(ctx context.Context, dryRun 
 	return rep
 }
 
-// RunGrowthNow 定时任务入口：白名单任务补进度 + 回读 + 领取已完成任务。\n// 不在白名单的任务不会被伪造；PC/真实客户端限定任务留给后续 CDP 适配器。
+// RunGrowthNow 定时任务入口：白名单任务补进度 + 回读 + 领取已完成任务。
+// 不在白名单的任务不会被伪造；PC/真实客户端限定任务留给后续 CDP 适配器。
 func (s *Scheduler) RunGrowthNow() {
 	s.RunGrowthNowReport(context.Background())
 }
@@ -234,8 +259,8 @@ func (s *Scheduler) RunGrowthNow() {
 func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 	growthTaskMu.Lock()
 	defer growthTaskMu.Unlock()
-	reported := s.runGrowthExecutorsLocked(ctx)
-	rep := s.claimCompletedGrowthTasksLocked(ctx, false)
+	reported := s.runGrowthExecutorsLocked(ctx, "")
+	rep := s.claimCompletedGrowthTasksLocked(ctx, false, "")
 	claimed, already, failed := 0, 0, 0
 	for _, r := range rep.Results {
 		switch r.Status {
@@ -252,54 +277,202 @@ func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 	return rep
 }
 
-// GrowthTaskSummary 生成面板摘要：每个账号缺什么、哪些可领。
+// RunGrowthAccountReport 只处理指定 CN WorkBuddy 账号：补白名单任务进度，
+// 回读后领取该账号已经 completed 的任务。global/不存在/非 workbuddy 均拒绝。
+func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid string) (GrowthAccountRunReport, error) {
+	uid = strings.TrimSpace(uid)
+	rep := GrowthAccountRunReport{UID: uid, Started: time.Now()}
+	if uid == "" {
+		return rep, errGrowthAccountNotFound
+	}
+	growthTaskMu.Lock()
+	defer growthTaskMu.Unlock()
+
+	st, _, err := s.growthAccountLocked(uid)
+	if err != nil {
+		return rep, err
+	}
+	rep.Nickname = st.Nickname
+	reported := s.runGrowthExecutorsLocked(ctx, uid)
+	claim := s.claimCompletedGrowthTasksLocked(ctx, false, uid)
+	rep.Reported = reported
+	for _, r := range claim.Results {
+		switch r.Status {
+		case "claimed":
+			rep.Claimed++
+		case "already":
+			rep.Already++
+		case "failed":
+			rep.Failed++
+		}
+	}
+	rep.Finished = time.Now()
+	return rep, nil
+}
+
+func (s *Scheduler) growthAccountLocked(uid string) (pool.Status, *auth.Auth, error) {
+	for _, st := range s.cfg.Pool.List() {
+		if st.UID != uid {
+			continue
+		}
+		if st.Disabled {
+			return st, nil, errGrowthAccountDisabled
+		}
+		if strings.TrimSpace(st.Producer) != "" && st.Producer != "workbuddy" {
+			return st, nil, errGrowthAccountNotFound
+		}
+		a := s.cfg.Pool.AuthByUID(st.UID)
+		if a == nil {
+			return st, nil, errGrowthAccountNotFound
+		}
+		if a.IsGlobal() {
+			return st, nil, errGrowthAccountGlobal
+		}
+		return st, a, nil
+	}
+	return pool.Status{}, nil, errGrowthAccountNotFound
+}
+
+type growthSummaryTask struct {
+	TaskCode string                  `json:"task_code"`
+	TaskName string                  `json:"task_name"`
+	TaskDesc string                  `json:"task_desc,omitempty"`
+	Progress upstream.GrowthProgress `json:"progress"`
+	Status   string                  `json:"status"`
+	Action   string                  `json:"action"` // run / claim / manual
+	Reward   json.RawMessage         `json:"reward,omitempty"`
+}
+
+type growthSummaryAccount struct {
+	UID       string              `json:"uid"`
+	Nickname  string              `json:"nickname"`
+	Realm     string              `json:"realm"`
+	OK        bool                `json:"ok"`
+	Error     string              `json:"error,omitempty"`
+	Pending   int                 `json:"pending"`
+	CanHelp   int                 `json:"can_help"`
+	Manual    int                 `json:"manual"`
+	Claimable int                 `json:"claimable"`
+	Tasks     []growthSummaryTask `json:"tasks"`
+}
+
+// GrowthTaskSummary 生成账号视角摘要：每个账号还剩哪些任务、能否帮做/领取。
+// 普通任务与小程序任务按 UID 合并，已领取任务不展示，global 不进入面板。
 func GrowthTaskSummary(res GrowthScanResult) map[string]any {
-	var total, completed, claimable, pending, localPending, localCapable int
-	var credit, energy int64
-	byAccount := make([]map[string]any, 0, len(res.Accounts))
+	type accState struct {
+		meta  growthSummaryAccount
+		tasks map[string]growthSummaryTask
+	}
+	byUID := map[string]*accState{}
 	for _, acct := range res.Accounts {
-		var acctTotal, acctDone, acctClaim, acctPending int
+		if acct.Realm == "global" {
+			continue
+		}
+		st := byUID[acct.UID]
+		if st == nil {
+			st = &accState{
+				meta:  growthSummaryAccount{UID: acct.UID, Nickname: acct.Nickname, Realm: acct.Realm, OK: acct.OK, Error: acct.Error},
+				tasks: map[string]growthSummaryTask{},
+			}
+			byUID[acct.UID] = st
+		}
+		if acct.OK {
+			st.meta.OK = true
+			st.meta.Error = ""
+		} else if st.meta.Error == "" {
+			st.meta.Error = acct.Error
+		}
 		for _, t := range acct.Tasks {
-			acctTotal++
-			total++
+			if t.AcceptStatus == "claimed" {
+				continue
+			}
+			status := t.AcceptStatus
+			if status == "" {
+				status = "not_accepted"
+			}
+			action := "manual"
 			switch {
-			case t.AcceptStatus == "claimed":
-				acctDone++
-				completed++
-			case t.AcceptStatus == "completed":
-				acctClaim++
+			case status == "completed":
+				action = "claim"
+			case growthTaskExecutors[t.TaskCode] != nil:
+				action = "run"
+			}
+			item := growthSummaryTask{
+				TaskCode: t.TaskCode, TaskName: t.TaskName, TaskDesc: t.TaskDesc,
+				Progress: t.Progress, Status: status, Action: action, Reward: t.Reward,
+			}
+			if old, ok := st.tasks[t.TaskCode]; ok && growthTaskRank(old.Status) >= growthTaskRank(status) {
+				continue
+			}
+			st.tasks[t.TaskCode] = item
+		}
+	}
+
+	accounts := make([]growthSummaryAccount, 0, len(byUID))
+	var pending, canHelp, manual, claimable int
+	for _, st := range byUID {
+		acc := st.meta
+		for _, t := range st.tasks {
+			acc.Tasks = append(acc.Tasks, t)
+			switch t.Action {
+			case "claim":
+				acc.Claimable++
 				claimable++
-				var rw struct {
-					Credit int64 `json:"credit"`
-					Energy int64 `json:"energy"`
-				}
-				if len(t.Reward) > 0 {
-					_ = json.Unmarshal(t.Reward, &rw)
-				}
-				credit += rw.Credit
-				energy += rw.Energy
-			default:
-				acctPending++
+			case "run":
+				acc.Pending++
+				acc.CanHelp++
 				pending++
+				canHelp++
+			default:
+				acc.Pending++
+				acc.Manual++
+				pending++
+				manual++
 			}
 		}
-		localPending += acct.LocalPending
-		localCapable += acct.LocalCapable
-		byAccount = append(byAccount, map[string]any{
-			"uid": acct.UID, "nickname": acct.Nickname, "realm": acct.Realm,
-			"platform": acct.Platform, "ok": acct.OK, "error": acct.Error,
-			"total": acctTotal, "claimed": acctDone, "claimable": acctClaim, "pending": acctPending,
-			"local_pending": acct.LocalPending, "local_capable": acct.LocalCapable,
-			"tasks": acct.Tasks,
+		if acc.Pending == 0 && acc.Claimable == 0 && acc.Error == "" {
+			continue
+		}
+		sort.Slice(acc.Tasks, func(i, j int) bool {
+			if acc.Tasks[i].Action != acc.Tasks[j].Action {
+				return growthTaskActionRank(acc.Tasks[i].Action) < growthTaskActionRank(acc.Tasks[j].Action)
+			}
+			return acc.Tasks[i].TaskName < acc.Tasks[j].TaskName
 		})
+		accounts = append(accounts, acc)
 	}
-	sort.Slice(byAccount, func(i, j int) bool {
-		return fmt.Sprint(byAccount[i]["uid"]) < fmt.Sprint(byAccount[j]["uid"])
+	sort.Slice(accounts, func(i, j int) bool {
+		if accounts[i].Pending != accounts[j].Pending {
+			return accounts[i].Pending > accounts[j].Pending
+		}
+		return accounts[i].Nickname < accounts[j].Nickname
 	})
 	return map[string]any{
-		"scanned_at": res.ScannedAt, "total": total, "claimed": completed,
-		"claimable": claimable, "pending": pending, "claimable_credit": credit, "claimable_energy": energy,
-		"local_pending": localPending, "local_capable": localCapable,
-		"accounts": byAccount, "error": res.Error,
+		"scanned_at": res.ScannedAt, "pending": pending, "can_help": canHelp,
+		"manual": manual, "claimable": claimable, "accounts": accounts, "error": res.Error,
+	}
+}
+
+func growthTaskRank(status string) int {
+	switch status {
+	case "completed":
+		return 3
+	case "accepted":
+		return 2
+	case "not_accepted":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func growthTaskActionRank(action string) int {
+	switch action {
+	case "claim":
+		return 0
+	case "run":
+		return 1
+	default:
+		return 2
 	}
 }

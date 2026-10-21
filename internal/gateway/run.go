@@ -329,6 +329,9 @@ func Start(opts Options) (*Instance, error) {
 		GrowthRun: func(ctx context.Context) (any, error) {
 			return sch.RunGrowthNowReport(ctx), nil
 		},
+		GrowthRunAccount: func(ctx context.Context, uid string) (any, error) {
+			return sch.RunGrowthAccountReport(ctx, uid)
+		},
 		// 优雅停机入口（POST /admin/shutdown）：桌面控制台停「别的进程起的」网关时
 		// 走这里，落盘/Flush/关监听全走与信号同一条路径。cancel 是幂等的。
 		Shutdown: cancel,

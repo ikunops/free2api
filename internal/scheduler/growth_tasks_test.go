@@ -128,17 +128,8 @@ func TestGrowthClaimDryRunOnlyCompletedAndSkipsGlobal(t *testing.T) {
 	)
 
 	scan := s.ScanGrowthTasks(context.Background())
-	if len(scan.Accounts) != 3 {
-		t.Fatalf("accounts=%d want cn default + cn mini + global marker: %+v", len(scan.Accounts), scan.Accounts)
-	}
-	var global *GrowthTaskStatus
-	for i := range scan.Accounts {
-		if scan.Accounts[i].UID == "g1" {
-			global = &scan.Accounts[i]
-		}
-	}
-	if global == nil || global.OK || !strings.Contains(global.Error, "global") {
-		t.Fatalf("global 应被跳过并说明原因: %+v", global)
+	if len(scan.Accounts) != 2 {
+		t.Fatalf("accounts=%d want cn default + cn mini, global hidden: %+v", len(scan.Accounts), scan.Accounts)
 	}
 	if stub.listCalls["default"] != 1 || stub.listCalls["miniprogram"] != 1 {
 		t.Fatalf("global 不应请求任务列表, calls=%v", stub.listCalls)
@@ -227,23 +218,86 @@ func TestGrowthRunWhitelistAndReadbackBeforeClaim(t *testing.T) {
 	}
 }
 
-func TestGrowthTaskSummaryCountsClaimableAndLocal(t *testing.T) {
-	res := GrowthScanResult{Accounts: []GrowthTaskStatus{{
-		UID: "u1", Nickname: "CN", Realm: "cn", Platform: "default", OK: true, LocalPending: 1, LocalCapable: 2,
-		Tasks: []upstream.GrowthTask{
-			{TaskCode: "a", AcceptStatus: "completed", Reward: json.RawMessage(`{"credit":12,"energy":3}`)},
-			{TaskCode: "b", AcceptStatus: "claimed"},
-			{TaskCode: "c", AcceptStatus: "accepted"},
+func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
+	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
+		{
+			UID: "u1", Nickname: "小天才", Realm: "cn", Platform: "default", OK: true,
+			Tasks: []upstream.GrowthTask{
+				{TaskCode: "done", TaskName: "已完成", AcceptStatus: "completed"},
+				{TaskCode: "chat_5", TaskName: "对话 5 次", AcceptStatus: "accepted", Progress: upstream.GrowthProgress{Current: 2, Target: 5}},
+				{TaskCode: "canvas", TaskName: "真实客户端", AcceptStatus: "not_accepted"},
+				{TaskCode: "claimed", TaskName: "已领取", AcceptStatus: "claimed"},
+			},
 		},
-	}}}
+		{
+			UID: "u1", Nickname: "小天才", Realm: "cn", Platform: "miniprogram", OK: true,
+			Tasks: []upstream.GrowthTask{
+				{TaskCode: "mini", TaskName: "小程序任务", AcceptStatus: "accepted"},
+				{TaskCode: "chat_5", TaskName: "重复任务", AcceptStatus: "not_accepted"},
+			},
+		},
+		{
+			UID: "g1", Nickname: "Global", Realm: "global", Platform: "default", OK: false, Error: "global",
+		},
+	}}
 	out := GrowthTaskSummary(res)
-	if out["total"] != 3 || out["claimable"] != 1 || out["pending"] != 1 || out["claimed"] != 1 {
+	accounts, ok := out["accounts"].([]growthSummaryAccount)
+	if !ok || len(accounts) != 1 {
+		t.Fatalf("accounts=%#v", out["accounts"])
+	}
+	acc := accounts[0]
+	if acc.UID != "u1" || acc.Pending != 3 || acc.CanHelp != 1 || acc.Manual != 2 || acc.Claimable != 1 {
+		t.Fatalf("account=%+v", acc)
+	}
+	if out["pending"] != 3 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 {
 		t.Fatalf("summary=%v", out)
 	}
-	if out["claimable_credit"] != int64(12) || out["claimable_energy"] != int64(3) {
-		t.Fatalf("reward summary=%v", out)
+	actions := map[string]string{}
+	for _, task := range acc.Tasks {
+		actions[task.TaskCode] = task.Action
 	}
-	if out["local_pending"] != 1 || out["local_capable"] != 2 {
-		t.Fatalf("local summary=%v", out)
+	if actions["done"] != "claim" || actions["chat_5"] != "run" || actions["mini"] != "manual" || actions["canvas"] != "manual" {
+		t.Fatalf("actions=%v tasks=%+v", actions, acc.Tasks)
+	}
+	if _, exists := actions["claimed"]; exists {
+		t.Fatalf("claimed task should be hidden: %+v", acc.Tasks)
+	}
+}
+
+func TestRunGrowthAccountOnlyTarget(t *testing.T) {
+	oldClaim, oldAccept, oldGap, oldExec := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap
+	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap = 0, 0, 0, 0
+	t.Cleanup(func() {
+		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap = oldClaim, oldAccept, oldGap, oldExec
+	})
+
+	stub := &growthStub{
+		defaultTasks: []upstream.GrowthTask{
+			{TaskCode: "chat_5", TaskName: "对话 5 次", AcceptStatus: "not_accepted", Progress: upstream.GrowthProgress{Current: 0, Target: 5}},
+		},
+	}
+	stub.onReport = func(platform string, reports int) {
+		if platform == "default" && reports >= 5 {
+			stub.defaultTasks[0].AcceptStatus = "completed"
+			stub.defaultTasks[0].Progress.Current = 5
+		}
+	}
+	s := growthTestScheduler(t, stub,
+		&auth.Auth{UID: "u1", AccessToken: "at", Nickname: "目标账号"},
+		&auth.Auth{UID: "u2", AccessToken: "at", Nickname: "不动账号"},
+	)
+
+	rep, err := s.RunGrowthAccountReport(context.Background(), "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Reported != 1 || rep.Claimed != 1 || rep.Failed != 0 {
+		t.Fatalf("report=%+v", rep)
+	}
+	if stub.accepts["default"] != 1 || stub.reports["default"] != 5 || stub.claims["default:chat_5"] != 1 {
+		t.Fatalf("target calls accepts=%v reports=%v claims=%v", stub.accepts, stub.reports, stub.claims)
+	}
+	if _, err := s.RunGrowthAccountReport(context.Background(), "missing"); !IsGrowthAccountNotFound(err) {
+		t.Fatalf("missing uid err=%v", err)
 	}
 }

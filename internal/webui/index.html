@@ -574,17 +574,38 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .mgroup.open .mcaret{transform:rotate(90deg)}
 .mbody{display:none}
 .mgroup.open + .mbody{display:block}
-/* 成长任务两级折叠：账号折叠 -> 任务表。默认全部收起，避免一次扫描 4 个号 × 两平台
-   把运行态页拉成几十行。 */
+/* 成长任务：账号行和任务行都用固定列，账号名长短不顶动右侧状态。 */
+.growth-summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--fg2);margin:2px 0 12px}
+.growth-summary b{color:var(--fg);font-size:13px}
+.growth-summary .sep{width:1px;height:12px;background:var(--line2)}
 .growth-acct{border:1px solid var(--line2);border-radius:var(--r2);margin:8px 0;background:var(--panel)}
-.growth-acct>summary{list-style:none;cursor:pointer;padding:9px 12px;display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:12px}
-.growth-acct>summary::-webkit-details-marker{display:none}
-.growth-acct>summary::before{content:"\25B8";color:var(--fg3);font-size:10px}
-.growth-acct[open]>summary::before{content:"\25BE"}
-.growth-acct>summary:hover{background:var(--hover2)}
-.growth-acct .tablewrap{border-top:1px solid var(--line2)}
-.growth-acct .tablewrap table{margin:0}
-.growth-acct .mono{color:var(--fg3);font-size:11px}
+.growth-head{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:12px;align-items:center;padding:0 12px 0 0}
+.growth-head:hover{background:var(--hover2)}
+.growth-det{min-width:0}
+.growth-det>summary{list-style:none;cursor:pointer;padding:10px 12px;display:grid;grid-template-columns:minmax(0,1fr) 126px;gap:12px;align-items:center;font-size:12px;min-width:0}
+.growth-det>summary::-webkit-details-marker{display:none}
+.growth-det>summary::before{content:"\25B8";color:var(--fg3);font-size:10px;grid-column:1;grid-row:1;justify-self:start;margin-left:-8px;transform:translateX(-6px)}
+.growth-det[open]>summary::before{content:"\25BE"}
+.growth-name{min-width:0;display:flex;flex-direction:column;gap:2px;padding-left:12px}
+.growth-name .n{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--fg)}
+.growth-name .u{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.growth-count{justify-self:end;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
+.growth-act{justify-self:end}
+.growth-tasks{border-top:1px solid var(--line2);padding:3px 12px 8px}
+.growth-task{display:grid;grid-template-columns:minmax(0,1fr) 78px 108px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
+.growth-task:last-child{border-bottom:0}
+.growth-task .tn{font-weight:500;color:var(--fg);overflow-wrap:anywhere}
+.growth-task .td{font-size:11px;color:var(--fg3);margin-top:2px;overflow-wrap:anywhere}
+.growth-task .prog{text-align:right;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
+.growth-task .act{text-align:right;white-space:nowrap;color:var(--fg3)}
+.growth-task .act.run{color:var(--acc-fg)}
+.growth-task .act.claim{color:var(--warn-fg)}
+.growth-empty{padding:10px 12px;color:var(--fg3);font-size:12px}
+@media(max-width:760px){
+  .growth-head{grid-template-columns:minmax(0,1fr) 88px;gap:8px;padding-right:8px}
+  .growth-det>summary{grid-template-columns:minmax(0,1fr) 110px;gap:8px;padding:9px 8px}
+  .growth-task{grid-template-columns:minmax(0,1fr) 64px 88px;gap:8px}
+}
 /* 折叠卡片（Codex / ZCode 一键接入）：open 类挂在 .card.fold 自己身上，
    语义与 .mgroup.open 完全一致，只是不依赖「相邻兄弟」这个选择器。 */
 .card.fold > .mbody{display:none}
@@ -805,7 +826,7 @@ const S = {
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, cardOpen: loadCardOpen(),
-  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false,
+  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "",
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
   floatwin: null, floatBusy: false,
@@ -3926,68 +3947,61 @@ function selfTestCard(){
   return card("连通性自检", "",
     body, '<button class="rf" data-action="selftest">' + svg("shield") + (st && st.running ? "自检中…" : "开始自检") + '</button>');
 }
-/* growthCard 成长任务面板：两级折叠（账号 -> 普通/小程序任务）。默认不扫描，
-   避免打开运行态就按账号数打上游。领取按钮默认是试运行，真正领取必须二次确认。 */
+/* growthCard 成长任务面板：只回答“哪些账号还有哪些没做、能不能帮做”。 */
 function growthCard(){
   var g = S.growth;
   var busy = S.growthBusy;
+  var accountBusy = S.growthAccountBusy || "";
   var extra = '<button class="rf" data-action="growth-scan" ' + (busy ? "disabled" : "") + '>' +
     svg("refresh") + (busy ? "扫描中…" : "扫描任务") + '</button>';
   if (!g){
-    return card("成长任务", "扫描 CN WorkBuddy 账号的普通任务与小程序任务；只读取，不写上游。",
+    return card("成长任务", "",
       '<div class="empty">还没扫描。点右上角「扫描任务」拉取当前任务状态。</div>', extra);
   }
   var accts = g.accounts || [];
-  var rows = accts.map(function(a, ai){
+  var rows = accts.map(function(a){
     var tasks = a.tasks || [];
-    if (!tasks.length){
-      return '<details class="growth-acct"><summary>' +
-        '<b>' + esc(a.nickname || a.uid) + '</b><span class="mono">' + esc((a.uid || "").slice(0,8)) + '</span>' +
-        '<span class="tag mut">' + esc(a.platform || "default") + '</span>' +
-        (a.ok ? '<span class="tag mut">0 项</span>' : '<span class="tag err">' + esc(a.error || "扫描失败") + '</span>') +
-        '</summary><div class="hint" style="padding:9px 13px">' + (a.ok ? "没有下发任务" : "上游返回错误") + '</div></details>';
-    }
-    var claimable = tasks.filter(function(t){ return t.accept_status === "completed"; }).length;
-    var pending = tasks.filter(function(t){ return t.accept_status !== "completed" && t.accept_status !== "claimed"; }).length;
-    var claimed = tasks.filter(function(t){ return t.accept_status === "claimed"; }).length;
+    var pending = a.pending || 0;
+    var claimable = a.claimable || 0;
+    var canHelp = a.can_help || 0;
+    var summaryText = pending ? ("还有 " + pending + " 项没做") : (claimable ? "奖励可领取" : "暂无待办");
     var trows = tasks.map(function(t){
-      var ast = t.accept_status || "not_accepted";
-      var cls = ast === "claimed" ? "ok" : ast === "completed" ? "warn" : "mut";
-      var label = ast === "claimed" ? "已领取" : ast === "completed" ? "可领取" : ast === "accepted" ? "进行中" : ast;
       var prog = (t.progress && t.progress.target) ? (t.progress.current + " / " + t.progress.target) : "—";
-      var can = !!growthExecutorCodes[t.task_code];
-      return '<tr><td><span class="mono">' + esc(t.task_code || "") + '</span>' +
-        (can ? ' <span class="tag mut">本机可补</span>' : "") + '</td>' +
-        '<td>' + esc(t.task_name || "") + '</td>' +
-        '<td><span class="tag ' + cls + '">' + esc(label) + '</span></td>' +
-        '<td class="num">' + esc(prog) + '</td></tr>';
+      var action = t.action || "manual";
+      var actionText = action === "run" ? "可以帮你做" : action === "claim" ? "领取奖励" : "需要你完成";
+      var taskTitle = t.task_name || (t.task_desc ? t.task_desc.slice(0, 28) + (t.task_desc.length > 28 ? "…" : "") : (t.task_code || "未命名任务"));
+      var taskDesc = (t.task_desc && t.task_desc !== taskTitle) ? '<div class="td">' + esc(t.task_desc) + '</div>' : "";
+      return '<div class="growth-task">' +
+        '<div><div class="tn">' + esc(taskTitle) + '</div>' + taskDesc + '</div>' +
+        '<div class="prog">' + esc(prog) + '</div>' +
+        '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div></div>';
     }).join("");
-    return '<details class="growth-acct"><summary>' +
-      '<b>' + esc(a.nickname || a.uid) + '</b><span class="mono">' + esc((a.uid || "").slice(0,8)) + '</span>' +
-      '<span class="tag mut">' + esc(a.platform || "default") + '</span>' +
-      '<span class="tag ok">已领 ' + claimed + '</span><span class="tag warn">可领 ' + claimable + '</span>' +
-      '<span class="tag mut">待完成 ' + pending + '</span>' +
-      (a.local_capable ? '<span class="tag">本机可补 ' + a.local_capable + '</span>' : "") +
-      '</summary><div class="tablewrap"><table><thead><tr><th style="width:190px">任务</th><th>名称</th>' +
-      '<th style="width:90px">状态</th><th class="num" style="width:80px">进度</th></tr></thead><tbody>' +
-      trows + '</tbody></table></div></details>';
+    var btn = "";
+    if (canHelp > 0){
+      var isBusy = accountBusy === a.uid;
+      btn = '<button class="pri tiny" data-action="growth-run-account" data-uid="' + esc(a.uid) + '" ' +
+        (busy || accountBusy ? "disabled" : "") + '>' + (isBusy ? "处理中…" : "帮我做") + '</button>';
+    } else if (claimable > 0){
+      var claimBusy = accountBusy === a.uid;
+      btn = '<button class="tiny" data-action="growth-run-account" data-uid="' + esc(a.uid) + '" ' +
+        (busy || accountBusy ? "disabled" : "") + '>' + (claimBusy ? "处理中…" : "领取奖励") + '</button>';
+    }
+    return '<div class="growth-acct"><div class="growth-head">' +
+      '<details class="growth-det"><summary>' +
+      '<span class="growth-name"><span class="n" title="' + esc(a.nickname || a.uid) + '">' + esc(a.nickname || a.uid) + '</span>' +
+      '<span class="u">' + esc((a.uid || "").slice(0,8)) + '</span></span>' +
+      '<span class="growth-count">' + esc(summaryText) + '</span></summary>' +
+      (trows ? '<div class="growth-tasks">' + trows + '</div>' : '<div class="growth-empty">' + esc(a.error || "没有可展示的任务") + '</div>') +
+      '</details><div class="growth-act">' + btn + '</div></div></div>';
   }).join("");
-  var summary = '<div class="mstrip">' +
-    '<div><div class="mk">任务总数</div><div class="mv">' + fmtInt(g.total) + '</div></div>' +
-    '<div><div class="mk">已领取</div><div class="mv">' + fmtInt(g.claimed) + '</div></div>' +
-    '<div><div class="mk">可领取</div><div class="mv">' + fmtInt(g.claimable) + '</div></div>' +
-    '<div><div class="mk">待完成</div><div class="mv">' + fmtInt(g.pending) + '</div></div>' +
-    '<div><div class="mk">本机可补</div><div class="mv">' + fmtInt(g.local_pending) + '</div></div></div>';
-  var actions = '<div class="row" style="margin-top:10px">' +
-    '<button class="tiny" data-action="growth-claim-preview" ' + (busy ? "disabled" : "") + '>试运行领取</button>' +
-    '<button class="pri tiny" data-action="growth-claim-run" ' + (busy ? "disabled" : "") + '>领取已完成任务</button>' +
-    '<button class="tiny" data-action="growth-run-now" ' + (busy ? "disabled" : "") + '>补进度并领取</button>' +
-    '<span class="hint" style="margin:0">试运行只列出可领任务；「补进度并领取」只做本机可补的接口型任务，不伪造 PC 限定任务。</span></div>';
-  return card("成长任务（" + accts.length + " 条账号/平台记录）",
-    "扫描时间 " + fmtTime(g.scanned_at) + "；普通与小程序任务分开列。默认只领取上游已标 completed 的任务，未完成任务不会伪造。",
-    summary + actions + (rows ? '<div style="margin-top:10px">' + rows + '</div>' : '<div class="empty">没有可展示的任务</div>'), extra);
+  var summary = '<div class="growth-summary">' +
+    '<b>' + fmtInt(accts.length) + ' 个账号还有 ' + fmtInt(g.pending || 0) + ' 项没做</b>' +
+    '<span class="sep"></span><span>其中 ' + fmtInt(g.can_help || 0) + ' 项可以帮你做</span>' +
+    '<span class="sep"></span><span>' + fmtInt(g.manual || 0) + ' 项需要你完成</span>' +
+    '<span class="sep"></span><span>' + fmtInt(g.claimable || 0) + ' 项奖励可领取</span></div>';
+  return card("成长任务", "",
+    summary + (rows ? rows : '<div class="empty">没有需要处理的账号</div>'), extra);
 }
-var growthExecutorCodes = {"chat_5":1,"Model_chat_GLM5.2":1,"Sequential_Tasks_1":1};
 /* loadRuntime 拉运行态页需要的三份数据：定时任务、死信台账、以及最新的 /status
    （粘性/在飞等字段在 status 里）。三份并行，任一失败不拖累其余。 */
 async function loadRuntime(){
@@ -4853,36 +4867,24 @@ async function growthScan(){
   S.growthBusy = true; render();
   try {
     S.growth = await api("/admin/growth/tasks");
-    toast("ok", "已扫描成长任务：可领 " + fmtInt(S.growth.claimable) + " 项", 3600);
+    toast("ok", "已扫描：" + fmtInt((S.growth.accounts || []).length) + " 个账号还有 " + fmtInt(S.growth.pending || 0) + " 项没做", 3600);
   } catch (e) { toast("err", e.message || String(e), 9000); }
   finally { S.growthBusy = false; render(); }
 }
-/* growthClaim 默认 dry-run；真正领取前必须 confirm。 */
-async function growthClaim(dryRun){
-  if (S.growthBusy) return;
-  if (!dryRun && !window.confirm("确定领取所有已完成任务？\n\n只会领取上游状态为 completed 的任务，不会伪造未完成任务。")) return;
-  S.growthBusy = true; render();
+/* growthRunAccount 只处理用户点的那一个账号，并立即刷新账号列表。 */
+async function growthRunAccount(uid){
+  uid = uid || "";
+  if (!uid || S.growthBusy || S.growthAccountBusy) return;
+  S.growthAccountBusy = uid; render();
   try {
-    var r = await api("/admin/growth/claim", { method: "POST", body: { dry_run: !!dryRun } });
-    var list = (r && r.results) || [];
-    var n = list.filter(function(x){ return x.status === "claimed" || x.status === "skipped"; }).length;
-    var parts = list.slice(0, 6).map(function(x){ return (x.task_name || x.code) + " · " + x.status; });
-    toast(dryRun ? "info" : "ok", (dryRun ? "试运行：" : "已领取：") + n + " 项" + (parts.length ? "；" + parts.join("；") : ""), 9000);
-    if (!dryRun) S.growth = await api("/admin/growth/tasks");
-  } catch (e) { toast("err", e.message || String(e), 9000); }
-  finally { S.growthBusy = false; render(); }
-}
-/* growthRunNow 立即执行一次“白名单补进度 + 领取已完成”。默认任务关闭时也能手动跑。 */
-async function growthRunNow(){
-  if (S.growthBusy) return;
-  if (!window.confirm("确定立即执行一次成长任务？\n\n只做本机白名单里的接口型任务（chat_5 / Model_chat_GLM5.2 / Sequential_Tasks_1），再领取上游 completed 的任务。不会伪造 PC 限定任务。")) return;
-  S.growthBusy = true; render();
-  try {
-    await api("/admin/growth/run", { method: "POST", body: {} });
+    var r = await api("/admin/growth/accounts/" + encodeURIComponent(uid) + "/run", { method: "POST", body: {} });
     S.growth = await api("/admin/growth/tasks");
-    toast("ok", "已执行成长任务并刷新扫描结果", 5200);
+    var msg = "已处理该账号";
+    if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
+    if (r && r.failed) msg += "，" + fmtInt(r.failed) + " 项未成功";
+    toast("ok", msg, 5200);
   } catch (e) { toast("err", e.message || String(e), 9000); }
-  finally { S.growthBusy = false; render(); }
+  finally { S.growthAccountBusy = ""; render(); }
 }
 /* modeldeadClear 清空模型死信台账（误杀兜底）。 */
 async function modeldeadClear(){
@@ -5041,9 +5043,7 @@ async function actOn(t){
     if (act === "float-range") return floatApply({ range: t.getAttribute("data-range") });
     if (act === "float-theme") return floatApply({ theme: t.getAttribute("data-theme") });
     if (act === "growth-scan") return growthScan();
-    if (act === "growth-claim-preview") return growthClaim(true);
-    if (act === "growth-claim-run") return growthClaim(false);
-    if (act === "growth-run-now") return growthRunNow();
+    if (act === "growth-run-account") return growthRunAccount(t.getAttribute("data-uid"));
     if (act === "modeldead-clear") return modeldeadClear();
     if (act === "codex-detach-preview") return codexDetachPreview();
     if (act === "codex-detach-apply") return codexDetachApply();
