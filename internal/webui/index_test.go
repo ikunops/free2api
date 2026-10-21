@@ -1,6 +1,9 @@
 package webui
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -38,5 +41,26 @@ func TestNoGoConstantNamesInJS(t *testing.T) {
 		if re.MatchString(body) {
 			t.Errorf("JS 里出现 Go 常量名 %q —— 它只存在于 Go 侧，运行到这行会抛 ReferenceError 让整段脚本失效；应改用后端下发的字面量 ID", name)
 		}
+	}
+}
+
+// TestInlineScriptParses 用 Node 解析内嵌脚本，拦截“HTML 仍返回 200、但 JS
+// 在首行解析时就失败，导致导航和内容区一起空白”的发布事故。
+//
+// 这次真实根因是 window.confirm(...) 的双引号字符串里出现裸换行。浏览器会
+// 在脚本解析阶段终止，renderNav()/render() 根本来不及执行；后端 healthz 却
+// 完全正常，所以仅验证 HTTP 状态或字段存在抓不到。
+func TestInlineScriptParses(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; cannot parse embedded JavaScript")
+	}
+	path := filepath.Join(t.TempDir(), "management.js")
+	if err := os.WriteFile(path, []byte(scriptBody(t)), 0o600); err != nil {
+		t.Fatalf("write embedded script: %v", err)
+	}
+	out, err := exec.Command(node, "--check", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("embedded JavaScript syntax error: %v\n%s", err, out)
 	}
 }

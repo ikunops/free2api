@@ -4908,11 +4908,8 @@ async function chanSave(){
   var openAll = list.filter(function(c){ return !(c.producers && c.producers.length); });
   if (openAll.length && producerChoices().length > 1){
     var names = openAll.map(function(c){ return c.name || c.id; }).join("、");
-    if (!window.confirm("出口「" + names + "」没有勾任何服务来源，保存后它会服务【全部来源】。
-" +
-        "如果本意是只给某一家开独立口，请先勾上来源再保存。
-
-仍然按「全部来源」保存？")) return;
+    if (!window.confirm("出口「" + names + "」没有勾任何服务来源，保存后它会服务【全部来源】。\n" +
+        "如果本意是只给某一家开独立口，请先勾上来源再保存。\n\n仍然按「全部来源」保存？")) return;
   }
   try {
     var res = await api("/admin/output", { method: "PUT", body: { channels: list } });
