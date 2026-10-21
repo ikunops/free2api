@@ -42,9 +42,16 @@ type GrowthTaskStatus struct {
 	Tasks    []upstream.GrowthTask `json:"tasks,omitempty"`
 	// LocalPending / LocalCapable 标记本网关是否有低风险执行器可补进度。
 	// 不是“已完成”承诺，只是给面板区分“能自动做”和“必须真实客户端”。
-	LocalPending int       `json:"local_pending,omitempty"`
-	LocalCapable int       `json:"local_capable,omitempty"`
-	ScannedAt    time.Time `json:"scanned_at"`
+	LocalPending int `json:"local_pending,omitempty"`
+	LocalCapable int `json:"local_capable,omitempty"`
+	// 账号资产与消耗画像：成长任务页据此判断“这个号值不值得补任务”。
+	// 这些字段来自号池状态，不额外请求上游。
+	Credits         int64     `json:"credits"`
+	CreditsExpiring int64     `json:"credits_expiring,omitempty"`
+	CreditsUrgent   int64     `json:"credits_urgent,omitempty"`
+	SuccessCount    int64     `json:"success_count,omitempty"`
+	LastSuccessTime time.Time `json:"last_success,omitempty"`
+	ScannedAt       time.Time `json:"scanned_at"`
 }
 
 // GrowthScanResult 全池扫描结果。
@@ -148,7 +155,11 @@ func (s *Scheduler) scanGrowthTasksLocked(ctx context.Context) GrowthScanResult 
 			continue
 		}
 		for _, platform := range []upstream.GrowthTaskPlatform{upstream.GrowthPlatformDefault, upstream.GrowthPlatformMiniprogram} {
-			row := GrowthTaskStatus{UID: st.UID, Nickname: st.Nickname, Realm: a.Realm(), Platform: platformLabel(platform), ScannedAt: time.Now()}
+			row := GrowthTaskStatus{
+				UID: st.UID, Nickname: st.Nickname, Realm: a.Realm(), Platform: platformLabel(platform), ScannedAt: time.Now(),
+				Credits: st.Credits, CreditsExpiring: st.CreditsExpiring, CreditsUrgent: st.CreditsUrgent,
+				SuccessCount: st.SuccessCount, LastSuccessTime: st.LastSuccessTime,
+			}
 			tasks, err := s.cfg.Upstream.ListGrowthTasks(a, platform)
 			if err != nil {
 				row.Error = err.Error()
@@ -346,17 +357,22 @@ type growthSummaryTask struct {
 }
 
 type growthSummaryAccount struct {
-	UID       string              `json:"uid"`
-	Nickname  string              `json:"nickname"`
-	Realm     string              `json:"realm"`
-	OK        bool                `json:"ok"`
-	Error     string              `json:"error,omitempty"`
-	Pending   int                 `json:"pending"`
-	CanHelp   int                 `json:"can_help"`
-	Manual    int                 `json:"manual"`
-	Claimable int                 `json:"claimable"`
-	Done      int                 `json:"done"`
-	Tasks     []growthSummaryTask `json:"tasks"`
+	UID             string              `json:"uid"`
+	Nickname        string              `json:"nickname"`
+	Realm           string              `json:"realm"`
+	OK              bool                `json:"ok"`
+	Error           string              `json:"error,omitempty"`
+	Pending         int                 `json:"pending"`
+	CanHelp         int                 `json:"can_help"`
+	Manual          int                 `json:"manual"`
+	Claimable       int                 `json:"claimable"`
+	Done            int                 `json:"done"`
+	Credits         int64               `json:"credits"`
+	CreditsExpiring int64               `json:"credits_expiring,omitempty"`
+	CreditsUrgent   int64               `json:"credits_urgent,omitempty"`
+	SuccessCount    int64               `json:"success_count,omitempty"`
+	LastSuccessTime time.Time           `json:"last_success,omitempty"`
+	Tasks           []growthSummaryTask `json:"tasks"`
 }
 
 // GrowthTaskSummary 生成账号视角摘要：每个账号还剩哪些任务、能否帮做/领取。
@@ -376,7 +392,11 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		st := byUID[acct.UID]
 		if st == nil {
 			st = &accState{
-				meta:      growthSummaryAccount{UID: acct.UID, Nickname: acct.Nickname, Realm: acct.Realm, OK: acct.OK, Error: acct.Error},
+				meta: growthSummaryAccount{
+					UID: acct.UID, Nickname: acct.Nickname, Realm: acct.Realm, OK: acct.OK, Error: acct.Error,
+					Credits: acct.Credits, CreditsExpiring: acct.CreditsExpiring, CreditsUrgent: acct.CreditsUrgent,
+					SuccessCount: acct.SuccessCount, LastSuccessTime: acct.LastSuccessTime,
+				},
 				tasks:     map[string]growthSummaryTask{},
 				platforms: map[string]string{},
 				done:      map[string]bool{},
@@ -386,6 +406,23 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		if acct.OK {
 			st.meta.OK = true
 			st.meta.Error = ""
+			// 普通任务与小程序任务各返回一行；两行资产相同。用 max 合并，
+			// 防止某一平台行未回填资产时把另一行的真实值覆盖成 0。
+			if acct.Credits > st.meta.Credits {
+				st.meta.Credits = acct.Credits
+			}
+			if acct.CreditsExpiring > st.meta.CreditsExpiring {
+				st.meta.CreditsExpiring = acct.CreditsExpiring
+			}
+			if acct.CreditsUrgent > st.meta.CreditsUrgent {
+				st.meta.CreditsUrgent = acct.CreditsUrgent
+			}
+			if acct.SuccessCount > st.meta.SuccessCount {
+				st.meta.SuccessCount = acct.SuccessCount
+			}
+			if acct.LastSuccessTime.After(st.meta.LastSuccessTime) {
+				st.meta.LastSuccessTime = acct.LastSuccessTime
+			}
 		} else if st.meta.Error == "" {
 			st.meta.Error = acct.Error
 		}

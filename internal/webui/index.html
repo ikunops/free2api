@@ -590,6 +590,10 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-name .n{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--fg)}
 .growth-name .u{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
 .growth-count{justify-self:end;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
+.growth-assets{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:3px;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.growth-assets .asset{display:inline-flex;align-items:baseline;gap:3px;padding:2px 7px;border:1px solid var(--line2);border-radius:999px;background:rgba(127,127,127,.035)}
+.growth-assets b{color:var(--fg2);font-weight:600}
+.growth-assets .urgent{border-color:rgba(255,165,0,.34);color:var(--warn-fg)}
 .growth-act{justify-self:end}
 .growth-tasks{border-top:1px solid var(--line2);padding:3px 12px 8px}
 .growth-task{display:grid;grid-template-columns:minmax(0,1fr) 72px 96px 84px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
@@ -603,6 +607,7 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-task .act.claim{color:var(--warn-fg)}
 .growth-task-op{justify-self:end}
 .growth-task.is-busy{background:var(--hover2)}
+.growth-task-loading{display:flex;align-items:center;gap:8px;color:var(--acc-fg);font-weight:500}
 .growth-acct-facts{display:flex;align-items:center;gap:10px;padding:0 12px 10px 28px;font-size:11px;color:var(--fg3);line-height:1.5;flex-wrap:wrap}
 .growth-progress{height:4px;width:120px;border-radius:999px;background:var(--line2);overflow:hidden;flex:none}
 .growth-progress>span{display:block;height:100%;background:var(--acc);border-radius:inherit;transition:width .25s ease}
@@ -836,7 +841,7 @@ const S = {
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, cardOpen: loadCardOpen(),
-  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "", growthTaskBusy: "",
+  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "", growthTaskBusy: "", growthOpen: loadGrowthOpen(), growthPollBusy: false,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
   floatwin: null, floatBusy: false,
@@ -3978,6 +3983,28 @@ function selfTestCard(){
   return card("连通性自检", "",
     body, '<button class="rf" data-action="selftest">' + svg("shield") + (st && st.running ? "自检中…" : "开始自检") + '</button>');
 }
+/* growthOpen 的展开状态按 UID 持久化。后台轮询 / 任务完成后的 render()
+   不能把用户刚展开的账号重新折叠，否则旋转状态只闪一帧就消失。 */
+function loadGrowthOpen(){
+  try {
+    var j = JSON.parse(localStorage.getItem("wb_growth_open") || "{}");
+    return (j && typeof j === "object") ? j : {};
+  } catch (e) { return {}; }
+}
+function saveGrowthOpen(){
+  try { localStorage.setItem("wb_growth_open", JSON.stringify(S.growthOpen || {})); } catch (e) {}
+}
+function growthFmtAgo(t){
+  if (!t) return "";
+  var ms = Date.now() - new Date(t).getTime();
+  if (!isFinite(ms) || ms < 0) return "";
+  var min = Math.floor(ms / 60000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return min + " 分钟前";
+  var hr = Math.floor(min / 60);
+  if (hr < 24) return hr + " 小时前";
+  return Math.floor(hr / 24) + " 天前";
+}
 /* growthCard 成长任务面板：只回答“哪些账号还有哪些没做、能不能帮做”。 */
 function growthCard(){
   var g = S.growth;
@@ -3998,7 +4025,9 @@ function growthCard(){
     var claimable = Number(a.claimable) || 0;
     var canHelp = Number(a.can_help) || 0;
     var manual = Number(a.manual) || 0;
-    var total = done + pending + claimable;
+    // claimable 的任务已经计入 done；不能再加到分母，否则同一个任务会
+    // 同时算“已完成”和“未完成”，进度条会虚低。
+    var total = done + pending;
     var pct = total ? Math.round(done / total * 100) : 0;
     var bar = '<span class="growth-progress" title="已完成 ' + done + ' / ' + total + ' 项"><span style="width:' + pct + '%"></span></span>';
     var facts = '<span class="growth-facts">' +
@@ -4006,6 +4035,17 @@ function growthCard(){
       (canHelp ? ' · <b>' + canHelp + '</b> 可帮做' : "") +
       (manual ? ' · <b>' + manual + '</b> 需你完成' : "") +
       (claimable ? ' · <b>' + claimable + '</b> 可领取' : "") +
+      '</span>';
+    var credits = Number(a.credits) || 0;
+    var expiring = Number(a.credits_expiring) || 0;
+    var urgent = Number(a.credits_urgent) || 0;
+    var succ = Number(a.success_count) || 0;
+    var last = growthFmtAgo(a.last_success);
+    var assets = '<span class="growth-assets">' +
+      '<span class="asset"><b>' + fmtInt(credits) + '</b> 积分</span>' +
+      (expiring ? '<span class="asset' + (urgent ? ' urgent' : '') + '" title="' + (urgent ? '紧急窗口内优先消耗' : '临近过期') + '"><b>' + fmtInt(expiring) + '</b> 快过期</span>' : "") +
+      (succ ? '<span class="asset"><b>' + fmtInt(succ) + '</b> 次成功请求</span>' : "") +
+      (last ? '<span class="asset">活跃 ' + esc(last) + '</span>' : "") +
       '</span>';
     var trows = tasks.map(function(t){
       var prog = (t.progress && t.progress.target) ? (t.progress.current + " / " + t.progress.target) : "—";
@@ -4021,9 +4061,12 @@ function growthCard(){
           ? '<span class="growth-btn-spin" title="处理中">' + svg("refresh") + '</span>'
           : '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">' + (action === "claim" ? "领取" : "做这一项") + '</button>';
       }
+      var main = isTaskBusy
+        ? '<div class="growth-task-loading"><span class="mini-spin"></span><span>正在做这一项…</span></div>'
+        : '<div class="tn">' + esc(taskTitle) + '</div>' + taskDesc;
       return '<div class="growth-task' + (isTaskBusy ? " is-busy" : "") + '">' +
-        '<div class="growth-task-main"><div class="tn">' + esc(taskTitle) + '</div>' + taskDesc + '</div>' +
-        '<div class="prog">' + esc(prog) + '</div>' +
+        '<div class="growth-task-main">' + main + '</div>' +
+        '<div class="prog">' + (isTaskBusy ? "" : esc(prog)) + '</div>' +
         '<div class="act ' + esc(action) + '">' + (isTaskBusy ? "" : esc(actionText)) + '</div>' +
         '<div class="growth-task-op">' + op + '</div></div>';
     }).join("");
@@ -4037,15 +4080,16 @@ function growthCard(){
       btn = '<button class="tiny" data-action="growth-run-account" data-uid="' + esc(a.uid) + '" ' +
         (busy || accountBusy ? "disabled" : "") + '>' + (claimBusy ? '<span class="mini-spin"></span>' : "领取奖励") + '</button>';
     }
+    var isOpen = !!(S.growthOpen || {})[a.uid];
     return '<div class="growth-acct"><div class="growth-head">' +
-      '<details class="growth-det"><summary>' +
+      '<details class="growth-det" data-growth-uid="' + esc(a.uid) + '"' + (isOpen ? " open" : "") + '><summary>' +
       '<span class="growth-name"><span class="n" title="' + esc(a.nickname || a.uid) + '">' + esc(a.nickname || a.uid) + '</span>' +
       '<span class="u">' + esc((a.uid || "").slice(0,8)) + ' · ' + esc(a.realm || "cn") + '</span></span>' +
       '<span class="growth-count">' +
         '<span class="done"><b>' + done + '</b> 已完成</span>' +
         '<span class="todo"><b>' + pending + '</b> 未完成</span>' +
       '</span></summary>' +
-      '<div class="growth-acct-facts">' + bar + facts + '</div>' +
+      '<div class="growth-acct-facts">' + bar + facts + assets + '</div>' +
       (trows ? '<div class="growth-tasks">' + trows + '</div>' : '<div class="growth-empty">' + esc(a.error || "没有可展示的任务") + '</div>') +
       '</details><div class="growth-act">' + btn + '</div></div></div>';
   }).join("");
@@ -4930,6 +4974,29 @@ async function growthScan(){
   } catch (e) { toast("err", e.message || String(e), 9000); }
   finally { S.growthBusy = false; render(); }
 }
+/* growthPoll 静默校准外部完成的任务。只刷新数据，不重画扫描态；
+   对比 JSON 才 render，避免每 20 秒无意义重画。 */
+async function growthPoll(){
+  if (S.tab !== "runtime" || !S.growth) return;
+  if (S.growthBusy || S.growthAccountBusy || S.growthTaskBusy || S.growthPollBusy) return;
+  S.growthPollBusy = true;
+  try {
+    var fresh = await api("/admin/growth/tasks");
+    // scanned_at 每次都会变，不能拿整包 JSON 比较，否则每 20 秒无意义重画。
+    var sig = function(g){
+      var copy = JSON.parse(JSON.stringify(g || {}));
+      delete copy.scanned_at;
+      return JSON.stringify(copy);
+    };
+    if (sig(fresh) !== sig(S.growth)){
+      S.growth = fresh;
+      if (S.tab === "runtime") render();
+    } else {
+      S.growth.scanned_at = fresh.scanned_at;
+    }
+  } catch (e) {}
+  finally { S.growthPollBusy = false; }
+}
 /* growthRunAccount 只处理用户点的那一个账号；task 为空时处理整号。 */
 async function growthRunAccount(uid, taskCode){
   uid = uid || "";
@@ -5172,6 +5239,10 @@ document.addEventListener("toggle", function(ev){
     var id = t.getAttribute("data-cadv") || "";
     if (id){ S.chanOpen[id] = !!t.open; }
   }
+  if (t && t.classList && t.classList.contains("growth-det")){
+    var uid = t.getAttribute("data-growth-uid") || "";
+    if (uid){ S.growthOpen[uid] = !!t.open; saveGrowthOpen(); }
+  }
 }, true);
 document.addEventListener("click", function(ev){
     var e = ev.target;
@@ -5320,6 +5391,9 @@ document.addEventListener("click", function(ev){
     }).catch(function(){});
   }, 30000);
   setInterval(function(){ loadStatus().then(function(changed){ if (changed) render(); }); }, 30000);
+  // 成长任务：外部客户端完成任务时，面板不能等用户手动点扫描。仅运行态页可见时
+  // 20 秒静默校准一次；有写操作/扫描进行中时跳过，避免叠请求。
+  setInterval(function(){ growthPoll(); }, 20000);
   // 概览页的「正在发生」需要知道此刻有几个请求在飞、跑的是哪个模型，而这两个只
   // 在 /status 里（accounts[].in_flight / live_models）——跟 SSE 的统计线无关。
   // 30s 太粗：跑一个 5 秒的请求，整条实时条全程显示「空闲」。概览页单独 2s 拉一次，

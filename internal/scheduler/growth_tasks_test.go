@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"free2api/internal/auth"
 	"free2api/internal/pool"
@@ -222,6 +223,7 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
 		{
 			UID: "u1", Nickname: "小天才", Realm: "cn", Platform: "default", OK: true,
+			Credits: 1460, CreditsExpiring: 260, CreditsUrgent: 60, SuccessCount: 88, LastSuccessTime: time.Date(2026, 10, 21, 22, 28, 0, 0, time.Local),
 			Tasks: []upstream.GrowthTask{
 				{TaskCode: "done", TaskName: "已完成", AcceptStatus: "completed"},
 				{TaskCode: "chat_5", TaskName: "对话 5 次", AcceptStatus: "accepted", Progress: upstream.GrowthProgress{Current: 2, Target: 5}},
@@ -248,6 +250,9 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 	acc := accounts[0]
 	if acc.UID != "u1" || acc.Pending != 3 || acc.CanHelp != 1 || acc.Manual != 2 || acc.Claimable != 1 || acc.Done != 2 {
 		t.Fatalf("account=%+v", acc)
+	}
+	if acc.Credits != 1460 || acc.CreditsExpiring != 260 || acc.CreditsUrgent != 60 || acc.SuccessCount != 88 || acc.LastSuccessTime.IsZero() {
+		t.Fatalf("account assets=%+v", acc)
 	}
 	if out["pending"] != 3 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 || out["done"] != 2 {
 		t.Fatalf("summary=%v", out)
