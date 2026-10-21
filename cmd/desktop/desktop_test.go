@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -243,5 +244,42 @@ func TestDefaultWindowSizeStaysSane(t *testing.T) {
 	}
 	if w < 960 || h < 640 {
 		t.Errorf("窗口 %dx%d 小于最小可用尺寸 960x640", w, h)
+	}
+}
+
+// TestWindowsDesktopBuildUsesGUISubsystem 锁住桌面端的发布构建纪律。
+//
+// manifest 只负责 DPI 和图标，不会改变 PE 子系统。普通 `go build` 产出 Console
+// 子系统，双击时 Windows 会分配 conhost；运行时再 FreeConsole 只能隐藏窗口，
+// 启动瞬间仍会闪一下。桌面端的唯一正确构建方式是 -H=windowsgui。
+func TestWindowsDesktopBuildUsesGUISubsystem(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows GUI 子系统只在 windows 目标上有意义")
+	}
+	root := filepath.Clean(filepath.Join("..", ".."))
+	checks := []struct {
+		path string
+		need []string
+	}{
+		{
+			path: filepath.Join(root, "README.md"),
+			need: []string{"go build", "-H=windowsgui", "./cmd/desktop"},
+		},
+		{
+			path: filepath.Join(root, ".github", "workflows", "release.yml"),
+			need: []string{"-H=windowsgui", "./cmd/desktop"},
+		},
+	}
+	for _, c := range checks {
+		b, err := os.ReadFile(c.path)
+		if err != nil {
+			t.Fatalf("读取 %s: %v", c.path, err)
+		}
+		s := string(b)
+		for _, want := range c.need {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s 的桌面端构建说明缺少 %q；否则 exe 会带控制台窗口", c.path, want)
+			}
+		}
 	}
 }
