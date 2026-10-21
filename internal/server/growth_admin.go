@@ -39,13 +39,14 @@ func (h *Handler) adminGrowthRun(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) adminGrowthRunAccount(w http.ResponseWriter, r *http.Request) {
 	uid := strings.TrimSpace(r.PathValue("uid"))
+	taskCode := strings.TrimSpace(r.URL.Query().Get("task"))
 	if uid == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "uid is required")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
 	defer cancel()
-	out, err := h.cfg.GrowthRunAccount(ctx, uid)
+	out, err := h.cfg.GrowthRunAccount(ctx, uid, taskCode)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

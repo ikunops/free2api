@@ -592,19 +592,22 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-count{justify-self:end;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
 .growth-act{justify-self:end}
 .growth-tasks{border-top:1px solid var(--line2);padding:3px 12px 8px}
-.growth-task{display:grid;grid-template-columns:minmax(0,1fr) 78px 108px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
+.growth-task{display:grid;grid-template-columns:minmax(0,1fr) 72px 96px 84px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
 .growth-task:last-child{border-bottom:0}
+.growth-task-main{min-width:0}
 .growth-task .tn{font-weight:500;color:var(--fg);overflow-wrap:anywhere}
 .growth-task .td{font-size:11px;color:var(--fg3);margin-top:2px;overflow-wrap:anywhere}
 .growth-task .prog{text-align:right;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
 .growth-task .act{text-align:right;white-space:nowrap;color:var(--fg3)}
 .growth-task .act.run{color:var(--acc-fg)}
 .growth-task .act.claim{color:var(--warn-fg)}
+.growth-task-op{justify-self:end}
 .growth-empty{padding:10px 12px;color:var(--fg3);font-size:12px}
 @media(max-width:760px){
   .growth-head{grid-template-columns:minmax(0,1fr) 88px;gap:8px;padding-right:8px}
   .growth-det>summary{grid-template-columns:minmax(0,1fr) 110px;gap:8px;padding:9px 8px}
-  .growth-task{grid-template-columns:minmax(0,1fr) 64px 88px;gap:8px}
+  .growth-task{grid-template-columns:minmax(0,1fr) 64px 84px 76px;gap:8px}
+  .growth-task .td{display:none}
 }
 /* 折叠卡片（Codex / ZCode 一键接入）：open 类挂在 .card.fold 自己身上，
    语义与 .mgroup.open 完全一致，只是不依赖「相邻兄弟」这个选择器。 */
@@ -3972,9 +3975,10 @@ function growthCard(){
       var taskTitle = t.task_name || (t.task_desc ? t.task_desc.slice(0, 28) + (t.task_desc.length > 28 ? "…" : "") : (t.task_code || "未命名任务"));
       var taskDesc = (t.task_desc && t.task_desc !== taskTitle) ? '<div class="td">' + esc(t.task_desc) + '</div>' : "";
       return '<div class="growth-task">' +
-        '<div><div class="tn">' + esc(taskTitle) + '</div>' + taskDesc + '</div>' +
+        '<div class="growth-task-main"><div class="tn">' + esc(taskTitle) + '</div>' + taskDesc + '</div>' +
         '<div class="prog">' + esc(prog) + '</div>' +
-        '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div></div>';
+        '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div>' +
+        '<div class="growth-task-op">' + (action === "run" ? '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">做这一项</button>' : action === "claim" ? '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">领取</button>' : '') + '</div></div>';
     }).join("");
     var btn = "";
     if (canHelp > 0){
@@ -4871,13 +4875,15 @@ async function growthScan(){
   } catch (e) { toast("err", e.message || String(e), 9000); }
   finally { S.growthBusy = false; render(); }
 }
-/* growthRunAccount 只处理用户点的那一个账号，并立即刷新账号列表。 */
-async function growthRunAccount(uid){
+/* growthRunAccount 只处理用户点的那一个账号；task 为空时处理整号。 */
+async function growthRunAccount(uid, taskCode){
   uid = uid || "";
   if (!uid || S.growthBusy || S.growthAccountBusy) return;
   S.growthAccountBusy = uid; render();
   try {
-    var r = await api("/admin/growth/accounts/" + encodeURIComponent(uid) + "/run", { method: "POST", body: {} });
+    var url = "/admin/growth/accounts/" + encodeURIComponent(uid) + "/run";
+    if (taskCode) url += "?task=" + encodeURIComponent(taskCode);
+    var r = await api(url, { method: "POST", body: {} });
     S.growth = await api("/admin/growth/tasks");
     var msg = "已处理该账号";
     if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
@@ -5044,6 +5050,7 @@ async function actOn(t){
     if (act === "float-theme") return floatApply({ theme: t.getAttribute("data-theme") });
     if (act === "growth-scan") return growthScan();
     if (act === "growth-run-account") return growthRunAccount(t.getAttribute("data-uid"));
+    if (act === "growth-run-task") return growthRunAccount(t.getAttribute("data-uid"), t.getAttribute("data-task"));
     if (act === "modeldead-clear") return modeldeadClear();
     if (act === "codex-detach-preview") return codexDetachPreview();
     if (act === "codex-detach-apply") return codexDetachApply();

@@ -259,7 +259,7 @@ func (s *Scheduler) RunGrowthNow() {
 func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 	growthTaskMu.Lock()
 	defer growthTaskMu.Unlock()
-	reported := s.runGrowthExecutorsLocked(ctx, "")
+	reported := s.runGrowthExecutorsLocked(ctx, "", "")
 	rep := s.claimCompletedGrowthTasksLocked(ctx, false, "")
 	claimed, already, failed := 0, 0, 0
 	for _, r := range rep.Results {
@@ -279,8 +279,9 @@ func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 
 // RunGrowthAccountReport 只处理指定 CN WorkBuddy 账号：补白名单任务进度，
 // 回读后领取该账号已经 completed 的任务。global/不存在/非 workbuddy 均拒绝。
-func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid string) (GrowthAccountRunReport, error) {
+func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid, taskCode string) (GrowthAccountRunReport, error) {
 	uid = strings.TrimSpace(uid)
+	taskCode = strings.TrimSpace(taskCode)
 	rep := GrowthAccountRunReport{UID: uid, Started: time.Now()}
 	if uid == "" {
 		return rep, errGrowthAccountNotFound
@@ -293,7 +294,7 @@ func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid string) (Gro
 		return rep, err
 	}
 	rep.Nickname = st.Nickname
-	reported := s.runGrowthExecutorsLocked(ctx, uid)
+	reported := s.runGrowthExecutorsLocked(ctx, uid, taskCode)
 	claim := s.claimCompletedGrowthTasksLocked(ctx, false, uid)
 	rep.Reported = reported
 	for _, r := range claim.Results {
@@ -337,6 +338,7 @@ type growthSummaryTask struct {
 	TaskCode string                  `json:"task_code"`
 	TaskName string                  `json:"task_name"`
 	TaskDesc string                  `json:"task_desc,omitempty"`
+	Platform string                  `json:"platform,omitempty"`
 	Progress upstream.GrowthProgress `json:"progress"`
 	Status   string                  `json:"status"`
 	Action   string                  `json:"action"` // run / claim / manual
@@ -360,8 +362,9 @@ type growthSummaryAccount struct {
 // 普通任务与小程序任务按 UID 合并，已领取任务不展示，global 不进入面板。
 func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 	type accState struct {
-		meta  growthSummaryAccount
-		tasks map[string]growthSummaryTask
+		meta      growthSummaryAccount
+		tasks     map[string]growthSummaryTask
+		platforms map[string]string
 	}
 	byUID := map[string]*accState{}
 	for _, acct := range res.Accounts {
@@ -371,8 +374,9 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		st := byUID[acct.UID]
 		if st == nil {
 			st = &accState{
-				meta:  growthSummaryAccount{UID: acct.UID, Nickname: acct.Nickname, Realm: acct.Realm, OK: acct.OK, Error: acct.Error},
-				tasks: map[string]growthSummaryTask{},
+				meta:      growthSummaryAccount{UID: acct.UID, Nickname: acct.Nickname, Realm: acct.Realm, OK: acct.OK, Error: acct.Error},
+				tasks:     map[string]growthSummaryTask{},
+				platforms: map[string]string{},
 			}
 			byUID[acct.UID] = st
 		}
@@ -405,6 +409,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 				continue
 			}
 			st.tasks[t.TaskCode] = item
+			st.platforms[t.TaskCode] = acct.Platform
 		}
 	}
 
@@ -413,6 +418,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 	for _, st := range byUID {
 		acc := st.meta
 		for _, t := range st.tasks {
+			t.Platform = st.platforms[t.TaskCode]
 			acc.Tasks = append(acc.Tasks, t)
 			switch t.Action {
 			case "claim":

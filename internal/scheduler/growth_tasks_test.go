@@ -287,7 +287,7 @@ func TestRunGrowthAccountOnlyTarget(t *testing.T) {
 		&auth.Auth{UID: "u2", AccessToken: "at", Nickname: "不动账号"},
 	)
 
-	rep, err := s.RunGrowthAccountReport(context.Background(), "u1")
+	rep, err := s.RunGrowthAccountReport(context.Background(), "u1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestRunGrowthAccountOnlyTarget(t *testing.T) {
 	if stub.accepts["default"] != 1 || stub.reports["default"] != 5 || stub.claims["default:chat_5"] != 1 {
 		t.Fatalf("target calls accepts=%v reports=%v claims=%v", stub.accepts, stub.reports, stub.claims)
 	}
-	if _, err := s.RunGrowthAccountReport(context.Background(), "missing"); !IsGrowthAccountNotFound(err) {
+	if _, err := s.RunGrowthAccountReport(context.Background(), "missing", ""); !IsGrowthAccountNotFound(err) {
 		t.Fatalf("missing uid err=%v", err)
 	}
 }

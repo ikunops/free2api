@@ -75,7 +75,7 @@ func (e growthChatExecutor) Run(ctx context.Context, c *upstream.Client, a *auth
 // runGrowthExecutors 扫描任务并在白名单内补未完成进度；只对 CN workbuddy 账号。
 // 返回本轮实际上报的任务数。不在此处 claim：调用方随后 ClaimCompletedGrowthTasks
 // 会重新回读，避免“上报成功但服务端尚未刷新”被误判为可领。
-func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID string) int {
+func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyTask string) int {
 	reported := 0
 	for _, st := range s.cfg.Pool.List() {
 		if ctx.Err() != nil {
@@ -101,6 +101,9 @@ func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID string
 				continue
 			}
 			for _, t := range tasks {
+				if onlyTask != "" && t.TaskCode != onlyTask {
+					continue
+				}
 				if t.AcceptStatus == "completed" || t.AcceptStatus == "claimed" {
 					continue
 				}

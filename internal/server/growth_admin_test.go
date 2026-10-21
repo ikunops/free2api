@@ -104,13 +104,13 @@ func TestGrowthAdminRunAccountInjected(t *testing.T) {
 	var gotUID string
 	h := NewHandler(Config{
 		AdminEnabled: true,
-		GrowthRunAccount: func(_ context.Context, uid string) (any, error) {
+		GrowthRunAccount: func(_ context.Context, uid, taskCode string) (any, error) {
 			gotUID = uid
-			return map[string]any{"uid": uid}, nil
+			return map[string]any{"uid": uid, "task": taskCode}, nil
 		},
 	})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/growth/accounts/u1/run", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/growth/accounts/u1/run?task=chat_5", nil))
 	if rec.Code != http.StatusOK || gotUID != "u1" {
 		t.Fatalf("code=%d uid=%q body=%s", rec.Code, gotUID, rec.Body)
 	}
@@ -118,7 +118,7 @@ func TestGrowthAdminRunAccountInjected(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["uid"] != "u1" {
+	if body["uid"] != "u1" || body["task"] != "chat_5" {
 		t.Fatalf("body=%v", body)
 	}
 }

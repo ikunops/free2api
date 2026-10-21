@@ -117,7 +117,7 @@ type Config struct {
 	GrowthScan       func(context.Context) (any, error)
 	GrowthClaim      func(context.Context, bool) (any, error)
 	GrowthRun        func(context.Context) (any, error)
-	GrowthRunAccount func(context.Context, string) (any, error)
+	GrowthRunAccount func(context.Context, string, string) (any, error)
 
 	// Shutdown 触发进程优雅停机（由 cmd/server 注入 ctx 的 cancel）。
 	//
