@@ -146,10 +146,6 @@ func ImportOpenCodeAs(path, authDir string, ids []string, opt ImportOptions) (Im
 		}
 		uid := OpenCodeUID(acc.Provider)
 		dest := filepath.Join(authDir, AuthFileName(uid))
-		if _, serr := os.Stat(dest); serr == nil {
-			res.Skipped = append(res.Skipped, uid)
-			continue
-		}
 		base := opt.UpstreamBase
 		if base == "" {
 			base = acc.Base
@@ -165,6 +161,16 @@ func ImportOpenCodeAs(path, authDir string, ids []string, opt ImportOptions) (Im
 			Nickname:     openCodeLabel(acc.Provider),
 			Producer:     ProducerOpenCode,
 			UpstreamBase: base,
+		}
+		// 已经导入过同一个 provider 时，不能因为文件名相同就永远跳过：
+		// OpenCode 的 auth.json 会在重新登录后换 key，而旧文件仍在 auths/ 里。
+		// 这里只在 token / 上游都没变时才算幂等跳过；变了就覆盖成最新凭据。
+		if raw, rerr := os.ReadFile(dest); rerr == nil {
+			var prev Flat
+			if json.Unmarshal(raw, &prev) == nil && prev.AccessToken == f.AccessToken && prev.UpstreamBase == f.UpstreamBase {
+				res.Skipped = append(res.Skipped, uid)
+				continue
+			}
 		}
 		if werr := writeFlatAtomic(dest, f); werr != nil {
 			res.Errors = append(res.Errors, uid+": "+werr.Error())

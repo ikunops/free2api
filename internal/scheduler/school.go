@@ -87,6 +87,7 @@ func (c *scriptCmd) Run() error        { return c.cmd.Run() }
 // 覆盖 3.7+ 全部版本口径；Linux 上设了也无副作用（本来就是 UTF-8）。
 var newScriptCmd = func(program string, args ...string) scriptRunner {
 	cmd := exec.Command(program, args...)
+	hideChildWindow(cmd)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	return &scriptCmd{cmd: cmd}
 }

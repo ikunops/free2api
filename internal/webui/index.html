@@ -2737,7 +2737,22 @@ function viewOutput(){
           '<span class="mbits">' + bits.join("") + '</span><span class="mmeta">' + modelBitsHtml(m) + '</span></label>';
       };
       return head + '<div class="mbody">' + ent.map(rowOf).join("") + unent.map(rowOf).join("") + '</div>';
-    }).join("");
+    });
+    // 某个来源有健康账号、但模型目录没拉到时，不能让它整组静默消失。否则页面只剩
+    // 两家有目录的来源，用户会误以为号池里没这家账号（OpenCode 401 / VPN 抖动都踩过）。
+    var presentProducers = {};
+    order.forEach(function(pk){ presentProducers[pk.split("/")[0]] = 1; });
+    var missingSources = ((S.status && S.status.producer_totals) || []).filter(function(x){
+      return x && x.servable && Number(x.total) > 0 && !presentProducers[x.producer];
+    });
+    if (missingSources.length){
+      rows += missingSources.map(function(x){
+        return '<div class="mgroup"><span><b>' + esc(x.name || producerName(x.producer)) +
+          '</b> · 模型目录不可用</span><span class="hint" style="margin:0">' +
+          fmtInt(x.total) + ' 个账号 · 未拿到上游模型表</span></div>' +
+          '<div class="mbody"><div class="empty">这家来源的账号还在号池里，但网关这次没拉到模型目录（常见是凭据失效或网络抖动）。修好后点「立即同步上游」即可恢复。</div></div>';
+      }).join("");
+    }
     var prodOpts = ['<option value="all"' + (S.mfProducer === "all" ? " selected" : "") + '>全部来源</option>'];
     order.forEach(function(pk){
       prodOpts.push('<option value="' + esc(pk) + '"' + (S.mfProducer === pk ? " selected" : "") + '>' +
@@ -2784,6 +2799,12 @@ function viewOutput(){
   var clientNote = servable.length
     ? "承接流量的客户端：" + servable.map(function(x){ return (x.name || producerName(x.producer)) + "（" + x.total + " 号）"; }).join("、")
     : "当前没有已接入上游反代的客户端，上游模型表拉不到。";
+  var present = {};
+  avail.forEach(function(m){ present[m.producer || "workbuddy"] = 1; });
+  var catalogMissing = servable.filter(function(x){ return !present[x.producer]; });
+  if (catalogMissing.length){
+    clientNote += "；目录未拉到：" + catalogMissing.map(function(x){ return (x.name || producerName(x.producer)) + "（账号在池中，模型表不可用）"; }).join("、");
+  }
   if (readonly.length){
     clientNote += "；另有 " + readonly.map(function(x){ return (x.name || producerName(x.producer)) + "（" + x.total + " 号）"; }).join("、") + " 只可查看，不承接流量。";
   }
@@ -5217,6 +5238,25 @@ document.addEventListener("click", function(ev){
   startStatsPolling(); // 先挂上，SSE open 后会把它停掉；这样首个 2s 内也有兜底
   setInterval(function(){ loadHealth(); }, 15000);
   window.addEventListener("resize", fitAllTokens);   // 卡宽随窗口变，重算 Tokens 双形态
+  // 目录自动自愈：来源账号还在，但这次没拉到模型表时（OpenCode key 过期、代理抖动、
+  // 上游瞬时 401），页面不能一直停在「模型目录不可用」等用户手动刷新。90 秒最多强制
+  // 重探一次；目录恢复后条件自动消失，不会持续打上游。
+  setInterval(function(){
+    if (!S.out || !S.status) return;
+    var present = {};
+    ((S.out.available_models || [])).forEach(function(m){ present[m.producer || "workbuddy"] = 1; });
+    var missing = ((S.status.producer_totals || [])).filter(function(x){
+      return x && x.servable && Number(x.total) > 0 && !present[x.producer];
+    });
+    if (!missing.length) return;
+    var now = Date.now();
+    if (S.catalogHealAt && now - S.catalogHealAt < 90000) return;
+    S.catalogHealAt = now;
+    var beforeOut = JSON.stringify(S.out || null), beforeModels = JSON.stringify(S.models || []);
+    Promise.all([loadOutput(true), loadModels()]).then(function(){
+      if (JSON.stringify(S.out || null) !== beforeOut || JSON.stringify(S.models || []) !== beforeModels) render();
+    }).catch(function(){});
+  }, 30000);
   setInterval(function(){ loadStatus().then(function(changed){ if (changed) render(); }); }, 30000);
   // 概览页的「正在发生」需要知道此刻有几个请求在飞、跑的是哪个模型，而这两个只
   // 在 /status 里（accounts[].in_flight / live_models）——跟 SSE 的统计线无关。

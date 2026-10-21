@@ -329,6 +329,7 @@ func wbDeskAskClient(exe string) string {
 	const script = `const b=process._linkedBinding("electron_browser_workbuddy_storage");` +
 		`const p=JSON.parse(b.loggerGet());process.stdout.write(p.atRestSecretKey||"");`
 	cmd := exec.Command(exe, "-e", script)
+	hideChildWindow(cmd)
 	cmd.Env = append(os.Environ(), "ELECTRON_RUN_AS_NODE=1")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
