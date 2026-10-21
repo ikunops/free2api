@@ -1,12 +1,15 @@
-// growth_executors.go 低风险“接口型”成长任务执行器。
+// growth_executors.go 低风险成长任务执行器。
 //
-// 边界：只做官方客户端会做的上报，不伪造需要真实 UI/业务副作用的动作。
-// 当前注册 chat_5 / Model_chat_GLM5.2 / Sequential_Tasks_1；其余任务只扫描、
-// 等待用户真实完成或后续 CDP 适配器，不在 Go 侧坐标点击。
+// 边界：只做官方客户端会做的接口事件或真实对话，不伪造需要付费、真人确认或活动
+// 资格的副作用（捐款、微信关注、限时活动等）。每个执行器完成后仍由调用方回读
+// accept_status，只有服务端确认完成才 claim。
 package scheduler
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -23,6 +26,20 @@ var (
 	growthExecutorGap = 1200 * time.Millisecond
 )
 
+// growthWebChatFn 让调度器测试只验证任务事件/领取状态机，不依赖真实 Web SSE。
+// 生产实现仍走 upstream.Client.GrowthWebChat。
+var growthWebChatFn = func(ctx context.Context, c *upstream.Client, a *auth.Auth, prompt, model string, meta map[string]any) (upstream.GrowthChatReply, error) {
+	return c.GrowthWebChat(ctx, a, prompt, model, meta)
+}
+
+type growthReportMode string
+
+const (
+	growthReportDefault growthReportMode = ""
+	growthReportDesktop growthReportMode = "desktop"
+	growthReportWeb     growthReportMode = "web"
+)
+
 // growthChatExecutor 通过 chat_request_send 事件点亮“真实对话 N 次”类任务。
 // mini=true 走小程序口径（任务列表/accept/claim 带 X-Client-Platform），事件形状
 // 使用 source=mini_program。事件只上报，不直接 claim；完成后由 RunGrowthNow
@@ -35,7 +52,9 @@ type growthChatExecutor struct {
 	mini      bool
 }
 
-func (e growthChatExecutor) Code() string { return e.code }
+func (e growthChatExecutor) Code() string   { return e.code }
+func (e growthChatExecutor) isMini() bool   { return e.mini }
+func (e growthChatExecutor) maxTarget() int { return e.target }
 
 func (e growthChatExecutor) Run(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) error {
 	need := e.target
@@ -54,13 +73,93 @@ func (e growthChatExecutor) Run(ctx context.Context, c *upstream.Client, a *auth
 	if modelID == "" {
 		modelID, modelName = "deepseek-v4-flash", "DeepSeek V4 Flash"
 	}
+	prompt := "你好，请用一句话回复 OK"
 	for i := 0; i < remain; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		cid := upstream.NewGrowthConversationID("growth")
+		var reply upstream.GrowthChatReply
+		var chatErr error
+		if !e.mini {
+			chatCtx, cancel := upstream.GrowthWebChatTimeout(ctx)
+			reply, chatErr = growthWebChatFn(chatCtx, c, a, prompt, modelID, nil)
+			cancel()
+			if chatErr == nil && reply.ConversationID != "" {
+				cid = reply.ConversationID
+			}
+		}
 		ev := growthChatEvent(a, cid, modelID, modelName, e.mini)
+		if chatErr == nil && reply.Text != "" {
+			ev["inputLength"] = len([]rune(prompt))
+		}
 		if err := c.ReportGrowthEvents(a, []map[string]any{ev}); err != nil {
+			return err
+		}
+		if chatErr != nil {
+			return fmt.Errorf("真实对话失败（未上报任务事件）: %w", chatErr)
+		}
+		if i < remain-1 {
+			if !sleepCtx(ctx, growthEventGap) {
+				return ctx.Err()
+			}
+		}
+	}
+	return nil
+}
+
+// growthEventExecutor 覆盖纯接口/桌面事件型任务。每次循环上报一组事件，组内事件
+// 共享会话与请求 id，组间独立。这样同一个执行器可以覆盖 1 次、5 次等不同目标。
+type growthEventExecutor struct {
+	code    string
+	mini    bool
+	mode    growthReportMode
+	target  int
+	prepare func(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) (upstream.GrowthTask, error)
+	build   func(a *auth.Auth, task upstream.GrowthTask, i int) []map[string]any
+}
+
+func (e growthEventExecutor) Code() string   { return e.code }
+func (e growthEventExecutor) isMini() bool   { return e.mini }
+func (e growthEventExecutor) maxTarget() int { return e.target }
+
+func (e growthEventExecutor) Run(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) error {
+	need := e.target
+	if task.Progress.Target > 0 {
+		need = task.Progress.Target
+	}
+	remain := need - task.Progress.Current
+	if remain <= 0 {
+		return nil
+	}
+	if remain > 20 {
+		remain = 20
+	}
+	if e.prepare != nil {
+		var err error
+		task, err = e.prepare(ctx, c, a, task)
+		if err != nil {
+			return err
+		}
+	}
+	for i := 0; i < remain; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		events := e.build(a, task, i)
+		if len(events) == 0 {
+			return nil
+		}
+		var err error
+		switch e.mode {
+		case growthReportDesktop:
+			err = c.ReportGrowthDesktopEvents(a, events)
+		case growthReportWeb:
+			err = c.ReportGrowthWebEvents(a, events)
+		default:
+			err = c.ReportGrowthEvents(a, events)
+		}
+		if err != nil {
 			return err
 		}
 		if i < remain-1 {
@@ -139,16 +238,19 @@ func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyT
 	return reported
 }
 
+type growthMiniExecutor interface {
+	isMini() bool
+}
+
 func growthExecutorMatchesPlatform(e GrowthTaskExecutor, platform upstream.GrowthTaskPlatform) bool {
-	mini := isMiniGrowthExecutor(e)
+	mini := false
+	if x, ok := e.(growthMiniExecutor); ok {
+		mini = x.isMini()
+	}
 	if platform == upstream.GrowthPlatformMiniprogram {
 		return mini
 	}
 	return !mini
-}
-func isMiniGrowthExecutor(e GrowthTaskExecutor) bool {
-	x, ok := e.(growthChatExecutor)
-	return ok && x.mini
 }
 
 func growthChatEvent(a *auth.Auth, cid, modelID, modelName string, mini bool) map[string]any {
@@ -174,4 +276,277 @@ func growthChatEvent(a *auth.Auth, cid, modelID, modelName string, mini bool) ma
 		ev["extVersion"] = "2.4.0"
 	}
 	return ev
+}
+
+// growthTaskExecutorRegistry 是面板“可帮做”的唯一事实源。
+// 未列入的任务不会被前端显示为可自动执行，也不会被批量入口触发。
+var growthTaskExecutors = map[string]GrowthTaskExecutor{
+	"chat_5":             growthChatExecutor{code: "chat_5", target: 5},
+	"Model_chat_GLM5.2":  growthChatExecutor{code: "Model_chat_GLM5.2", target: 1, modelID: "glm-5.2", modelName: "GLM-5.2"},
+	"Sequential_Tasks_1": growthChatExecutor{code: "Sequential_Tasks_1", target: 1, mini: true},
+	"Sequential_Tasks_2": growthEventExecutor{code: "Sequential_Tasks_2", target: 1, mini: true, prepare: prepareGrowthMiniExpert, build: growthMiniExpertEvents},
+
+	"create_canvas":   growthEventExecutor{code: "create_canvas", target: 1, build: growthCanvasEvents},
+	"automation_1":    growthEventExecutor{code: "automation_1", target: 1, build: growthAutomationEvents},
+	"playbook_prompt": growthEventExecutor{code: "playbook_prompt", target: 1, build: growthPlaybookEvents},
+	"template_5":      growthEventExecutor{code: "template_5", target: 5, build: growthTemplateEvents},
+	"skill_1":         growthEventExecutor{code: "skill_1", target: 1, build: growthSkillEvents},
+	"expert_5": growthEventExecutor{code: "expert_5", target: 5, build: func(a *auth.Auth, t upstream.GrowthTask, i int) []map[string]any {
+		return growthExpertEvents(a, t, i, false)
+	}},
+	"Expert_lighthouse": growthEventExecutor{code: "Expert_lighthouse", target: 1, build: func(a *auth.Auth, t upstream.GrowthTask, i int) []map[string]any {
+		return growthExpertEvents(a, t, i, false)
+	}},
+	"Expert_team_use_3": growthEventExecutor{code: "Expert_team_use_3", target: 3, build: func(a *auth.Auth, t upstream.GrowthTask, i int) []map[string]any {
+		return growthExpertEvents(a, t, i, true)
+	}},
+	"Library_read":  growthEventExecutor{code: "Library_read", target: 1, mode: growthReportWeb, build: growthLibraryEvents},
+	"Buddy_App":     growthEventExecutor{code: "Buddy_App", target: 1, mode: growthReportDesktop, build: growthBuddyAppEvents},
+	"RichMeow_Chat": growthEventExecutor{code: "RichMeow_Chat", target: 1, mode: growthReportDesktop, build: growthRichMeowEvents},
+}
+
+// RegisterGrowthTaskExecutor 注册可点亮任务执行器（测试和后续模块使用）。
+func RegisterGrowthTaskExecutor(e GrowthTaskExecutor) {
+	if e == nil || strings.TrimSpace(e.Code()) == "" {
+		return
+	}
+	growthTaskExecutors[e.Code()] = e
+}
+
+func growthIDs(prefix string, i int) (string, string) {
+	cid := upstream.NewGrowthConversationID(prefix)
+	if i > 0 {
+		cid = fmt.Sprintf("%s-%d", cid, i)
+	}
+	return cid, cid
+}
+
+func growthStableID(a *auth.Auth, salt string) string {
+	sum := md5.Sum([]byte(salt + ":" + a.UID))
+	return fmt.Sprintf("%x", sum)[:24]
+}
+
+func growthCanvasEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	now := time.Now().UnixMilli()
+	cid, rid := growthIDs("canvas", i)
+	return []map[string]any{
+		{"eventCode": "agent_task_created", "timestamp": now, "reportDelay": 0,
+			"source": "CLOUD", "name": "", "mode": "craft", "requestModelId": "default",
+			"task_mode": "design", "conversationId": cid, "requestId": rid, "userId": a.UID},
+		{"eventCode": "wbx_design_canvas_task_create", "timestamp": now, "reportDelay": 0,
+			"source": "summon_keyword", "isCustomModel": false, "name": "", "inputLength": 12,
+			"id": "wbx-canvas-" + growthStableID(a, fmt.Sprintf("canvas-%d", i)), "cost": 0,
+			"isSuccessful": true, "conversationId": cid, "requestId": rid, "userId": a.UID},
+	}
+}
+
+func growthAutomationEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	now := time.Now().UnixMilli()
+	cid, rid := growthIDs("automation", i)
+	return []map[string]any{
+		{"eventCode": "agent_task_created", "timestamp": now, "reportDelay": 0,
+			"source": "CLOUD", "name": "", "mode": "craft", "requestModelId": "default",
+			"task_mode": "automation", "isAutomationBackground": true,
+			"conversationId": cid, "requestId": rid, "userId": a.UID},
+		{"eventCode": "automated_task_create_suc", "timestamp": now, "reportDelay": 0,
+			"name": "每周五自动生成周报", "source": "manually", "modelId": "deepseek-v4-flash",
+			"conversationId": cid, "requestId": rid, "userId": a.UID},
+		{"eventCode": "automated_task_execute", "timestamp": now, "reportDelay": 0,
+			"action": "execute", "conversationId": cid, "requestId": rid, "userId": a.UID},
+	}
+}
+
+func growthPlaybookEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	cid, rid := growthIDs("playbook", i)
+	return []map[string]any{{
+		"eventCode": "playbook_prompt_send", "timestamp": time.Now().UnixMilli(), "reportDelay": 0,
+		"ext1": cid, "requestId": rid, "id": "01-ProductDesign", "name": "产品设计",
+		"type": "other", "promptLength": 30, "isOfficial": 1, "source": "growth-center",
+		"conversationId": cid, "userId": a.UID,
+	}}
+}
+
+func growthTemplateEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	scenes := []struct{ id, name string }{
+		{"01-ProductDesign", "产品设计"}, {"02-Marketing", "营销文案"},
+		{"03-DataAnalysis", "数据分析"}, {"04-CodeReview", "代码审查"},
+		{"05-Report", "报告撰写"},
+	}
+	sc := scenes[i%len(scenes)]
+	cid, rid := growthIDs("template", i)
+	now := time.Now().UnixMilli()
+	return []map[string]any{
+		{"eventCode": "agent_task_created", "timestamp": now, "reportDelay": 0,
+			"source": "CLOUD", "name": "", "mode": "craft", "requestModelId": "default",
+			"action": sc.id, "has_template": true, "template_id": sc.id, "template_name": sc.name,
+			"conversationId": cid, "requestId": rid, "userId": a.UID},
+		{"eventCode": "agent_task_created_with_template", "timestamp": now, "reportDelay": 0,
+			"templateId": sc.id, "templateName": sc.name, "isCustomModel": true, "id": sc.id,
+			"name": sc.name, "conversationId": cid, "requestId": rid, "userId": a.UID},
+		{"eventCode": "playbook_prompt_send", "timestamp": now, "reportDelay": 0,
+			"ext1": cid, "requestId": rid, "id": sc.id, "name": sc.name, "type": "other",
+			"promptLength": 30, "isOfficial": 1, "source": "growth-center",
+			"conversationId": cid, "userId": a.UID},
+	}
+}
+
+func growthSkillEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	cid, rid := growthIDs("skill", i)
+	return []map[string]any{{
+		"eventCode": "skill_info", "timestamp": time.Now().UnixMilli(), "reportDelay": 0,
+		"skillId": "skill-" + growthStableID(a, "skill"), "skillName": "QQ邮箱",
+		"skillVersion": "", "action": "use", "mode": "LOCAL", "source": "builtin",
+		"conversationId": cid, "requestId": rid, "userId": a.UID,
+	}}
+}
+
+func prepareGrowthMiniExpert(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) (upstream.GrowthTask, error) {
+	experts, err := c.ListGrowthMarketExperts(a, "agent")
+	if err != nil {
+		return task, fmt.Errorf("专家市场不可用: %w", err)
+	}
+	e := experts[0]
+	if task.TaskName == "" {
+		task.TaskName = e.DisplayNameZH
+	}
+	if task.TaskName == "" {
+		task.TaskName = e.ProfessionZH
+	}
+	// Raw 仅作为执行器内部携带真实 id 的载体；不进入摘要 JSON。
+	raw, _ := json.Marshal(map[string]string{"expert_id": e.ExpertID, "expert_type": e.ExpertType})
+	task.Raw = raw
+	return task, nil
+}
+
+func growthMiniExpertEvents(a *auth.Auth, task upstream.GrowthTask, i int) []map[string]any {
+	var meta struct {
+		ExpertID   string `json:"expert_id"`
+		ExpertType string `json:"expert_type"`
+	}
+	_ = json.Unmarshal(task.Raw, &meta)
+	if meta.ExpertID == "" {
+		return nil
+	}
+	name := task.TaskName
+	if name == "" {
+		name = meta.ExpertID
+	}
+	events := []map[string]any{{
+		"eventCode": "expert_actual_use", "reportDelay": 0,
+		"source": "mini_program", "ideName": "wx_app_cloud", "ideType": "WorkBuddy_MP",
+		"extName": "workbuddy-mp", "extVersion": "2.2.8",
+		"machineId": growthStableID(a, "machine"), "os": "android", "osVersion": "14",
+		"arch": "arm64", "timezone": "Asia/Shanghai", "userId": a.UID, "userNickname": a.Nickname,
+		"id": meta.ExpertID, "name": meta.ExpertID, "expertTitle": name,
+		"type": "send_message", "characterCount": 12, "expertType": meta.ExpertType,
+	}}
+	return events
+}
+
+func growthExpertEvents(a *auth.Auth, task upstream.GrowthTask, i int, team bool) []map[string]any {
+	cid, rid := growthIDs("expert", i)
+	expertType := "agent"
+	name := task.TaskName
+	if name == "" {
+		name = "WorkBuddy Expert"
+	}
+	if team {
+		expertType = "team"
+	}
+	id := "expert-" + growthStableID(a, fmt.Sprintf("%s-%d", task.TaskCode, i))
+	now := time.Now().UnixMilli()
+	return []map[string]any{
+		{"eventCode": "expert_summoned", "timestamp": now, "reportDelay": 0,
+			"id": id, "name": name, "type": expertType, "expertTitle": name,
+			"expertType": expertType, "source": "builtin", "conversationId": cid,
+			"requestId": rid, "userId": a.UID},
+		{"eventCode": "expert_actual_use", "timestamp": now, "reportDelay": 0,
+			"mode": "CLOUD", "id": id, "name": name, "expertTitle": name, "type": "",
+			"expertType": expertType, "source": "builtin", "version": "", "cost": 0,
+			"characterCount": 12, "conversationId": cid, "requestId": rid,
+			"messageId": rid, "requestModelId": "deepseek-v4-flash",
+			"requestModelName": "DeepSeek V4 Flash", "userId": a.UID},
+	}
+}
+
+func growthLibraryEvents(a *auth.Auth, _ upstream.GrowthTask, _ int) []map[string]any {
+	now := time.Now().UnixMilli()
+	return []map[string]any{{
+		"eventCode": "web_element_click", "timestamp": now, "reportDelay": 0,
+		"pageURL": "https://www.workbuddy.cn/library", "page_url": "https://www.workbuddy.cn/library",
+		"elementId": "library_doc_intro_click", "element_id": "library_doc_intro_click",
+		"elementName": "WorkBuddy资料库介绍", "element_name": "WorkBuddy资料库介绍",
+		"os": "Win32", "arch": "", "osVersion": "10.0", "userId": a.UID,
+		"machineId": growthStableID(a, "webmachine"), "userNickname": a.Nickname,
+	}}
+}
+
+func growthBuddyAppEvents(a *auth.Auth, _ upstream.GrowthTask, _ int) []map[string]any {
+	const buddyID = "cb_y5Dy46tPQGGWtueMxXbe"
+	const buddyName = "企鹅教师助手"
+	now := time.Now().UnixMilli()
+	mk := func(code string, extra map[string]any) map[string]any {
+		e := map[string]any{
+			"eventCode": code, "timestamp": now, "reportDelay": 0, "mode": "LOCAL",
+			"buddyId": buddyID, "buddyName": buddyName, "userId": a.UID,
+		}
+		for k, v := range extra {
+			e[k] = v
+		}
+		return e
+	}
+	return []map[string]any{
+		mk("buddyapp_discover_click", nil),
+		mk("buddyapp_show", map[string]any{"elementId": buddyID, "elementName": buddyName, "position": 2}),
+		mk("buddyapp_enter_click", map[string]any{"elementId": buddyID, "elementName": buddyName, "position": 2, "isFirstPage": "1"}),
+		mk("buddyapp_auth_confirm_click", map[string]any{"elementId": buddyID, "elementName": buddyName}),
+		mk("buddyapp_bindaccount_skip_click", map[string]any{"elementId": buddyID, "elementName": buddyName}),
+	}
+}
+
+func growthRichMeowEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	cid, rid := growthIDs("richmeow", i)
+	msg := "msg-" + growthStableID(a, fmt.Sprintf("richmeow-%d", i))
+	now := time.Now().UnixMilli()
+	return []map[string]any{
+		{"eventCode": "agent_task_created", "timestamp": now, "reportDelay": 0,
+			"source": "LOCAL", "name": "working", "task_target": "local", "mode": "craft",
+			"requestModelId": "fast-model", "requestModelName": "fast-model",
+			"has_repo": false, "repo_type": "none", "workspace_type": "empty",
+			"has_connector": false, "connector_types": []any{}, "has_mention": false,
+			"mention_types": []any{}, "has_template": false, "action": "", "template_name": "",
+			"has_expert": false, "expert_id": "", "expert_name": "", "expert_industry_id": "",
+			"has_skill": false, "skill_names": []any{}, "conversationId": cid,
+			"messageId": msg, "buddyId": "", "buddyName": "", "userId": a.UID},
+		{"eventCode": "chat_message_send", "timestamp": now, "reportDelay": 0,
+			"messageId": msg + "-assistant", "historyCount": 0, "isContextTruncated": false,
+			"currentStepCount": 1, "traceId": rid, "rootRequestId": rid,
+			"parentConversationId": cid, "agentName": "cli", "agentType": "main", "userId": a.UID},
+		{"eventCode": "chat_request_send", "timestamp": now, "reportDelay": 0,
+			"inputLength": 24, "isPlan": false, "isAutoExecuteTerminal": false,
+			"isAutoModify": false, "codebaseEnable": false, "maxToken": 0, "maxSteps": 500,
+			"temperature": 0, "maxRetries": 0, "mentionContexts": []any{}, "knowledgeId": []any{},
+			"knowledgeName": []any{}, "codebaseId": "", "mentionContextCount": 0,
+			"command": "", "recommendId": "", "skillId": "", "skillCount": 0,
+			"totalCount": 0, "conversationId": cid, "requestId": rid, "traceId": rid,
+			"rootRequestId": rid, "parentConversationId": cid, "agentName": "cli",
+			"agentType": "main", "userId": a.UID},
+		{"eventCode": "chat_message_response", "timestamp": now, "reportDelay": 0,
+			"messageId": msg + "-assistant", "responseModelId": "fast-model", "inputToken": 120,
+			"outputToken": 80, "totalToken": 200, "cachedTokens": 0, "cachedWriteTokens": 0,
+			"cachedMissTokens": 0, "isSuccessful": true, "messageErrorCode": "",
+			"finishReason": "stop", "firstTokenAt": now, "conversationId": cid,
+			"requestId": rid, "traceId": rid, "rootRequestId": rid,
+			"parentConversationId": cid, "agentName": "cli", "agentType": "main", "userId": a.UID},
+		{"eventCode": "chat_message_status", "timestamp": now, "reportDelay": 0,
+			"messageId": msg + "-assistant", "messageErrorCode": "0", "traceId": rid,
+			"rootRequestId": rid, "parentConversationId": cid, "agentName": "cli",
+			"agentType": "main", "userId": a.UID},
+		{"eventCode": "chat_request_response", "timestamp": now, "reportDelay": 0,
+			"mode": "craft", "toolCallCount": 0, "inputToken": 120, "outputToken": 80,
+			"totalToken": 200, "cachedTokens": 0, "cachedWriteTokens": 0,
+			"cachedMissTokens": 0, "isSuccessful": true, "messageErrorCode": "",
+			"finishReason": "stop", "conversationId": cid, "requestId": rid,
+			"rootRequestId": rid, "parentConversationId": cid, "userId": a.UID},
+	}
 }

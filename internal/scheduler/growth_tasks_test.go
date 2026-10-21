@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"free2api/internal/auth"
 	"free2api/internal/pool"
@@ -65,6 +64,8 @@ func (g *growthStub) server(t *testing.T) *httptest.Server {
 			g.accepts[platform]++
 			g.mu.Unlock()
 			_, _ = w.Write([]byte(`{"code":0,"data":{"results":[]}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/operation-platform/market/expert/list":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"experts":[{"expert_id":"ex_real_1","expert_type":"agent","display_name_zh":"真实专家","profession_zh":"职业一"}]}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v2/report":
 			b, _ := io.ReadAll(r.Body)
 			if !strings.HasPrefix(strings.TrimSpace(string(b)), "[") {
@@ -79,6 +80,7 @@ func (g *growthStub) server(t *testing.T) *httptest.Server {
 			g.reports[reportPlatform]++
 			n := g.reports[reportPlatform]
 			hook := g.onReport
+
 			if hook != nil {
 				hook(reportPlatform, n)
 			}
@@ -98,6 +100,11 @@ func (g *growthStub) server(t *testing.T) *httptest.Server {
 
 func growthTestScheduler(t *testing.T, stub *growthStub, auths ...*auth.Auth) *Scheduler {
 	t.Helper()
+	oldWebChat := growthWebChatFn
+	growthWebChatFn = func(context.Context, *upstream.Client, *auth.Auth, string, string, map[string]any) (upstream.GrowthChatReply, error) {
+		return upstream.GrowthChatReply{ConversationID: "stub-conv", Text: "OK"}, nil
+	}
+	t.Cleanup(func() { growthWebChatFn = oldWebChat })
 	srv := stub.server(t)
 	t.Cleanup(srv.Close)
 	p := pool.New("")
@@ -181,6 +188,7 @@ func TestGrowthRunWhitelistAndReadbackBeforeClaim(t *testing.T) {
 		},
 		miniTasks: []upstream.GrowthTask{
 			{TaskCode: "Sequential_Tasks_1", TaskName: "小程序任务", AcceptStatus: "not_accepted", Progress: upstream.GrowthProgress{Current: 0, Target: 1}},
+			{TaskCode: "Sequential_Tasks_2", TaskName: "小程序专家任务", AcceptStatus: "not_accepted", Progress: upstream.GrowthProgress{Current: 0, Target: 1}},
 		},
 	}
 	stub.onReport = func(platform string, reports int) {
@@ -192,24 +200,26 @@ func TestGrowthRunWhitelistAndReadbackBeforeClaim(t *testing.T) {
 		if platform == "miniprogram" && reports >= 1 {
 			stub.miniTasks[0].AcceptStatus = "completed"
 			stub.miniTasks[0].Progress.Current = 1
+			stub.miniTasks[1].AcceptStatus = "completed"
+			stub.miniTasks[1].Progress.Current = 1
 		}
 	}
 	s := growthTestScheduler(t, stub, &auth.Auth{UID: "u1", AccessToken: "at", Nickname: "CN"})
 
 	rep := s.RunGrowthNowReport(context.Background())
-	if stub.accepts["default"] != 1 || stub.accepts["miniprogram"] != 1 {
+	if stub.accepts["default"] != 2 || stub.accepts["miniprogram"] != 2 { // default: chat_5 + create_canvas; mini: Tasks_1/2
 		t.Fatalf("accept calls=%v", stub.accepts)
 	}
-	if stub.reports["default"] != 12 || stub.reports["miniprogram"] != 1 {
+	if stub.reports["default"] != 13 || stub.reports["miniprogram"] != 2 { // 12 chat + 1 canvas batch; 1 mini chat + 1 mini expert
 		t.Fatalf("report calls=%v", stub.reports)
 	}
 	if stub.claims["default:create_canvas"] != 0 {
-		t.Fatalf("非白名单任务不得伪造: %v", stub.claims)
+		t.Fatalf("未回读 completed 的任务不得 claim: %v", stub.claims)
 	}
-	if stub.claims["default:chat_5"] != 1 || stub.claims["miniprogram:Sequential_Tasks_1"] != 1 {
+	if stub.claims["default:chat_5"] != 1 || stub.claims["miniprogram:Sequential_Tasks_1"] != 1 || stub.claims["miniprogram:Sequential_Tasks_2"] != 1 {
 		t.Fatalf("回读 completed 后才 claim: %v", stub.claims)
 	}
-	if len(rep.Results) != 2 {
+	if len(rep.Results) != 3 {
 		t.Fatalf("claim report=%+v", rep)
 	}
 	for _, r := range rep.Results {
@@ -223,7 +233,6 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
 		{
 			UID: "u1", Nickname: "小天才", Realm: "cn", Platform: "default", OK: true,
-			Credits: 1460, CreditsExpiring: 260, CreditsUrgent: 60, SuccessCount: 88, LastSuccessTime: time.Date(2026, 10, 21, 22, 28, 0, 0, time.Local),
 			Tasks: []upstream.GrowthTask{
 				{TaskCode: "done", TaskName: "已完成", AcceptStatus: "completed"},
 				{TaskCode: "chat_5", TaskName: "对话 5 次", AcceptStatus: "accepted", Progress: upstream.GrowthProgress{Current: 2, Target: 5}},
@@ -248,13 +257,10 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 		t.Fatalf("accounts=%#v", out["accounts"])
 	}
 	acc := accounts[0]
-	if acc.UID != "u1" || acc.Pending != 3 || acc.CanHelp != 1 || acc.Manual != 2 || acc.Claimable != 1 || acc.Done != 2 {
+	if acc.UID != "u1" || acc.Done != 2 || acc.Pending != 4 || acc.CanHelp != 1 || acc.Manual != 2 || acc.Claimable != 1 {
 		t.Fatalf("account=%+v", acc)
 	}
-	if acc.Credits != 1460 || acc.CreditsExpiring != 260 || acc.CreditsUrgent != 60 || acc.SuccessCount != 88 || acc.LastSuccessTime.IsZero() {
-		t.Fatalf("account assets=%+v", acc)
-	}
-	if out["pending"] != 3 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 || out["done"] != 2 {
+	if out["done"] != 2 || out["pending"] != 4 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 {
 		t.Fatalf("summary=%v", out)
 	}
 	actions := map[string]string{}

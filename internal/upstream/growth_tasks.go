@@ -1,16 +1,18 @@
 // growth_tasks.go growth 域通用成长任务：列表 / accept / 事件上报 / claim。
 //
-// 这里只做协议层，不决定“哪些任务该自动做”。执行策略在 scheduler/growth_tasks.go：
-// 默认只扫描 + 领取已完成任务；可点亮任务按白名单逐类放行，PC 限定任务永远不在本层伪造。
+// 这里只做协议层，不决定“哪些任务该自动做”。执行策略在 scheduler/growth_executors.go：
+// 默认只扫描 + 领取已完成任务；可点亮任务按白名单逐类放行，付费/真人/活动任务不在本层伪造。
 package upstream
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"free2api/internal/auth"
 	"free2api/internal/session"
@@ -20,6 +22,7 @@ const (
 	growthTasksPath       = "/v2/activity/growth/tasks"
 	growthAcceptPath      = "/v2/activity/growth/tasks/accept"
 	growthTaskClaimFormat = "/activity/growth/tasks/%s/claim"
+	growthWebBaseCN       = "https://www.workbuddy.cn"
 )
 
 // GrowthTask 是上游成长任务列表里我们关心的字段。未知字段保留在 Raw。
@@ -160,6 +163,54 @@ func (c *Client) growthJSONWithPlatform(a *auth.Auth, method, path string, body 
 
 // ReportGrowthEvents 发送裸事件数组。growth 任务服务端只认裸数组，不接受信封。
 func (c *Client) ReportGrowthEvents(a *auth.Auth, events []map[string]any) error {
+	return c.reportGrowthEvents(a, c.billingBase(a), events)
+}
+
+// ReportGrowthDesktopEvents 发送桌面指纹事件。桌面任务（Buddy/RichMeow）使用聊天域
+// /v2/report，事件里带稳定 machineId/sessionId；不伪造成本型业务，只补任务判据。
+func (c *Client) ReportGrowthDesktopEvents(a *auth.Auth, events []map[string]any) error {
+	if len(events) == 0 {
+		return nil
+	}
+	fp := growthDesktopFingerprint(a)
+	out := make([]map[string]any, 0, len(events))
+	for _, src := range events {
+		ev := make(map[string]any, len(src)+len(fp))
+		for k, v := range fp {
+			ev[k] = v
+		}
+		for k, v := range src {
+			ev[k] = v
+		}
+		out = append(out, ev)
+	}
+	return c.reportGrowthEventsWithHeaders(a, c.chatBase(a), out, func(req *http.Request) {
+		req.Header.Set("X-Domain", c.chatBase(a))
+		req.Header.Set("X-Product", "SaaS")
+		req.Header.Set("X-Request-ID", growthStableHex(a, "req")+fmt.Sprintf("%06d", time.Now().UnixNano()%1000000))
+	})
+}
+
+// ReportGrowthWebEvents 发送 Web 行为事件（Library_read）。浏览器侧上报域是
+// www.workbuddy.cn；测试/自定义 base 时沿用 ChatBaseCN，避免硬编码阻断回放。
+func (c *Client) ReportGrowthWebEvents(a *auth.Auth, events []map[string]any) error {
+	base := growthWebBaseCN
+	if c.ChatBaseCN != "" && c.ChatBaseCN != "https://copilot.tencent.com" {
+		base = strings.TrimRight(c.ChatBaseCN, "/")
+	}
+	return c.reportGrowthEventsWithHeaders(a, base, events, func(req *http.Request) {
+		req.Header.Set("x-client-platform", "web")
+		req.Header.Set("X-Domain", base)
+		req.Header.Set("Origin", base)
+		req.Header.Set("Referer", base+"/library")
+	})
+}
+
+func (c *Client) reportGrowthEvents(a *auth.Auth, base string, events []map[string]any) error {
+	return c.reportGrowthEventsWithHeaders(a, base, events, nil)
+}
+
+func (c *Client) reportGrowthEventsWithHeaders(a *auth.Auth, base string, events []map[string]any, tweak func(*http.Request)) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -167,8 +218,36 @@ func (c *Client) ReportGrowthEvents(a *auth.Auth, events []map[string]any) error
 	if err != nil {
 		return err
 	}
-	_, err = c.billingJSON(a, http.MethodPost, reportPath, json.RawMessage(raw))
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(base, "/")+reportPath, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	c.BillingHeaders(req, a)
+	if tweak != nil {
+		tweak(req)
+	}
+	_, err = c.doJSON(req)
 	return err
+}
+
+func growthDesktopFingerprint(a *auth.Auth) map[string]any {
+	now := time.Now().UnixMilli()
+	return map[string]any{
+		"timezone": "Asia/Shanghai", "reportDelay": 2000,
+		"userId": a.UID, "username": a.Nickname, "userNickname": a.Nickname,
+		"product": "SaaS", "releaseDate": 1789036585355,
+		"commit":  "5f9692923c93033111c51ad7b003eb80204a9b75",
+		"ideName": "WorkBuddy", "ideType": "WorkBuddy", "ideVersion": "5.5.6",
+		"machineId": growthStableHex(a, "machine"), "sessionId": growthStableHex(a, "session"),
+		"extName": "workbuddy-desktop", "extVersion": "5.5.6",
+		"os": "win32", "arch": "x64", "osVersion": "10.0.26220",
+		"cpuCores": 20, "memorySize": 24, "timestamp": now, "presentAt": now,
+	}
+}
+
+func growthStableHex(a *auth.Auth, salt string) string {
+	sum := md5.Sum([]byte(salt + ":" + a.UID))
+	return fmt.Sprintf("%x", sum)[:24]
 }
 
 // NewGrowthConversationID 生成任务事件用的会话/请求 id。任务事件不进入用户对话统计，

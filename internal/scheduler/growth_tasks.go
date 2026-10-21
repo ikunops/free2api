@@ -44,8 +44,7 @@ type GrowthTaskStatus struct {
 	// 不是“已完成”承诺，只是给面板区分“能自动做”和“必须真实客户端”。
 	LocalPending int `json:"local_pending,omitempty"`
 	LocalCapable int `json:"local_capable,omitempty"`
-	// 账号资产与消耗画像：成长任务页据此判断“这个号值不值得补任务”。
-	// 这些字段来自号池状态，不额外请求上游。
+	// 账号资产与消耗画像：来自号池本地状态，不额外请求上游。
 	Credits         int64     `json:"credits"`
 	CreditsExpiring int64     `json:"credits_expiring,omitempty"`
 	CreditsUrgent   int64     `json:"credits_urgent,omitempty"`
@@ -100,23 +99,6 @@ type GrowthAccountRunReport struct {
 type GrowthTaskExecutor interface {
 	Code() string
 	Run(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) error
-}
-
-// growthTaskExecutors 可点亮任务白名单。这里只注册“接口型、低风险、无需真实客户端
-// 操作”的任务；桌面/小程序必须真实交互的任务（canvas、template、skill、school、
-// RichMeow、Library_read、Expert_Philanthropy 等）刻意不注册，留给后续 CDP 适配器。
-var growthTaskExecutors = map[string]GrowthTaskExecutor{
-	"chat_5":             growthChatExecutor{code: "chat_5", target: 5},
-	"Model_chat_GLM5.2":  growthChatExecutor{code: "Model_chat_GLM5.2", target: 1, modelID: "glm-5.2", modelName: "GLM-5.2"},
-	"Sequential_Tasks_1": growthChatExecutor{code: "Sequential_Tasks_1", target: 1, mini: true},
-}
-
-// RegisterGrowthTaskExecutor 注册可点亮任务执行器（测试和后续模块使用）。
-func RegisterGrowthTaskExecutor(e GrowthTaskExecutor) {
-	if e == nil || strings.TrimSpace(e.Code()) == "" {
-		return
-	}
-	growthTaskExecutors[e.Code()] = e
 }
 
 // growthClaimDelay 两次领取之间的节流；测试可置 0。
@@ -362,11 +344,11 @@ type growthSummaryAccount struct {
 	Realm           string              `json:"realm"`
 	OK              bool                `json:"ok"`
 	Error           string              `json:"error,omitempty"`
+	Done            int                 `json:"done"`
 	Pending         int                 `json:"pending"`
 	CanHelp         int                 `json:"can_help"`
 	Manual          int                 `json:"manual"`
 	Claimable       int                 `json:"claimable"`
-	Done            int                 `json:"done"`
 	Credits         int64               `json:"credits"`
 	CreditsExpiring int64               `json:"credits_expiring,omitempty"`
 	CreditsUrgent   int64               `json:"credits_urgent,omitempty"`
@@ -380,7 +362,7 @@ type growthSummaryAccount struct {
 func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 	type accState struct {
 		meta      growthSummaryAccount
-		tasks     map[string]growthSummaryTask
+		all       map[string]growthSummaryTask
 		platforms map[string]string
 		done      map[string]bool
 	}
@@ -397,7 +379,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 					Credits: acct.Credits, CreditsExpiring: acct.CreditsExpiring, CreditsUrgent: acct.CreditsUrgent,
 					SuccessCount: acct.SuccessCount, LastSuccessTime: acct.LastSuccessTime,
 				},
-				tasks:     map[string]growthSummaryTask{},
+				all:       map[string]growthSummaryTask{},
 				platforms: map[string]string{},
 				done:      map[string]bool{},
 			}
@@ -406,8 +388,6 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		if acct.OK {
 			st.meta.OK = true
 			st.meta.Error = ""
-			// 普通任务与小程序任务各返回一行；两行资产相同。用 max 合并，
-			// 防止某一平台行未回填资产时把另一行的真实值覆盖成 0。
 			if acct.Credits > st.meta.Credits {
 				st.meta.Credits = acct.Credits
 			}
@@ -449,39 +429,44 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 				TaskCode: t.TaskCode, TaskName: t.TaskName, TaskDesc: t.TaskDesc,
 				Progress: t.Progress, Status: status, Action: action, Reward: t.Reward,
 			}
-			if old, ok := st.tasks[t.TaskCode]; ok && growthTaskRank(old.Status) >= growthTaskRank(status) {
+			if old, ok := st.all[t.TaskCode]; ok && growthTaskRank(old.Status) >= growthTaskRank(status) {
 				continue
 			}
-			st.tasks[t.TaskCode] = item
+			st.all[t.TaskCode] = item
 			st.platforms[t.TaskCode] = acct.Platform
 		}
 	}
 
 	accounts := make([]growthSummaryAccount, 0, len(byUID))
-	var pending, canHelp, manual, claimable, done int
+	var pending, canHelp, manual, claimable int
 	for _, st := range byUID {
 		acc := st.meta
 		acc.Done = len(st.done)
-		for _, t := range st.tasks {
+		for _, t := range st.all {
 			t.Platform = st.platforms[t.TaskCode]
+			if t.Status != "claimed" {
+				acc.Pending++
+			}
+			if t.Status == "claimed" {
+				continue
+			}
 			acc.Tasks = append(acc.Tasks, t)
 			switch t.Action {
 			case "claim":
 				acc.Claimable++
 				claimable++
 			case "run":
-				acc.Pending++
 				acc.CanHelp++
-				pending++
 				canHelp++
 			default:
-				acc.Pending++
 				acc.Manual++
-				pending++
 				manual++
 			}
 		}
-		done += acc.Done
+		pending += acc.Pending
+		if acc.Done == 0 && acc.Pending == 0 && acc.Error == "" {
+			continue
+		}
 		sort.Slice(acc.Tasks, func(i, j int) bool {
 			if acc.Tasks[i].Action != acc.Tasks[j].Action {
 				return growthTaskActionRank(acc.Tasks[i].Action) < growthTaskActionRank(acc.Tasks[j].Action)
@@ -496,14 +481,20 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		}
 		return accounts[i].Nickname < accounts[j].Nickname
 	})
+	done := 0
+	for _, acc := range accounts {
+		done += acc.Done
+	}
 	return map[string]any{
-		"scanned_at": res.ScannedAt, "pending": pending, "can_help": canHelp,
-		"manual": manual, "claimable": claimable, "done": done, "accounts": accounts, "error": res.Error,
+		"scanned_at": res.ScannedAt, "done": done, "pending": pending, "can_help": canHelp,
+		"manual": manual, "claimable": claimable, "accounts": accounts, "error": res.Error,
 	}
 }
 
 func growthTaskRank(status string) int {
 	switch status {
+	case "claimed":
+		return 4
 	case "completed":
 		return 3
 	case "accepted":

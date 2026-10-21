@@ -91,18 +91,22 @@ func setKeepalivePaused(exeDir string, paused bool) error {
 
 // gatewayPIDs 列出「本次安装」的网关进程 ID，排除 self。
 //
-// 两个条件同时成立才算：映像名里带 free2api，且映像所在目录就是本次 exe 所在目录。
-// 只看名字太宽——机器上可能还有另一份部署（另一个目录、另一个端口），那是别人的
-// 网关，不该被这边一按停止就顺手杀掉；而「同一目录下的多个 free2api 进程」正好
-// 就是新老版本纠缠、旧件没退干净的那种局面，必须清。
-func gatewayPIDs(self int, exeDir string) []uint32 {
+// gatewayPIDs 列出「本次部署」的网关进程 ID，排除 self。
+//
+// 归属按**部署目录**认，而不是 exe 文件目录。升级时常见布局是「新 exe 放在
+// 新文件夹，但 cwd / 数据仍是旧部署」；只看 exe 目录会漏掉仍在干活的旧宿主。
+// 调用方必须先确认 wantDir 是 free2api 的部署目录，不能传任意用户目录。
+//
+// 同端口上的跨目录旧宿主由 reclaimOn 的端口租约分支单独清理：那是按端口
+// 证明的同一服务，不会误杀别的目录里另一套无关网关。
+func gatewayPIDs(self int, deployDir string) []uint32 {
 	snap, _, _ := procCreateToolhelp32Snapshot.Call(th32csSnapProcess, 0)
 	if snap == 0 || windows.Handle(snap) == windows.InvalidHandle {
 		return nil
 	}
 	defer windows.CloseHandle(windows.Handle(snap))
 
-	wantDir := filepath.Clean(exeDir)
+	wantDir := filepath.Clean(deployDir)
 	var out []uint32
 	var pe processEntry32W
 	pe.Size = uint32(unsafe.Sizeof(pe))
@@ -162,15 +166,13 @@ func (d *desktop) reclaimOn(addr string) {
 			log.Printf("接管时停机失败（继续按进程清理）：%v", err)
 		}
 	}
-	// 清场必须按部署目录，而不是 exe 目录：升级时新 exe 在别的文件夹，
-	// 旧实例仍在原部署目录运行，按 exeDir 根本清不到它。
-	killed, failed := killGatewayProcesses(os.Getpid(), d.deployDir)
-	// 同端口上的残留也要收掉：升级前那份部署可能还在另一个目录（例如
-	// dist-bak / dist-v113），它不归本次 deployDir 管，却握着同一个端口。
-	// 端口租约已经证明「这个端口该由我控制」，此时清掉的是同一服务的旧宿主，
-	// 不是别人的服务；pidListeningOn 只能拿到 PID，所以先确认映像名里带
-	// free2api 再动手。
-	extra, extraFailed := killGatewayPIDs(os.Getpid(), []uint32{portPID(addr)})
+	// 清场顺序：先收端口上的旧宿主，再收同 exe 目录的残壳。
+	//
+	// 端口上的 PID 是唯一可靠的「同一服务」证据：它已经绑定 addr，且
+	// killGatewayPIDs 还会再确认映像名带 free2api；不同目录的旧版/旧包不会
+	// 因路径字符串不同而漏掉。随后按 exe 目录补扫没绑端口的残壳。
+	killed, failed := killGatewayPIDs(os.Getpid(), []uint32{portPID(addr)})
+	extra, extraFailed := killGatewayProcesses(os.Getpid(), d.exeDir)
 	killed = append(killed, extra...)
 	failed = append(failed, extraFailed...)
 	if len(killed) > 0 {

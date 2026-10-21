@@ -125,3 +125,42 @@ func TestReportGrowthEventsRawArray(t *testing.T) {
 		t.Errorf("raw body=%s want bare array", raw)
 	}
 }
+
+func TestListGrowthMarketExpertsUsesRealIDs(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != growthMarketExpertPath {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"code":0,"data":{"experts":[
+			{"expert_id":"ex_1","expert_type":"agent","display_name_zh":"专家一","profession_zh":"职业一"},
+			{"source_id":"ex_2","expert_type":"team","profession_zh":"职业二"},
+			{"expert_id":"ex_1","display_name_zh":"重复"}
+		]}}`))
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	experts, err := c.ListGrowthMarketExperts(&auth.Auth{UID: "u1", AccessToken: "at"}, "agent")
+	if err != nil {
+		t.Fatalf("ListGrowthMarketExperts: %v", err)
+	}
+	if len(experts) != 2 || experts[0].ExpertID != "ex_1" || experts[1].ExpertID != "ex_2" {
+		t.Fatalf("experts=%+v", experts)
+	}
+	if body["expert_type"] != "agent" || body["page_size"] != float64(50) {
+		t.Fatalf("body=%v", body)
+	}
+}
+
+func TestListGrowthMarketExpertsRejectsEmptyMarket(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"experts":[]}}`))
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	if _, err := c.ListGrowthMarketExperts(&auth.Auth{UID: "u1", AccessToken: "at"}, "agent"); err == nil || !strings.Contains(err.Error(), "no agent experts") {
+		t.Fatalf("empty market err=%v", err)
+	}
+}

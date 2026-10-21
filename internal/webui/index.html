@@ -582,14 +582,14 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-head{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:12px;align-items:center;padding:0 12px 0 0}
 .growth-head:hover{background:var(--hover2)}
 .growth-det{min-width:0}
-.growth-det>summary{list-style:none;cursor:pointer;padding:10px 12px;display:grid;grid-template-columns:minmax(0,1fr) 126px;gap:12px;align-items:center;font-size:12px;min-width:0}
+.growth-det>summary{list-style:none;cursor:pointer;padding:11px 12px;display:flex;align-items:center;gap:10px;font-size:12px;min-width:0}
 .growth-det>summary::-webkit-details-marker{display:none}
-.growth-det>summary::before{content:"\25B8";color:var(--fg3);font-size:10px;grid-column:1;grid-row:1;justify-self:start;margin-left:-8px;transform:translateX(-6px)}
+.growth-det>summary::before{content:"\25B8";color:var(--fg3);font-size:10px;flex:0 0 14px;text-align:center;margin:0;transform:none}
 .growth-det[open]>summary::before{content:"\25BE"}
-.growth-name{min-width:0;display:flex;flex-direction:column;gap:2px;padding-left:12px}
+.growth-name{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;padding-left:0}
 .growth-name .n{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--fg)}
 .growth-name .u{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
-.growth-count{justify-self:end;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
+.growth-count{flex:0 0 auto;margin-left:auto;display:inline-flex;align-items:center;gap:12px;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
 .growth-assets{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:3px;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
 .growth-assets .asset{display:inline-flex;align-items:baseline;gap:3px;padding:2px 7px;border:1px solid var(--line2);border-radius:999px;background:rgba(127,127,127,.035)}
 .growth-assets b{color:var(--fg2);font-weight:600}
@@ -617,7 +617,8 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-empty{padding:10px 12px;color:var(--fg3);font-size:12px}
 @media(max-width:760px){
   .growth-head{grid-template-columns:minmax(0,1fr) 88px;gap:8px;padding-right:8px}
-  .growth-det>summary{grid-template-columns:minmax(0,1fr) 110px;gap:8px;padding:9px 8px}
+  .growth-det>summary{gap:8px;padding:9px 8px}
+  .growth-count{gap:8px}
   .growth-task{grid-template-columns:minmax(0,1fr) 64px 84px 76px;gap:8px}
   .growth-task .td{display:none}
 }
@@ -4050,7 +4051,7 @@ function growthCard(){
     var trows = tasks.map(function(t){
       var prog = (t.progress && t.progress.target) ? (t.progress.current + " / " + t.progress.target) : "—";
       var action = t.action || "manual";
-      var actionText = action === "run" ? "可以帮你做" : action === "claim" ? "领取奖励" : "需要你完成";
+      var actionText = action === "run" ? "可自动补进度" : action === "claim" ? "奖励可领取" : "需要真实客户端";
       var taskTitle = t.task_name || (t.task_desc ? t.task_desc.slice(0, 28) + (t.task_desc.length > 28 ? "…" : "") : (t.task_code || "未命名任务"));
       var taskDesc = (t.task_desc && t.task_desc !== taskTitle) ? '<div class="td">' + esc(t.task_desc) + '</div>' : "";
       var tk = a.uid + "|" + (t.task_code || "");
@@ -4096,8 +4097,8 @@ function growthCard(){
   var summary = '<div class="growth-summary">' +
     '<b>' + fmtInt(g.done || 0) + ' 已完成 · ' + fmtInt(g.pending || 0) + ' 未完成</b>' +
     '<span class="sep"></span><span>' + fmtInt(accts.length) + ' 个账号' +
-    (g.can_help ? ' · ' + fmtInt(g.can_help) + ' 项可以帮你做' : "") +
-    (g.manual ? ' · ' + fmtInt(g.manual) + ' 项需要你完成' : "") +
+    (g.can_help ? ' · ' + fmtInt(g.can_help) + ' 项可自动补进度' : ' · 暂无可自动项') +
+    (g.manual ? ' · ' + fmtInt(g.manual) + ' 项需真实客户端' : "") +
     (g.claimable ? ' · ' + fmtInt(g.claimable) + ' 项奖励可领取' : "") +'</span></div>';
   return card("成长任务", "",
     summary + (rows ? rows : '<div class="empty">没有需要处理的账号</div>'), extra);
