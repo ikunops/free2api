@@ -355,6 +355,7 @@ type growthSummaryAccount struct {
 	CanHelp   int                 `json:"can_help"`
 	Manual    int                 `json:"manual"`
 	Claimable int                 `json:"claimable"`
+	Done      int                 `json:"done"`
 	Tasks     []growthSummaryTask `json:"tasks"`
 }
 
@@ -365,6 +366,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		meta      growthSummaryAccount
 		tasks     map[string]growthSummaryTask
 		platforms map[string]string
+		done      map[string]bool
 	}
 	byUID := map[string]*accState{}
 	for _, acct := range res.Accounts {
@@ -377,6 +379,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 				meta:      growthSummaryAccount{UID: acct.UID, Nickname: acct.Nickname, Realm: acct.Realm, OK: acct.OK, Error: acct.Error},
 				tasks:     map[string]growthSummaryTask{},
 				platforms: map[string]string{},
+				done:      map[string]bool{},
 			}
 			byUID[acct.UID] = st
 		}
@@ -388,7 +391,11 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 		}
 		for _, t := range acct.Tasks {
 			if t.AcceptStatus == "claimed" {
+				st.done[t.TaskCode] = true
 				continue
+			}
+			if t.Done() {
+				st.done[t.TaskCode] = true
 			}
 			status := t.AcceptStatus
 			if status == "" {
@@ -414,9 +421,10 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 	}
 
 	accounts := make([]growthSummaryAccount, 0, len(byUID))
-	var pending, canHelp, manual, claimable int
+	var pending, canHelp, manual, claimable, done int
 	for _, st := range byUID {
 		acc := st.meta
+		acc.Done = len(st.done)
 		for _, t := range st.tasks {
 			t.Platform = st.platforms[t.TaskCode]
 			acc.Tasks = append(acc.Tasks, t)
@@ -436,9 +444,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 				manual++
 			}
 		}
-		if acc.Pending == 0 && acc.Claimable == 0 && acc.Error == "" {
-			continue
-		}
+		done += acc.Done
 		sort.Slice(acc.Tasks, func(i, j int) bool {
 			if acc.Tasks[i].Action != acc.Tasks[j].Action {
 				return growthTaskActionRank(acc.Tasks[i].Action) < growthTaskActionRank(acc.Tasks[j].Action)
@@ -455,7 +461,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 	})
 	return map[string]any{
 		"scanned_at": res.ScannedAt, "pending": pending, "can_help": canHelp,
-		"manual": manual, "claimable": claimable, "accounts": accounts, "error": res.Error,
+		"manual": manual, "claimable": claimable, "done": done, "accounts": accounts, "error": res.Error,
 	}
 }
 

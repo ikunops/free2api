@@ -246,10 +246,10 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 		t.Fatalf("accounts=%#v", out["accounts"])
 	}
 	acc := accounts[0]
-	if acc.UID != "u1" || acc.Pending != 3 || acc.CanHelp != 1 || acc.Manual != 2 || acc.Claimable != 1 {
+	if acc.UID != "u1" || acc.Pending != 3 || acc.CanHelp != 1 || acc.Manual != 2 || acc.Claimable != 1 || acc.Done != 2 {
 		t.Fatalf("account=%+v", acc)
 	}
-	if out["pending"] != 3 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 {
+	if out["pending"] != 3 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 || out["done"] != 2 {
 		t.Fatalf("summary=%v", out)
 	}
 	actions := map[string]string{}

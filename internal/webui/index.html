@@ -602,6 +602,13 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-task .act.run{color:var(--acc-fg)}
 .growth-task .act.claim{color:var(--warn-fg)}
 .growth-task-op{justify-self:end}
+.growth-task.is-busy{background:var(--hover2)}
+.growth-acct-facts{display:flex;align-items:center;gap:10px;padding:0 12px 10px 28px;font-size:11px;color:var(--fg3);line-height:1.5;flex-wrap:wrap}
+.growth-progress{height:4px;width:120px;border-radius:999px;background:var(--line2);overflow:hidden;flex:none}
+.growth-progress>span{display:block;height:100%;background:var(--acc);border-radius:inherit;transition:width .25s ease}
+.growth-facts b{color:var(--fg2);font-variant-numeric:tabular-nums}
+.growth-btn-spin{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--line2);border-radius:7px;color:var(--acc-fg)}
+.growth-btn-spin svg{width:14px;height:14px;animation:spin .75s linear infinite}
 .growth-empty{padding:10px 12px;color:var(--fg3);font-size:12px}
 @media(max-width:760px){
   .growth-head{grid-template-columns:minmax(0,1fr) 88px;gap:8px;padding-right:8px}
@@ -829,7 +836,7 @@ const S = {
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, cardOpen: loadCardOpen(),
-  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "",
+  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "", growthTaskBusy: "",
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
   floatwin: null, floatBusy: false,
@@ -3976,6 +3983,7 @@ function growthCard(){
   var g = S.growth;
   var busy = S.growthBusy;
   var accountBusy = S.growthAccountBusy || "";
+  var taskBusy = S.growthTaskBusy || "";
   var extra = '<button class="rf" data-action="growth-scan" ' + (busy ? "disabled" : "") + '>' +
     svg("refresh") + (busy ? "扫描中…" : "扫描任务") + '</button>';
   if (!g){
@@ -3985,45 +3993,68 @@ function growthCard(){
   var accts = g.accounts || [];
   var rows = accts.map(function(a){
     var tasks = a.tasks || [];
-    var pending = a.pending || 0;
-    var claimable = a.claimable || 0;
-    var canHelp = a.can_help || 0;
-    var summaryText = pending ? ("还有 " + pending + " 项没做") : (claimable ? "奖励可领取" : "暂无待办");
+    var pending = Number(a.pending) || 0;
+    var done = Number(a.done) || 0;
+    var claimable = Number(a.claimable) || 0;
+    var canHelp = Number(a.can_help) || 0;
+    var manual = Number(a.manual) || 0;
+    var total = done + pending + claimable;
+    var pct = total ? Math.round(done / total * 100) : 0;
+    var bar = '<span class="growth-progress" title="已完成 ' + done + ' / ' + total + ' 项"><span style="width:' + pct + '%"></span></span>';
+    var facts = '<span class="growth-facts">' +
+      '<b>' + done + '</b> 已完成' +
+      (canHelp ? ' · <b>' + canHelp + '</b> 可帮做' : "") +
+      (manual ? ' · <b>' + manual + '</b> 需你完成' : "") +
+      (claimable ? ' · <b>' + claimable + '</b> 可领取' : "") +
+      '</span>';
     var trows = tasks.map(function(t){
       var prog = (t.progress && t.progress.target) ? (t.progress.current + " / " + t.progress.target) : "—";
       var action = t.action || "manual";
       var actionText = action === "run" ? "可以帮你做" : action === "claim" ? "领取奖励" : "需要你完成";
       var taskTitle = t.task_name || (t.task_desc ? t.task_desc.slice(0, 28) + (t.task_desc.length > 28 ? "…" : "") : (t.task_code || "未命名任务"));
       var taskDesc = (t.task_desc && t.task_desc !== taskTitle) ? '<div class="td">' + esc(t.task_desc) + '</div>' : "";
-      return '<div class="growth-task">' +
+      var tk = a.uid + "|" + (t.task_code || "");
+      var isTaskBusy = taskBusy === tk;
+      var op = "";
+      if (action === "run" || action === "claim"){
+        op = isTaskBusy
+          ? '<span class="growth-btn-spin" title="处理中">' + svg("refresh") + '</span>'
+          : '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">' + (action === "claim" ? "领取" : "做这一项") + '</button>';
+      }
+      return '<div class="growth-task' + (isTaskBusy ? " is-busy" : "") + '">' +
         '<div class="growth-task-main"><div class="tn">' + esc(taskTitle) + '</div>' + taskDesc + '</div>' +
         '<div class="prog">' + esc(prog) + '</div>' +
-        '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div>' +
-        '<div class="growth-task-op">' + (action === "run" ? '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">做这一项</button>' : action === "claim" ? '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">领取</button>' : '') + '</div></div>';
+        '<div class="act ' + esc(action) + '">' + (isTaskBusy ? "" : esc(actionText)) + '</div>' +
+        '<div class="growth-task-op">' + op + '</div></div>';
     }).join("");
     var btn = "";
     if (canHelp > 0){
       var isBusy = accountBusy === a.uid;
       btn = '<button class="pri tiny" data-action="growth-run-account" data-uid="' + esc(a.uid) + '" ' +
-        (busy || accountBusy ? "disabled" : "") + '>' + (isBusy ? "处理中…" : "帮我做") + '</button>';
+        (busy || accountBusy ? "disabled" : "") + '>' + (isBusy ? '<span class="mini-spin"></span>' : "帮我做") + '</button>';
     } else if (claimable > 0){
       var claimBusy = accountBusy === a.uid;
       btn = '<button class="tiny" data-action="growth-run-account" data-uid="' + esc(a.uid) + '" ' +
-        (busy || accountBusy ? "disabled" : "") + '>' + (claimBusy ? "处理中…" : "领取奖励") + '</button>';
+        (busy || accountBusy ? "disabled" : "") + '>' + (claimBusy ? '<span class="mini-spin"></span>' : "领取奖励") + '</button>';
     }
     return '<div class="growth-acct"><div class="growth-head">' +
       '<details class="growth-det"><summary>' +
       '<span class="growth-name"><span class="n" title="' + esc(a.nickname || a.uid) + '">' + esc(a.nickname || a.uid) + '</span>' +
-      '<span class="u">' + esc((a.uid || "").slice(0,8)) + '</span></span>' +
-      '<span class="growth-count">' + esc(summaryText) + '</span></summary>' +
+      '<span class="u">' + esc((a.uid || "").slice(0,8)) + ' · ' + esc(a.realm || "cn") + '</span></span>' +
+      '<span class="growth-count">' +
+        '<span class="done"><b>' + done + '</b> 已完成</span>' +
+        '<span class="todo"><b>' + pending + '</b> 未完成</span>' +
+      '</span></summary>' +
+      '<div class="growth-acct-facts">' + bar + facts + '</div>' +
       (trows ? '<div class="growth-tasks">' + trows + '</div>' : '<div class="growth-empty">' + esc(a.error || "没有可展示的任务") + '</div>') +
       '</details><div class="growth-act">' + btn + '</div></div></div>';
   }).join("");
   var summary = '<div class="growth-summary">' +
-    '<b>' + fmtInt(accts.length) + ' 个账号还有 ' + fmtInt(g.pending || 0) + ' 项没做</b>' +
-    '<span class="sep"></span><span>其中 ' + fmtInt(g.can_help || 0) + ' 项可以帮你做</span>' +
-    '<span class="sep"></span><span>' + fmtInt(g.manual || 0) + ' 项需要你完成</span>' +
-    '<span class="sep"></span><span>' + fmtInt(g.claimable || 0) + ' 项奖励可领取</span></div>';
+    '<b>' + fmtInt(g.done || 0) + ' 已完成 · ' + fmtInt(g.pending || 0) + ' 未完成</b>' +
+    '<span class="sep"></span><span>' + fmtInt(accts.length) + ' 个账号' +
+    (g.can_help ? ' · ' + fmtInt(g.can_help) + ' 项可以帮你做' : "") +
+    (g.manual ? ' · ' + fmtInt(g.manual) + ' 项需要你完成' : "") +
+    (g.claimable ? ' · ' + fmtInt(g.claimable) + ' 项奖励可领取' : "") +'</span></div>';
   return card("成长任务", "",
     summary + (rows ? rows : '<div class="empty">没有需要处理的账号</div>'), extra);
 }
@@ -4833,8 +4864,11 @@ async function chanSave(){
   var openAll = list.filter(function(c){ return !(c.producers && c.producers.length); });
   if (openAll.length && producerChoices().length > 1){
     var names = openAll.map(function(c){ return c.name || c.id; }).join("、");
-    if (!window.confirm("出口「" + names + "」没有勾任何服务来源，保存后它会服务【全部来源】。\n" +
-        "如果本意是只给某一家开独立口，请先勾上来源再保存。\n\n仍然按「全部来源」保存？")) return;
+    if (!window.confirm("出口「" + names + "」没有勾任何服务来源，保存后它会服务【全部来源】。
+" +
+        "如果本意是只给某一家开独立口，请先勾上来源再保存。
+
+仍然按「全部来源」保存？")) return;
   }
   try {
     var res = await api("/admin/output", { method: "PUT", body: { channels: list } });
@@ -4892,26 +4926,54 @@ async function growthScan(){
   S.growthBusy = true; render();
   try {
     S.growth = await api("/admin/growth/tasks");
-    toast("ok", "已扫描：" + fmtInt((S.growth.accounts || []).length) + " 个账号还有 " + fmtInt(S.growth.pending || 0) + " 项没做", 3600);
+    toast("ok", "已扫描：" + fmtInt(S.growth.done || 0) + " 项已完成，" + fmtInt(S.growth.pending || 0) + " 项未完成", 3600);
   } catch (e) { toast("err", e.message || String(e), 9000); }
   finally { S.growthBusy = false; render(); }
 }
 /* growthRunAccount 只处理用户点的那一个账号；task 为空时处理整号。 */
 async function growthRunAccount(uid, taskCode){
   uid = uid || "";
-  if (!uid || S.growthBusy || S.growthAccountBusy) return;
-  S.growthAccountBusy = uid; render();
+  if (!uid || S.growthBusy || S.growthAccountBusy || S.growthTaskBusy) return;
+  var key = uid + "|" + (taskCode || "");
+  if (taskCode) S.growthTaskBusy = key; else S.growthAccountBusy = uid;
+  render();
   try {
     var url = "/admin/growth/accounts/" + encodeURIComponent(uid) + "/run";
     if (taskCode) url += "?task=" + encodeURIComponent(taskCode);
     var r = await api(url, { method: "POST", body: {} });
-    S.growth = await api("/admin/growth/tasks");
-    var msg = "已处理该账号";
+    var grew = false;
+    if (S.growth){
+      var accts = S.growth.accounts || [];
+      for (var i = 0; i < accts.length; i++){
+        var a = accts[i];
+        if (a.uid !== uid) continue;
+        var list = a.tasks || [];
+        if (taskCode){
+          var kept = [];
+          for (var j = 0; j < list.length; j++){ if (list[j].task_code !== taskCode) kept.push(list[j]); }
+          grew = kept.length < list.length;
+          a.tasks = kept;
+        }
+        if (grew){
+          a.done = (Number(a.done) || 0) + 1;
+          a.pending = Math.max(0, (Number(a.pending) || 0) - 1);
+          a.can_help = Math.max(0, (Number(a.can_help) || 0) - 1);
+          S.growth.done = (Number(S.growth.done) || 0) + 1;
+          S.growth.pending = Math.max(0, (Number(S.growth.pending) || 0) - 1);
+          S.growth.can_help = Math.max(0, (Number(S.growth.can_help) || 0) - 1);
+        }
+        break;
+      }
+    }
+    render();
+    var fresh = await api("/admin/growth/tasks");
+    S.growth = fresh;
+    var msg = grew ? "这一项已完成" : "已处理该账号";
     if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
     if (r && r.failed) msg += "，" + fmtInt(r.failed) + " 项未成功";
     toast("ok", msg, 5200);
   } catch (e) { toast("err", e.message || String(e), 9000); }
-  finally { S.growthAccountBusy = ""; render(); }
+  finally { S.growthAccountBusy = ""; S.growthTaskBusy = ""; render(); }
 }
 /* modeldeadClear 清空模型死信台账（误杀兜底）。 */
 async function modeldeadClear(){
