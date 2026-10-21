@@ -123,7 +123,7 @@ func TestNextWakeKeepaliveDisabled(t *testing.T) {
 	}
 }
 
-// TestNextWakeBothDisabledNothingScheduled 六类任务都显式禁用 → 无可唤醒时点。
+// TestNextWakeBothDisabledNothingScheduled 七类任务都显式禁用 → 无可唤醒时点。
 func TestNextWakeBothDisabledNothingScheduled(t *testing.T) {
 	s := New(Config{
 		CheckinDisabled:   true,

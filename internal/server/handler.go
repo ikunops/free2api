@@ -110,6 +110,13 @@ type Config struct {
 	// /admin/credits 据此额外标出「更紧急」的部分；0 = 不算紧急档。
 	ExpiringUrgent time.Duration
 
+	// GrowthScan / GrowthClaim 成长任务面板回调（由 gateway 注入 scheduler）。
+	// 返回具体 scheduler 结果类型，避免 server 反向依赖 scheduler。
+	// nil = 嵌入式/测试形态不提供成长任务管理。
+	GrowthScan  func(context.Context) (any, error)
+	GrowthClaim func(context.Context, bool) (any, error)
+	GrowthRun   func(context.Context) (any, error)
+
 	// Shutdown 触发进程优雅停机（由 cmd/server 注入 ctx 的 cancel）。
 	//
 	// 为什么要有这个端点：桌面控制台（cmd/desktop）可能代理到一个**别的进程**起的
@@ -237,6 +244,14 @@ func NewHandler(cfg Config) *Handler {
 		// 定时任务可见性（读 config.json schedule 段）+ 开关（写回配置，重启生效）。
 		h.mux.HandleFunc("GET /admin/schedule", h.withLocalOrAuth(h.adminScheduleGet))
 		h.mux.HandleFunc("POST /admin/schedule", h.withLocalOrAuth(h.adminSchedulePut))
+		// 成长任务：扫描只读；领取默认 dry-run，显式 dry_run=false 才写上游。
+		if h.cfg.GrowthScan != nil && h.cfg.GrowthClaim != nil {
+			h.mux.HandleFunc("GET /admin/growth/tasks", h.withLocalOrAuth(h.adminGrowthTasks))
+			h.mux.HandleFunc("POST /admin/growth/claim", h.withLocalOrAuth(h.adminGrowthClaim))
+			if h.cfg.GrowthRun != nil {
+				h.mux.HandleFunc("POST /admin/growth/run", h.withLocalOrAuth(h.adminGrowthRun))
+			}
+		}
 		// 改网关密钥（生成/设置/清空）：落盘 config.json，重启生效。
 		// 必须 withLocalOrAuth 而不是 withAuth —— 一把还没生效的密钥无法鉴权自己。
 		h.mux.HandleFunc("POST /admin/api-key", h.withLocalOrAuth(h.adminAPIKeyPut))

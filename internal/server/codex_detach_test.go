@@ -175,12 +175,18 @@ func TestScheduleViewDefaultsNoSection(t *testing.T) {
 	if !v.Readable || v.Explicit {
 		t.Errorf("readable=%v explicit=%v", v.Readable, v.Explicit)
 	}
-	if len(v.Tasks) != 6 {
-		t.Fatalf("tasks=%d want 6", len(v.Tasks))
+	if len(v.Tasks) != 7 {
+		t.Fatalf("tasks=%d want 7", len(v.Tasks))
 	}
 	for _, task := range v.Tasks {
+		if task.Key == "growth" {
+			if task.Enabled {
+				t.Errorf("growth 默认应关闭")
+			}
+			continue
+		}
 		if !task.Enabled {
-			t.Errorf("默认应全部启用: %s", task.Key)
+			t.Errorf("默认应启用: %s", task.Key)
 		}
 	}
 }

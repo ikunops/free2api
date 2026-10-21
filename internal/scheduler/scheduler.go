@@ -1,4 +1,4 @@
-// Package scheduler 定时任务：签到 / 活跃上报 / 猫猫旅行 / token keepalive / 开学季 / 夜猫子 六类独立排程。
+// Package scheduler 定时任务：签到 / 活跃上报 / 猫猫旅行 / token keepalive / 开学季 / 夜猫子 / 成长任务 七类独立排程。
 // 签到成功后重新查余额，余额 > 0 的冷却账号自动解冻。
 package scheduler
 
@@ -29,6 +29,7 @@ type Config struct {
 	KeepaliveHours []int // 默认 [22]
 	SchoolHours    []int // 默认 [12]：开学季任务（迁移自系统 crontab）
 	CatHours       []int // 默认 [1]：夜猫子任务（迁移自系统 crontab）
+	GrowthHours    []int // 默认 [1]：通用成长任务扫描 + 领取已完成（默认关闭）
 	// ActivityReportCount 每号每次活跃上报的条数：领猫前置需 5 次对话，
 	// 默认 5 条同一 conversationId 内多轮上报把 chat_5 刷满；0/缺省=1 兼容旧行为。
 	ActivityReportCount int
@@ -55,6 +56,9 @@ type Config struct {
 	SchoolDisabled bool
 	// CatDisabled 显式关闭夜猫子任务排程（schedule.cat_enabled=false）。
 	CatDisabled bool
+	// GrowthEnabled 显式开启成长任务排程（schedule.growth_enabled=true）。
+	// 默认 false：成长任务领取是写操作，只有用户显式开启才定时跑。
+	GrowthEnabled bool
 }
 
 // Scheduler 调度器。
@@ -95,6 +99,9 @@ func New(cfg Config) *Scheduler {
 	}
 	if len(cfg.CatHours) == 0 {
 		cfg.CatHours = []int{1}
+	}
+	if len(cfg.GrowthHours) == 0 {
+		cfg.GrowthHours = []int{1}
 	}
 	// 0/缺省 = 1 条（兼容旧行为：每号每天 1 条上报点亮连登）。
 	if cfg.ActivityReportCount <= 0 {
@@ -154,6 +161,7 @@ const (
 	taskKeepalive
 	taskSchool
 	taskCat
+	taskGrowth
 )
 
 // nextWake 返回 now 之后最近的唤醒时刻，以及该时刻需要执行的全部任务。
@@ -182,6 +190,9 @@ func (s *Scheduler) nextWake(now time.Time) (time.Time, []taskKind) {
 	}
 	if !s.cfg.CatDisabled {
 		slots = append(slots, slot{nextFire(now, s.cfg.CatHours), taskCat})
+	}
+	if s.cfg.GrowthEnabled {
+		slots = append(slots, slot{nextFire(now, s.cfg.GrowthHours), taskGrowth})
 	}
 	var earliest time.Time
 	for _, sl := range slots {
@@ -289,6 +300,8 @@ func (s *Scheduler) dispatch(ctx context.Context, k taskKind) {
 		s.RunSchoolNow()
 	case taskCat:
 		s.RunCatNow()
+	case taskGrowth:
+		s.RunGrowthNow()
 	}
 }
 

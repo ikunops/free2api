@@ -221,6 +221,7 @@ func Start(opts Options) (*Instance, error) {
 		KeepaliveHours:       cfg.Schedule.KeepaliveHours,
 		SchoolHours:          cfg.Schedule.SchoolHours,
 		CatHours:             cfg.Schedule.CatHours,
+		GrowthHours:          cfg.Schedule.GrowthHours,
 		ActivityReportCount:  cfg.Schedule.ActivityReportCount,
 		ExpiringSoonWindow:   cfg.ExpiringSoonDur,   // 临近档（14d）优先消耗（issue:积分过期）
 		ExpiringUrgentWindow: cfg.ExpiringUrgentDur, // 紧急档（7d）优先于临近档
@@ -230,6 +231,7 @@ func Start(opts Options) (*Instance, error) {
 		KeepaliveDisabled:    !cfg.Schedule.KeepaliveEnabled,
 		SchoolDisabled:       !cfg.Schedule.SchoolEnabled,
 		CatDisabled:          !cfg.Schedule.CatEnabled,
+		GrowthEnabled:        cfg.Schedule.GrowthEnabled,
 	})
 	switch {
 	case !cfg.Schedule.CheckinEnabled:
@@ -263,6 +265,11 @@ func Start(opts Options) (*Instance, error) {
 		log.Printf("夜猫子任务已禁用（schedule.cat_enabled=false）")
 	} else {
 		log.Printf("夜猫子任务已启用：%v 点（task_runner.py ALL --yes --only black_cat）", cfg.Schedule.CatHours)
+	}
+	if !cfg.Schedule.GrowthEnabled {
+		log.Printf("成长任务已禁用（schedule.growth_enabled=false，默认）")
+	} else {
+		log.Printf("成长任务已启用：%v 点（扫描 + 领取已完成任务；不会伪造未完成任务）", cfg.Schedule.GrowthHours)
 	}
 
 	// opts.Ctx 为空必须回落 Background：WithCancel(nil) 会拿到一个**已取消**的 ctx，
@@ -311,6 +318,17 @@ func Start(opts Options) (*Instance, error) {
 		// 监听地址回显 + 改端口落点（改完需重启才真正换端口，页面会明说）。
 		Listen:     cfg.Listen,
 		ConfigPath: opts.ConfigPath,
+		// 成长任务面板：扫描只读；领取默认 dry-run。回调由 scheduler 提供，
+		// server 不反向依赖 scheduler 包。
+		GrowthScan: func(ctx context.Context) (any, error) {
+			return scheduler.GrowthTaskSummary(sch.ScanGrowthTasks(ctx)), nil
+		},
+		GrowthClaim: func(ctx context.Context, dryRun bool) (any, error) {
+			return sch.ClaimCompletedGrowthTasks(ctx, dryRun), nil
+		},
+		GrowthRun: func(ctx context.Context) (any, error) {
+			return sch.RunGrowthNowReport(ctx), nil
+		},
 		// 优雅停机入口（POST /admin/shutdown）：桌面控制台停「别的进程起的」网关时
 		// 走这里，落盘/Flush/关监听全走与信号同一条路径。cancel 是幂等的。
 		Shutdown: cancel,

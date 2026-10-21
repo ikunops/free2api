@@ -24,7 +24,7 @@ import (
 
 // scheduleTaskView 单个定时任务在页面上的形态。
 type scheduleTaskView struct {
-	Key     string `json:"key"`     // checkin / travel / activity / keepalive / school / cat
+	Key     string `json:"key"`     // checkin / travel / activity / keepalive / school / cat / growth
 	Name    string `json:"name"`    // 中文名
 	Enabled bool   `json:"enabled"` // 是否启用
 	Hours   []int  `json:"hours"`   // 触发整点
@@ -46,12 +46,13 @@ func defaultScheduleTasks() []scheduleTaskView {
 		{Key: "keepalive", Name: "Token 保活", Enabled: true, Hours: []int{22}, Note: "刷新 access token，避免掉线"},
 		{Key: "school", Name: "开学季任务", Enabled: true, Hours: []int{12}, Note: "school_open_day_2026.py"},
 		{Key: "cat", Name: "夜猫子任务", Enabled: true, Hours: []int{1}, Note: "task_runner.py 黑猫"},
+		{Key: "growth", Name: "成长任务", Enabled: false, Hours: []int{1}, Note: "扫描 + 领取已完成；默认关闭，不伪造未完成任务"},
 	}
 }
 
-// scheduleKeys 六个任务的键，与 config.Schedule 的 JSON 字段一一对应。
+// scheduleKeys 七个任务的键，与 config.Schedule 的 JSON 字段一一对应。
 // hoursKey = "<key>_hours"，enabledKey = "<key>_enabled"。
-var scheduleKeys = []string{"checkin", "travel", "activity", "keepalive", "school", "cat"}
+var scheduleKeys = []string{"checkin", "travel", "activity", "keepalive", "school", "cat", "growth"}
 
 // readScheduleConfig 读 config.json 的 schedule 段（原始 JSON），返回解析后的
 // map 与「config.json 里有没有 schedule 段」两个信息。读不到时 map 为 nil。
@@ -123,13 +124,13 @@ func (h *Handler) scheduleView() map[string]any {
 		}
 	}
 	out := map[string]any{
-		"config_path":     h.cfg.ConfigPath,
-		"readable":        readable,
-		"explicit":        explicitSection,
-		"restart_needed":  true,
-		"tasks":           tasks,
-		"restart_note":    "改开关会写入 config.json，重启网关后生效（定时排程在启动时快照，进程内不热重载）",
-		"source_hint":     "小时表（几点跑）请直接改 config.json 的 schedule 段；页面只负责看清与一键开关",
+		"config_path":    h.cfg.ConfigPath,
+		"readable":       readable,
+		"explicit":       explicitSection,
+		"restart_needed": true,
+		"tasks":          tasks,
+		"restart_note":   "改开关会写入 config.json，重启网关后生效（定时排程在启动时快照，进程内不热重载）",
+		"source_hint":    "小时表（几点跑）请直接改 config.json 的 schedule 段；页面只负责看清与一键开关",
 	}
 	if readErr != "" {
 		out["read_error"] = readErr

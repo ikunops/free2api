@@ -27,7 +27,7 @@ func TestDefaultScheduleActivityCount(t *testing.T) {
 	if len(s.CatHours) != 1 || s.CatHours[0] != 1 {
 		t.Errorf("cat_hours=%v want [1]", s.CatHours)
 	}
-	if !s.SchoolEnabled || !s.CatEnabled {
+	if !s.SchoolEnabled || !s.CatEnabled || s.GrowthEnabled {
 		t.Errorf("school/cat switches must default true: %+v", s)
 	}
 }
@@ -101,6 +101,7 @@ func TestNormalizeScheduleInvalidHour(t *testing.T) {
 		{Schedule{SchoolHours: []int{-1}}, "school_enabled"},
 		{Schedule{CatHours: []int{24}}, "cat_enabled"},
 		{Schedule{CatHours: []int{-1}}, "cat_enabled"},
+		{Schedule{GrowthHours: []int{24}}, "growth_enabled"},
 	}
 	for _, tc := range cases {
 		err := tc.s.Normalize()

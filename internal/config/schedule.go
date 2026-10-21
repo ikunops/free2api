@@ -10,7 +10,7 @@ import "fmt"
 
 // Schedule 排程配置段（对应 config.json 的 "schedule" 对象）。
 //
-// 六类独立排程：签到 / 活跃上报 / 猫猫旅行 / token keepalive / 开学季 / 夜猫子。
+// 七类独立排程：签到 / 活跃上报 / 猫猫旅行 / token keepalive / 开学季 / 夜猫子 / 成长任务。
 // cmd/server 与 cmd/activity 共用本结构，默认值由 DefaultSchedule 填充、
 // 缺省归一由 Normalize 完成——两命令走同一份语义，不再各自复制。
 type Schedule struct {
@@ -20,6 +20,7 @@ type Schedule struct {
 	KeepaliveHours []int `json:"keepalive_hours"` // [22]
 	SchoolHours    []int `json:"school_hours"`    // [12] 开学季任务（迁移自 school/cat 两条系统 crontab）
 	CatHours       []int `json:"cat_hours"`       // [1] 夜猫窗口 23-08 CST，01:00 窗口内补 1 次
+	GrowthHours    []int `json:"growth_hours"`    // [1] 通用成长任务扫描 + 领取已完成（默认关闭）
 	// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/SchoolEnabled/CatEnabled
 	// 显式禁用开关（缺省 true）。
 	//
@@ -35,6 +36,8 @@ type Schedule struct {
 	KeepaliveEnabled bool `json:"keepalive_enabled"` // 缺省 true；false = 关 token 保活
 	SchoolEnabled    bool `json:"school_enabled"`    // 缺省 true；false = 停开学季任务
 	CatEnabled       bool `json:"cat_enabled"`       // 缺省 true；false = 停夜猫子任务
+	// GrowthEnabled 成长任务默认关闭：扫描是只读，但领取是写操作；用户显式开启后再定时跑。
+	GrowthEnabled bool `json:"growth_enabled"`
 	// ActivityReportCount 每号每次活跃上报的条数：领猫前置需 5 次对话，
 	// 默认 5 条把 chat_5 刷满；0/缺省=1 兼容旧行为。
 	ActivityReportCount int `json:"activity_report_count"`
@@ -52,15 +55,17 @@ func DefaultSchedule() Schedule {
 		CheckinHours:        []int{9, 21},
 		TravelHours:         []int{9, 21},
 		ActivityHours:       []int{10},
-		KeepaliveHours:       []int{22},
-		SchoolHours:          []int{12},
-		CatHours:             []int{1},
+		KeepaliveHours:      []int{22},
+		SchoolHours:         []int{12},
+		CatHours:            []int{1},
+		GrowthHours:         []int{1},
 		CheckinEnabled:      true,
 		TravelEnabled:       true,
 		ActivityEnabled:     true,
 		KeepaliveEnabled:    true,
 		SchoolEnabled:       true,
 		CatEnabled:          true,
+		GrowthEnabled:       false,
 		ActivityReportCount: 5, // 领猫前置需 5 次对话，5 连发刷满 chat_5
 	}
 }
@@ -120,7 +125,10 @@ func (s *Schedule) validateHours() error {
 	if err := checkHourRange("schedule.school_hours", "school_enabled", s.SchoolHours); err != nil {
 		return err
 	}
-	return checkHourRange("schedule.cat_hours", "cat_enabled", s.CatHours)
+	if err := checkHourRange("schedule.cat_hours", "cat_enabled", s.CatHours); err != nil {
+		return err
+	}
+	return checkHourRange("schedule.growth_hours", "growth_enabled", s.GrowthHours)
 }
 
 func checkHourRange(field, switchKey string, hours []int) error {
