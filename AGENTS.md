@@ -69,7 +69,7 @@
 
 ## [待确认]
 
-- 暂无。后续出现“用户纠正过、且可复用”的规则时先追加到这里，人工确认后再升入 `[已生效]`。
+- [桌面发布]：Windows 桌面端发布必须使用 `-H=windowsgui`；manifest、图标和运行时 FreeConsole 都不能把 PE 子系统从 Console 改成 GUI。（证据：已核查部署 exe 的 PE Subsystem=2；`cmd/desktop/desktop_test.go` 的 TestWindowsDesktopBuildUsesGUISubsystem 防止 README/workflow 回退；使用条件：仅用于 cmd/desktop 的 Windows 发布构建，cmd/server 仍保留控制台子系统。）
 
 ## [安全红线 - 不可触碰区域]
 
