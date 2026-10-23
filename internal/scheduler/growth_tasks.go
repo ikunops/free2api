@@ -92,6 +92,8 @@ type GrowthAccountRunReport struct {
 	Claimed  int       `json:"claimed"`
 	Already  int       `json:"already"`
 	Failed   int       `json:"failed"`
+	Credit   int64     `json:"credit,omitempty"`
+	Energy   int64     `json:"energy,omitempty"`
 }
 
 // GrowthTaskExecutor 可点亮任务的执行器。返回 nil 表示本轮已上报，仍需回读确认；
@@ -248,12 +250,28 @@ func (s *Scheduler) RunGrowthNow() {
 	s.RunGrowthNowReport(context.Background())
 }
 
+// growthClaimRetryDelay 让执行完任务后的二次回读等上游完成状态落库。
+// 测试可置 0；生产保持短延迟，仍不依赖一次 HTTP 200 就当完成。
+var growthClaimRetryDelay = 8 * time.Second
+
 // RunGrowthNowReport 与 RunGrowthNow 同语义，但返回领取明细，供管理面手动触发。
 func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 	growthTaskMu.Lock()
 	defer growthTaskMu.Unlock()
 	reported := s.runGrowthExecutorsLocked(ctx, "", "")
 	rep := s.claimCompletedGrowthTasksLocked(ctx, false, "")
+	if len(rep.Results) == 0 && reported > 0 && growthClaimRetryDelay > 0 {
+		select {
+		case <-time.After(growthClaimRetryDelay):
+		case <-ctx.Done():
+			rep.FinishedAt = time.Now()
+			return rep
+		}
+		// WorkBuddy 的完成状态是异步落库的。事件上报成功后立即回读仍可能是
+		// not_accepted/completed=0；等一个短窗口再领取，避免把已完成的专家任务
+		// 留到下一次排程才领。
+		rep = s.claimCompletedGrowthTasksLocked(ctx, false, "")
+	}
 	claimed, already, failed := 0, 0, 0
 	for _, r := range rep.Results {
 		switch r.Status {
@@ -294,6 +312,8 @@ func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid, taskCode st
 		switch r.Status {
 		case "claimed":
 			rep.Claimed++
+			rep.Credit += r.Credit
+			rep.Energy += r.Energy
 		case "already":
 			rep.Already++
 		case "failed":
@@ -328,14 +348,17 @@ func (s *Scheduler) growthAccountLocked(uid string) (pool.Status, *auth.Auth, er
 }
 
 type growthSummaryTask struct {
-	TaskCode string                  `json:"task_code"`
-	TaskName string                  `json:"task_name"`
-	TaskDesc string                  `json:"task_desc,omitempty"`
-	Platform string                  `json:"platform,omitempty"`
-	Progress upstream.GrowthProgress `json:"progress"`
-	Status   string                  `json:"status"`
-	Action   string                  `json:"action"` // run / claim / manual
-	Reward   json.RawMessage         `json:"reward,omitempty"`
+	TaskCode     string                  `json:"task_code"`
+	TaskName     string                  `json:"task_name"`
+	TaskDesc     string                  `json:"task_desc,omitempty"`
+	Platform     string                  `json:"platform,omitempty"`
+	Progress     upstream.GrowthProgress `json:"progress"`
+	Status       string                  `json:"status"`
+	Action       string                  `json:"action"` // run / claim / manual
+	Reward       json.RawMessage         `json:"reward,omitempty"`
+	RewardCredit *int64                  `json:"reward_credit,omitempty"`
+	RewardEnergy *int64                  `json:"reward_energy,omitempty"`
+	HasReward    bool                    `json:"has_reward,omitempty"`
 }
 
 type growthSummaryAccount struct {
@@ -428,6 +451,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 			item := growthSummaryTask{
 				TaskCode: t.TaskCode, TaskName: t.TaskName, TaskDesc: t.TaskDesc,
 				Progress: t.Progress, Status: status, Action: action, Reward: t.Reward,
+				RewardCredit: t.RewardCredit, RewardEnergy: t.RewardEnergy, HasReward: t.HasReward,
 			}
 			if old, ok := st.all[t.TaskCode]; ok && growthTaskRank(old.Status) >= growthTaskRank(status) {
 				continue
@@ -488,6 +512,7 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 	return map[string]any{
 		"scanned_at": res.ScannedAt, "done": done, "pending": pending, "can_help": canHelp,
 		"manual": manual, "claimable": claimable, "accounts": accounts, "error": res.Error,
+		"executor_codes": GrowthExecutorCodes(),
 	}
 }
 
@@ -515,4 +540,15 @@ func growthTaskActionRank(action string) int {
 	default:
 		return 2
 	}
+}
+
+// GrowthExecutorCodes 返回当前构建声明可自动补进度的任务码。
+// 管理页用它显示“这一项具体怎么自动做”，也便于诊断“为什么某些项还是手动”。
+func GrowthExecutorCodes() []string {
+	out := make([]string, 0, len(growthTaskExecutors))
+	for code := range growthTaskExecutors {
+		out = append(out, code)
+	}
+	sort.Strings(out)
+	return out
 }

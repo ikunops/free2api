@@ -16,14 +16,46 @@ import (
 
 const growthMarketExpertPath = "/v2/operation-platform/market/expert/list"
 
-// GrowthMarketExpert 是 expert/list 里任务事件需要的字段。
+// GrowthMarketExpert 是 expert/list 与本地专家缓存共同映射出的专家元数据。
 type GrowthMarketExpert struct {
-	ExpertID      string
-	SourceID      string
-	ExpertType    string
-	DisplayNameZH string
-	ProfessionZH  string
-	Version       string
+	ExpertID      string `json:"expert_id"`
+	SourceID      string `json:"source_id,omitempty"`
+	ExpertType    string `json:"expert_type,omitempty"`
+	DisplayNameZH string `json:"display_name_zh,omitempty"`
+	ProfessionZH  string `json:"profession_zh,omitempty"`
+	Version       string `json:"version,omitempty"`
+	PluginName    string `json:"plugin_name,omitempty"`
+	AgentName     string `json:"agent_name,omitempty"`
+	LocalPath     string `json:"local_path,omitempty"`
+	Prompt        string `json:"-"`
+}
+
+// FindGrowthMarketExpert 按任务语义选择真实专家。匹配顺序为：
+// 1) 精确 ID；2) 名称/职业/插件/agent 包含任务语义；3) 单一候选直接采用。
+// 找不到时返回 false，调用方不得编造 ID 继续上报。
+func FindGrowthMarketExpert(experts []GrowthMarketExpert, match string) (GrowthMarketExpert, bool) {
+	match = strings.TrimSpace(strings.ToLower(match))
+	if match == "" {
+		if len(experts) == 1 {
+			return experts[0], true
+		}
+		return GrowthMarketExpert{}, false
+	}
+	for _, e := range experts {
+		if strings.EqualFold(strings.TrimSpace(e.ExpertID), match) ||
+			strings.EqualFold(strings.TrimSpace(e.SourceID), match) {
+			return e, true
+		}
+	}
+	for _, e := range experts {
+		hay := strings.ToLower(strings.Join([]string{
+			e.ExpertID, e.SourceID, e.DisplayNameZH, e.ProfessionZH, e.PluginName, e.AgentName,
+		}, "\n"))
+		if strings.Contains(hay, match) {
+			return e, true
+		}
+	}
+	return GrowthMarketExpert{}, false
 }
 
 // ListGrowthMarketExperts 拉取真实专家列表。expertType 为空表示全部。
@@ -53,6 +85,8 @@ func (c *Client) ListGrowthMarketExperts(a *auth.Auth, expertType string) ([]Gro
 			DisplayNameZH string `json:"display_name_zh"`
 			ProfessionZH  string `json:"profession_zh"`
 			Version       string `json:"version"`
+			PluginName    string `json:"plugin_name"`
+			AgentName     string `json:"agent_name"`
 		} `json:"experts"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
@@ -74,7 +108,8 @@ func (c *Client) ListGrowthMarketExperts(a *auth.Auth, expertType string) ([]Gro
 		}
 		out = append(out, GrowthMarketExpert{
 			ExpertID: id, SourceID: e.SourceID, ExpertType: typ,
-			DisplayNameZH: e.DisplayNameZH, ProfessionZH: e.ProfessionZH, Version: e.Version,
+			DisplayNameZH: e.DisplayNameZH, ProfessionZH: e.ProfessionZH,
+			Version: e.Version, PluginName: e.PluginName, AgentName: e.AgentName,
 		})
 		seen[id] = true
 	}

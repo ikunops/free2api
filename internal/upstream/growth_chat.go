@@ -75,6 +75,13 @@ func (c *Client) GrowthWebChat(ctx context.Context, a *auth.Auth, prompt, model 
 	if strings.TrimSpace(model) == "" {
 		model = "glm-5.2"
 	}
+	if growthWebExpertMeta(meta) {
+		// 专家会话的真实对话优先走网关的 /v1/chat/completions，由网关把
+		// 展示/工具模型名解析到账号池真实模型；直连上游仍用于非专家任务。
+		if base := c.GrowthGatewayBase(); base != "" {
+			return c.growthGatewayWebChat(ctx, base, a, prompt, model, meta)
+		}
+	}
 	convID, err := c.CreateGrowthWebConversation(ctx, a, "growth-"+model)
 	if err != nil {
 		return GrowthChatReply{}, err
@@ -119,6 +126,69 @@ func (c *Client) GrowthWebChat(ctx context.Context, a *auth.Auth, prompt, model 
 	return GrowthChatReply{ConversationID: convID, Text: text}, nil
 }
 
+// GrowthGatewayBase 是可选的本地网关地址（config upstream.gateway_base）。
+// 空值时不启用网关回环，保持原有直连行为与测试隔离。
+func (c *Client) GrowthGatewayBase() string {
+	return strings.TrimRight(strings.TrimSpace(c.GatewayBase), "/")
+}
+func growthWebExpertMeta(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	_, ok := meta["codebuddy.ai"]
+	return ok
+}
+
+// growthGatewayWebChat 用网关的 OpenAI 兼容 chat 端点执行专家会话。
+// 网关已持有真实账号与模型路由；这里不再自己猜上游 service id。
+func (c *Client) growthGatewayWebChat(ctx context.Context, base string, a *auth.Auth, prompt, model string, meta map[string]any) (GrowthChatReply, error) {
+	convID, err := c.CreateGrowthWebConversation(ctx, a, "growth-"+model)
+	if err != nil {
+		return GrowthChatReply{}, err
+	}
+	payload := map[string]any{
+		"model":    model,
+		"stream":   false,
+		"messages": []map[string]any{{"role": "user", "content": prompt}},
+	}
+	// /v1/chat/completions 不接受官方控制台的 _meta；专家上下文由网关请求的
+	// upstream/账户路由负责，任务事件仍以此为真实对话凭据。
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return GrowthChatReply{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/chat/completions", bytes.NewReader(raw))
+	if err != nil {
+		return GrowthChatReply{}, err
+	}
+	if c.GatewayAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.GatewayAPIKey)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.chatHTTP().Do(req)
+	if err != nil {
+		return GrowthChatReply{}, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode >= 400 {
+		return GrowthChatReply{}, &Error{Kind: Classify(resp.StatusCode, string(data)), Status: resp.StatusCode, Msg: truncate(string(data), 200)}
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return GrowthChatReply{}, err
+	}
+	if len(out.Choices) == 0 || strings.TrimSpace(out.Choices[0].Message.Content) == "" {
+		return GrowthChatReply{}, fmt.Errorf("gateway webchat returned empty response")
+	}
+	return GrowthChatReply{ConversationID: convID, Text: out.Choices[0].Message.Content}, nil
+}
 func readGrowthChatSSE(r io.Reader) (string, error) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	var out strings.Builder

@@ -3,9 +3,11 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -174,10 +176,10 @@ func TestGrowthClaimDryRunOnlyCompletedAndSkipsGlobal(t *testing.T) {
 }
 
 func TestGrowthRunWhitelistAndReadbackBeforeClaim(t *testing.T) {
-	oldClaim, oldAccept, oldGap, oldExec := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap
-	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap = 0, 0, 0, 0
+	oldClaim, oldAccept, oldGap, oldExec, oldRetry := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay
+	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = 0, 0, 0, 0, 0
 	t.Cleanup(func() {
-		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap = oldClaim, oldAccept, oldGap, oldExec
+		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = oldClaim, oldAccept, oldGap, oldExec, oldRetry
 	})
 
 	stub := &growthStub{
@@ -230,11 +232,12 @@ func TestGrowthRunWhitelistAndReadbackBeforeClaim(t *testing.T) {
 }
 
 func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
+	rewardCredit, rewardEnergy := int64(300), int64(5)
 	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
 		{
 			UID: "u1", Nickname: "小天才", Realm: "cn", Platform: "default", OK: true,
 			Tasks: []upstream.GrowthTask{
-				{TaskCode: "done", TaskName: "已完成", AcceptStatus: "completed"},
+				{TaskCode: "done", TaskName: "已完成", AcceptStatus: "completed", RewardCredit: &rewardCredit, RewardEnergy: &rewardEnergy, HasReward: true},
 				{TaskCode: "chat_5", TaskName: "对话 5 次", AcceptStatus: "accepted", Progress: upstream.GrowthProgress{Current: 2, Target: 5}},
 				{TaskCode: "canvas", TaskName: "真实客户端", AcceptStatus: "not_accepted"},
 				{TaskCode: "claimed", TaskName: "已领取", AcceptStatus: "claimed"},
@@ -263,6 +266,10 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 	if out["done"] != 2 || out["pending"] != 4 || out["can_help"] != 1 || out["manual"] != 2 || out["claimable"] != 1 {
 		t.Fatalf("summary=%v", out)
 	}
+	codes, ok := out["executor_codes"].([]string)
+	if !ok || !slices.Contains(codes, "chat_5") || !slices.Contains(codes, "expert_use_maidehao") {
+		t.Fatalf("executor_codes=%v", out["executor_codes"])
+	}
 	actions := map[string]string{}
 	for _, task := range acc.Tasks {
 		actions[task.TaskCode] = task.Action
@@ -270,16 +277,118 @@ func TestGrowthTaskSummaryGroupsAccountsAndHidesGlobal(t *testing.T) {
 	if actions["done"] != "claim" || actions["chat_5"] != "run" || actions["mini"] != "manual" || actions["canvas"] != "manual" {
 		t.Fatalf("actions=%v tasks=%+v", actions, acc.Tasks)
 	}
+	var doneTask *growthSummaryTask
+	for i := range acc.Tasks {
+		if acc.Tasks[i].TaskCode == "done" {
+			doneTask = &acc.Tasks[i]
+		}
+	}
+	if doneTask == nil || doneTask.RewardCredit == nil || *doneTask.RewardCredit != 300 || doneTask.RewardEnergy == nil || *doneTask.RewardEnergy != 5 || !doneTask.HasReward {
+		t.Fatalf("reward fields not forwarded: %+v", doneTask)
+	}
 	if _, exists := actions["claimed"]; exists {
 		t.Fatalf("claimed task should be hidden: %+v", acc.Tasks)
 	}
 }
 
+func TestGrowthExpertExecutorRequiresSuccessfulChatBeforeReport(t *testing.T) {
+	oldGap := growthEventGap
+	growthEventGap = 0
+	t.Cleanup(func() { growthEventGap = oldGap })
+	oldWebChat := growthWebChatFn
+	t.Cleanup(func() { growthWebChatFn = oldWebChat })
+	oldLocal := growthLocalExpertFn
+	t.Cleanup(func() { growthLocalExpertFn = oldLocal })
+	growthLocalExpertFn = func(string) (upstream.GrowthMarketExpert, bool) {
+		return upstream.GrowthMarketExpert{ExpertID: "ex_not_used", DisplayNameZH: "本地专家", ExpertType: "agent"}, true
+	}
+
+	reportCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/operation-platform/market/expert/list":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"experts":[]}}`))
+		case r.URL.Path == "/v2/report":
+			reportCalls++
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	growthWebChatFn = func(context.Context, *upstream.Client, *auth.Auth, string, string, map[string]any) (upstream.GrowthChatReply, error) {
+		return upstream.GrowthChatReply{}, fmt.Errorf("upstream chat down")
+	}
+	ex := growthExpertChatExecutor{code: "Expert_lighthouse", target: 1, aliases: []string{"腾讯轻量云专家"}}
+	if err := ex.Run(context.Background(), c, &auth.Auth{UID: "u1"}, upstream.GrowthTask{TaskCode: "Expert_lighthouse", TaskName: "腾讯轻量云专家"}); err == nil {
+		t.Fatal("chat failure must return error")
+	}
+	if reportCalls != 0 {
+		t.Fatalf("chat failure must not report task events, calls=%d", reportCalls)
+	}
+
+	growthWebChatFn = func(context.Context, *upstream.Client, *auth.Auth, string, string, map[string]any) (upstream.GrowthChatReply, error) {
+		return upstream.GrowthChatReply{ConversationID: "conv-real", Text: "done"}, nil
+	}
+	if err := ex.Run(context.Background(), c, &auth.Auth{UID: "u1"}, upstream.GrowthTask{TaskCode: "Expert_lighthouse", TaskName: "腾讯轻量云专家"}); err != nil {
+		t.Fatal(err)
+	}
+	if reportCalls != 1 {
+		t.Fatalf("successful chat must report once, calls=%d", reportCalls)
+	}
+}
+
+func TestGrowthExpertExecutorUsesOfficialWebModelInEvents(t *testing.T) {
+	oldGap := growthEventGap
+	growthEventGap = 0
+	t.Cleanup(func() { growthEventGap = oldGap })
+	oldWebChat := growthWebChatFn
+	t.Cleanup(func() { growthWebChatFn = oldWebChat })
+	oldLocal := growthLocalExpertFn
+	t.Cleanup(func() { growthLocalExpertFn = oldLocal })
+	growthLocalExpertFn = func(string) (upstream.GrowthMarketExpert, bool) {
+		return upstream.GrowthMarketExpert{ExpertID: "ex_real", DisplayNameZH: "真实专家", ExpertType: "agent"}, true
+	}
+
+	var chatModel string
+	growthWebChatFn = func(_ context.Context, _ *upstream.Client, _ *auth.Auth, _ string, model string, _ map[string]any) (upstream.GrowthChatReply, error) {
+		chatModel = model
+		return upstream.GrowthChatReply{ConversationID: "conv-real", Text: "done"}, nil
+	}
+	reported := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/operation-platform/market/expert/list":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"experts":[]}}`))
+		case "/v2/report":
+			raw, _ := io.ReadAll(r.Body)
+			reported = string(raw)
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	ex := growthExpertChatExecutor{code: "expert_use_douyinyin", target: 1, aliases: []string{"抖音策略师"}}
+	if err := ex.Run(context.Background(), c, &auth.Auth{UID: "u1"}, upstream.GrowthTask{TaskCode: "expert_use_douyinyin", TaskName: "抖音策略师"}); err != nil {
+		t.Fatal(err)
+	}
+	if chatModel != growthExpertWebModelID {
+		t.Fatalf("expert chat model=%q want %q", chatModel, growthExpertWebModelID)
+	}
+	if !strings.Contains(reported, `"requestModelId":"fast-model"`) || !strings.Contains(reported, `"requestModelName":"fast-model"`) {
+		t.Fatalf("expert events must use the real web model, got %s", reported)
+	}
+}
 func TestRunGrowthAccountOnlyTarget(t *testing.T) {
-	oldClaim, oldAccept, oldGap, oldExec := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap
-	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap = 0, 0, 0, 0
+	oldClaim, oldAccept, oldGap, oldExec, oldRetry := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay
+	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = 0, 0, 0, 0, 0
 	t.Cleanup(func() {
-		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap = oldClaim, oldAccept, oldGap, oldExec
+		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = oldClaim, oldAccept, oldGap, oldExec, oldRetry
 	})
 
 	stub := &growthStub{
@@ -302,7 +411,7 @@ func TestRunGrowthAccountOnlyTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Reported != 1 || rep.Claimed != 1 || rep.Failed != 0 {
+	if rep.Reported != 1 || rep.Claimed != 1 || rep.Failed != 0 || rep.Credit != 10 || rep.Energy != 2 {
 		t.Fatalf("report=%+v", rep)
 	}
 	if stub.accepts["default"] != 1 || stub.reports["default"] != 5 || stub.claims["default:chat_5"] != 1 {

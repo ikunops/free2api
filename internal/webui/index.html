@@ -601,6 +601,10 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-task-main{min-width:0}
 .growth-task .tn{font-weight:500;color:var(--fg);overflow-wrap:anywhere}
 .growth-task .td{font-size:11px;color:var(--fg3);margin-top:2px;overflow-wrap:anywhere}
+.growth-reward{display:inline-flex;align-items:center;gap:5px;vertical-align:2px;margin-left:6px;white-space:nowrap;font-size:10.5px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.growth-reward span{padding:1px 6px;border:1px solid var(--line2);border-radius:999px}
+.growth-reward .credit{color:var(--warn-fg);border-color:var(--warn-line);background:var(--warn-bg)}
+.growth-reward .energy{color:var(--acc-fg);border-color:var(--acc-bg);background:var(--acc-bg)}
 .growth-task .prog{text-align:right;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
 .growth-task .act{text-align:right;white-space:nowrap;color:var(--fg3)}
 .growth-task .act.run{color:var(--acc-fg)}
@@ -4054,6 +4058,10 @@ function growthCard(){
       var actionText = action === "run" ? "可自动补进度" : action === "claim" ? "奖励可领取" : "需要真实客户端";
       var taskTitle = t.task_name || (t.task_desc ? t.task_desc.slice(0, 28) + (t.task_desc.length > 28 ? "…" : "") : (t.task_code || "未命名任务"));
       var taskDesc = (t.task_desc && t.task_desc !== taskTitle) ? '<div class="td">' + esc(t.task_desc) + '</div>' : "";
+      var rewards = [];
+      if (Number(t.reward_credit) > 0) rewards.push('<span class="credit">+' + fmtInt(Number(t.reward_credit)) + ' 积分</span>');
+      if (Number(t.reward_energy) > 0) rewards.push('<span class="energy">+' + fmtInt(Number(t.reward_energy)) + ' 能量</span>');
+      var reward = rewards.length ? '<span class="growth-reward">' + rewards.join("") + '</span>' : "";
       var tk = a.uid + "|" + (t.task_code || "");
       var isTaskBusy = taskBusy === tk;
       var op = "";
@@ -4062,13 +4070,11 @@ function growthCard(){
           ? '<span class="growth-btn-spin" title="处理中">' + svg("refresh") + '</span>'
           : '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">' + (action === "claim" ? "领取" : "做这一项") + '</button>';
       }
-      var main = isTaskBusy
-        ? '<div class="growth-task-loading"><span class="mini-spin"></span><span>正在做这一项…</span></div>'
-        : '<div class="tn">' + esc(taskTitle) + '</div>' + taskDesc;
+      var main = '<div class="tn">' + esc(taskTitle) + reward + '</div>' + taskDesc;
       return '<div class="growth-task' + (isTaskBusy ? " is-busy" : "") + '">' +
         '<div class="growth-task-main">' + main + '</div>' +
-        '<div class="prog">' + (isTaskBusy ? "" : esc(prog)) + '</div>' +
-        '<div class="act ' + esc(action) + '">' + (isTaskBusy ? "" : esc(actionText)) + '</div>' +
+        '<div class="prog">' + esc(prog) + '</div>' +
+        '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div>' +
         '<div class="growth-task-op">' + op + '</div></div>';
     }).join("");
     var btn = "";
@@ -5035,6 +5041,8 @@ async function growthRunAccount(uid, taskCode){
     S.growth = fresh;
     var msg = grew ? "这一项已完成" : "已处理该账号";
     if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
+    if (r && Number(r.credit) > 0) msg += "，到账 " + fmtInt(Number(r.credit)) + " 积分";
+    if (r && Number(r.energy) > 0) msg += "、" + fmtInt(Number(r.energy)) + " 能量";
     if (r && r.failed) msg += "，" + fmtInt(r.failed) + " 项未成功";
     toast("ok", msg, 5200);
   } catch (e) { toast("err", e.message || String(e), 9000); }

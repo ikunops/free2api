@@ -29,10 +29,14 @@ const (
 type GrowthTask struct {
 	TaskCode     string          `json:"task_code"`
 	TaskName     string          `json:"task_name"`
+	Title        string          `json:"title,omitempty"`
 	TaskDesc     string          `json:"task_desc"`
 	AcceptStatus string          `json:"accept_status"`
 	Progress     GrowthProgress  `json:"progress"`
 	Reward       json.RawMessage `json:"reward"`
+	RewardCredit *int64          `json:"reward_credit,omitempty"`
+	RewardEnergy *int64          `json:"reward_energy,omitempty"`
+	HasReward    bool            `json:"has_reward,omitempty"`
 	Raw          json.RawMessage `json:"-"`
 }
 
@@ -76,6 +80,9 @@ func (c *Client) ListGrowthTasks(a *auth.Auth, platform GrowthTaskPlatform) ([]G
 			continue
 		}
 		t.Raw = raw
+		if t.TaskName == "" {
+			t.TaskName = strings.TrimSpace(t.Title)
+		}
 		if t.TaskCode != "" {
 			out = append(out, t)
 		}

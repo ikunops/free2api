@@ -820,6 +820,12 @@ type Client struct {
 	// GlobalEnabled 是否启用 global realm 路由（config global.enabled，缺省 true）。
 	// false 即显式逃生门：即使用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
+	// GatewayBase 本地网关回环地址（仅专家任务真实会话使用）。
+	// 空 = 不启用回环，保持直连上游。由 gateway.Start 按实际 listen 注入。
+	GatewayBase string
+	// GatewayAPIKey 本地网关 API Key（与 config.api_key 相同）；空 = 无鉴权。
+	GatewayAPIKey string
+
 	GlobalEnabled bool
 }
 

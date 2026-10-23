@@ -291,18 +291,27 @@ var growthTaskExecutors = map[string]GrowthTaskExecutor{
 	"playbook_prompt": growthEventExecutor{code: "playbook_prompt", target: 1, build: growthPlaybookEvents},
 	"template_5":      growthEventExecutor{code: "template_5", target: 5, build: growthTemplateEvents},
 	"skill_1":         growthEventExecutor{code: "skill_1", target: 1, build: growthSkillEvents},
-	"expert_5": growthEventExecutor{code: "expert_5", target: 5, build: func(a *auth.Auth, t upstream.GrowthTask, i int) []map[string]any {
-		return growthExpertEvents(a, t, i, false)
+	"Library_read":    growthEventExecutor{code: "Library_read", target: 1, mode: growthReportWeb, build: growthLibraryEvents},
+	"Buddy_App":       growthEventExecutor{code: "Buddy_App", target: 1, mode: growthReportDesktop, build: growthBuddyAppEvents},
+	"RichMeow_Chat":   growthEventExecutor{code: "RichMeow_Chat", target: 1, mode: growthReportDesktop, build: growthRichMeowEvents},
+
+	"Expert_lighthouse": growthExpertChatExecutor{code: "Expert_lighthouse", target: 1, aliases: []string{"腾讯轻量云专家", "lighthouse-ops"}},
+	"expert_use_maidehao": growthExpertChatExecutor{code: "expert_use_maidehao", target: 1, aliases: []string{
+		"卖得好", "中国电商运营专家", "china-ecommerce-operations-expert",
 	}},
-	"Expert_lighthouse": growthEventExecutor{code: "Expert_lighthouse", target: 1, build: func(a *auth.Auth, t upstream.GrowthTask, i int) []map[string]any {
-		return growthExpertEvents(a, t, i, false)
+	"expert_use_shangjia_xuanchuan": growthExpertChatExecutor{code: "expert_use_shangjia_xuanchuan", target: 1, aliases: []string{
+		"商家宣传设计师", "商家宣传页与海报设计师", "promo-page-designer",
 	}},
-	"Expert_team_use_3": growthEventExecutor{code: "Expert_team_use_3", target: 3, build: func(a *auth.Auth, t upstream.GrowthTask, i int) []map[string]any {
-		return growthExpertEvents(a, t, i, true)
+	"expert_use_douyinyin": growthExpertChatExecutor{code: "expert_use_douyinyin", target: 1, aliases: []string{
+		"斗音音", "抖音策略师", "douyin-strategist",
 	}},
-	"Library_read":  growthEventExecutor{code: "Library_read", target: 1, mode: growthReportWeb, build: growthLibraryEvents},
-	"Buddy_App":     growthEventExecutor{code: "Buddy_App", target: 1, mode: growthReportDesktop, build: growthBuddyAppEvents},
-	"RichMeow_Chat": growthEventExecutor{code: "RichMeow_Chat", target: 1, mode: growthReportDesktop, build: growthRichMeowEvents},
+	"expert_use_bowangwang": growthExpertChatExecutor{code: "expert_use_bowangwang", target: 1, aliases: []string{
+		"播旺旺", "直播电商教练", "livestream-ecommerce-coach",
+	}},
+	"WorkBuddy_Valorant": growthExpertChatExecutor{code: "WorkBuddy_Valorant", target: 1, aliases: []string{
+		"无畏契约拼豆专家", "valorant-perler-expert",
+	}},
+	"Expert_team_use_3": growthExpertChatExecutor{code: "Expert_team_use_3", target: 3, team: true},
 }
 
 // RegisterGrowthTaskExecutor 注册可点亮任务执行器（测试和后续模块使用）。
@@ -441,32 +450,6 @@ func growthMiniExpertEvents(a *auth.Auth, task upstream.GrowthTask, i int) []map
 		"type": "send_message", "characterCount": 12, "expertType": meta.ExpertType,
 	}}
 	return events
-}
-
-func growthExpertEvents(a *auth.Auth, task upstream.GrowthTask, i int, team bool) []map[string]any {
-	cid, rid := growthIDs("expert", i)
-	expertType := "agent"
-	name := task.TaskName
-	if name == "" {
-		name = "WorkBuddy Expert"
-	}
-	if team {
-		expertType = "team"
-	}
-	id := "expert-" + growthStableID(a, fmt.Sprintf("%s-%d", task.TaskCode, i))
-	now := time.Now().UnixMilli()
-	return []map[string]any{
-		{"eventCode": "expert_summoned", "timestamp": now, "reportDelay": 0,
-			"id": id, "name": name, "type": expertType, "expertTitle": name,
-			"expertType": expertType, "source": "builtin", "conversationId": cid,
-			"requestId": rid, "userId": a.UID},
-		{"eventCode": "expert_actual_use", "timestamp": now, "reportDelay": 0,
-			"mode": "CLOUD", "id": id, "name": name, "expertTitle": name, "type": "",
-			"expertType": expertType, "source": "builtin", "version": "", "cost": 0,
-			"characterCount": 12, "conversationId": cid, "requestId": rid,
-			"messageId": rid, "requestModelId": "deepseek-v4-flash",
-			"requestModelName": "DeepSeek V4 Flash", "userId": a.UID},
-	}
 }
 
 func growthLibraryEvents(a *auth.Auth, _ upstream.GrowthTask, _ int) []map[string]any {

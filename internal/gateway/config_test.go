@@ -815,3 +815,19 @@ func TestAdminEnabledLoopbackNoKey(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayBaseURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{":7864", "http://127.0.0.1:7864"},
+		{"127.0.0.1:7864", "http://127.0.0.1:7864"},
+		{"0.0.0.0:7864", "http://127.0.0.1:7864"},
+		{"[::]:7864", "http://127.0.0.1:7864"},
+		{"192.0.2.10:7864", "http://192.0.2.10:7864"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := gatewayBaseURL(tc.in); got != tc.want {
+			t.Errorf("gatewayBaseURL(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}

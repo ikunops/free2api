@@ -22,7 +22,7 @@ func TestListGrowthTasksParsesAndMiniprogramHeader(t *testing.T) {
 		platform.Store(r.Header.Get("X-Client-Platform"))
 		authz.Store(r.Header.Get("Authorization"))
 		w.Write([]byte(`{"code":0,"data":{"tasks":[
-			{"task_code":"chat_5","task_name":"对话 5 次","accept_status":"accepted","progress":{"current":2,"target":5}},
+			{"task_code":"chat_5","title":"对话 5 次","accept_status":"accepted","progress":{"current":2,"target":5},"reward_credit":100,"reward_energy":5,"has_reward":true},
 			{"task_code":"","task_name":"bad"},
 			{"task_code":"Sequential_Tasks_1","task_name":"小程序任务","accept_status":"not_accepted","progress":{"current":0,"target":1}}
 		]}}`))
@@ -40,6 +40,9 @@ func TestListGrowthTasksParsesAndMiniprogramHeader(t *testing.T) {
 	}
 	if tasks[0].TaskCode != "chat_5" || tasks[0].Progress.Current != 2 || tasks[0].Progress.Target != 5 {
 		t.Errorf("tasks[0]=%+v", tasks[0])
+	}
+	if tasks[0].TaskName != "对话 5 次" || tasks[0].RewardCredit == nil || *tasks[0].RewardCredit != 100 || tasks[0].RewardEnergy == nil || *tasks[0].RewardEnergy != 5 || !tasks[0].HasReward {
+		t.Errorf("reward fields=%+v", tasks[0])
 	}
 	if got := platform.Load(); got != "miniprogram" {
 		t.Errorf("X-Client-Platform=%v want miniprogram", got)

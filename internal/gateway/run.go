@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -184,6 +185,8 @@ func Start(opts Options) (*Instance, error) {
 		realIPDialDescription(upstream.RealIPDialPolicy()))
 
 	up := upstream.New()
+	up.GatewayBase = gatewayBaseURL(cfg.Listen)
+	up.GatewayAPIKey = cfg.APIKey
 	// 短 RPC 总时长上限（refresh/checkin/balance/FetchModels），语义不变。
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	// 聊天 SSE 首字节前（响应头）上限：cfg 已 normalize（缺省回落 timeout_seconds）。
@@ -415,6 +418,23 @@ func Start(opts Options) (*Instance, error) {
 	}()
 	ok = true
 	return inst, nil
+}
+
+// gatewayBaseURL 把 config.listen 归一为可供本机 HTTP 客户端访问的 base URL。
+// ":7864" / "0.0.0.0:7864" / "[::]:7864" 一律落到 127.0.0.1；显式主机保持不变。
+func gatewayBaseURL(listen string) string {
+	addr := strings.TrimSpace(listen)
+	if addr == "" {
+		return ""
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	} else if strings.HasPrefix(addr, "0.0.0.0:") {
+		addr = "127.0.0.1:" + strings.TrimPrefix(addr, "0.0.0.0:")
+	} else if strings.HasPrefix(addr, "[::]:") {
+		addr = "127.0.0.1:" + strings.TrimPrefix(addr, "[::]:")
+	}
+	return "http://" + addr
 }
 
 // metricsLogDirs 网关流水日志可能落在哪几个目录。两种形态都要覆盖：
