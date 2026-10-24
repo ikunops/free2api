@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"free2api/internal/auth"
 	"free2api/internal/pool"
@@ -61,7 +62,7 @@ func (g *growthStub) server(t *testing.T) *httptest.Server {
 			g.mu.Unlock()
 			raw, _ := json.Marshal(map[string]any{"code": 0, "data": map[string]any{"tasks": tasks}})
 			_, _ = w.Write(raw)
-		case r.Method == http.MethodPost && r.URL.Path == "/v2/activity/growth/tasks/accept":
+		case r.Method == http.MethodPost && (r.URL.Path == "/v2/activity/growth/tasks/accept" || r.URL.Path == "/activity/growth/tasks/accept"):
 			g.mu.Lock()
 			g.accepts[platform]++
 			g.mu.Unlock()
@@ -73,9 +74,12 @@ func (g *growthStub) server(t *testing.T) *httptest.Server {
 			if !strings.HasPrefix(strings.TrimSpace(string(b)), "[") {
 				t.Errorf("report body must be bare array: %s", b)
 			}
-			// /v2/report 不带 X-Client-Platform；小程序事件靠 body.source 区分。
+			// /v2/report 不带 X-Client-Platform；小程序事件靠公共指纹识别。
 			reportPlatform := platform
-			if strings.Contains(string(b), `"source":"mini_program"`) {
+			bodyText := string(b)
+			if strings.Contains(bodyText, `"source":"mini_program"`) ||
+				strings.Contains(bodyText, `"platform":"mini_program"`) ||
+				strings.Contains(bodyText, `"ideType":"WorkBuddy_MP"`) {
 				reportPlatform = "miniprogram"
 			}
 			g.mu.Lock()
@@ -443,5 +447,208 @@ func TestRunGrowthAccountOnlyTarget(t *testing.T) {
 	}
 	if _, err := s.RunGrowthAccountReport(context.Background(), "missing", ""); !IsGrowthAccountNotFound(err) {
 		t.Fatalf("missing uid err=%v", err)
+	}
+}
+
+// TestGrowthSequentialTasks3UsesMiniEventPacing 回归：Sequential_Tasks_3 不能
+// 复用桌面对话的 1.05 秒间隔，也不能走真实 Web 对话。它必须按小程序口径补
+// 差额事件，并遵守 45 秒级防作弊节奏；测试把间隔和抖动都置 0，只验证事件形状/次数。
+func TestGrowthSequentialTasks3UsesMiniEventPacing(t *testing.T) {
+	oldGap, oldMiniGap, oldJitter := growthEventGap, growthMiniChatGap, growthMiniChatJitterFn
+	growthEventGap, growthMiniChatGap = 0, 0
+	growthMiniChatJitterFn = func(*auth.Auth, int) time.Duration { return 0 }
+	t.Cleanup(func() { growthEventGap, growthMiniChatGap, growthMiniChatJitterFn = oldGap, oldMiniGap, oldJitter })
+
+	stub := &growthStub{
+		miniTasks: []upstream.GrowthTask{
+			{TaskCode: "Sequential_Tasks_3", TaskName: "完成 5 次对话", AcceptStatus: "accepted", Progress: upstream.GrowthProgress{Current: 2, Target: 5}},
+		},
+	}
+	stub.onReport = func(platform string, reports int) {
+		if platform == "miniprogram" && reports >= 3 {
+			stub.miniTasks[0].AcceptStatus = "completed"
+			stub.miniTasks[0].Progress.Current = 5
+		}
+	}
+	s := growthTestScheduler(t, stub, &auth.Auth{UID: "u1", AccessToken: "at", Nickname: "CN"})
+
+	rep, err := s.RunGrowthAccountReport(context.Background(), "u1", "Sequential_Tasks_3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Reported != 1 || rep.Claimed != 1 || rep.Failed != 0 {
+		t.Fatalf("report=%+v", rep)
+	}
+	if stub.reports["miniprogram"] != 3 || stub.reports["default"] != 0 {
+		t.Fatalf("mini reports=%v want 3, default must stay 0", stub.reports)
+	}
+	if stub.claims["miniprogram:Sequential_Tasks_3"] != 1 {
+		t.Fatalf("claim=%v", stub.claims)
+	}
+}
+
+// TestGrowthTaskSummaryRespectsExecutorPlatform 面板的 action 必须和执行器
+// 的平台过滤一致。否则会出现“面板显示可帮做，点击后执行器被跳过”，用户
+// 看到按钮却什么也没发生。
+// TestGrowthTaskSummaryKeepsScheduledTaskManualUntilRealProof Sequential_Tasks_4
+// 只有一组自动化事件并不能让上游落完成状态（实测 reported=1 后仍 not_accepted）。
+// 在拿到可复现的真实完成路径前，必须保持 manual，不能给用户假按钮。
+func TestGrowthTaskSummaryRunsScheduledTaskAfterRealProof(t *testing.T) {
+	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
+		{
+			UID: "u1", Nickname: "u1", Realm: "cn", Platform: "miniprogram", OK: true,
+			Tasks: []upstream.GrowthTask{
+				{TaskCode: "Sequential_Tasks_4", TaskName: "创建 1 个定时任务", AcceptStatus: "not_accepted"},
+			},
+		},
+	}}
+	out := GrowthTaskSummary(res)
+	accounts := out["accounts"].([]growthSummaryAccount)
+	if len(accounts) != 1 || len(accounts[0].Tasks) != 1 {
+		t.Fatalf("accounts=%+v", accounts)
+	}
+	if got := accounts[0].Tasks[0].Action; got != "run" {
+		t.Fatalf("Sequential_Tasks_4 action=%q want run after real completion proof", got)
+	}
+}
+
+// TestGrowthSequentialAutomationUsesMPPlatformButDesktopProof 锁定这条任务的
+// 混合口径：列表/accept 属于小程序，完成判据却是桌面 automated_task_create_suc。
+// 2026-10-25 单账号实测 accepted 0/1 → 上报 → completed 1/1。
+func TestGrowthSequentialAutomationUsesMPPlatformButDesktopProof(t *testing.T) {
+	old := growthClaimDelay
+	growthClaimDelay = 0
+	t.Cleanup(func() { growthClaimDelay = old })
+	stub := &growthStub{miniTasks: []upstream.GrowthTask{{
+		TaskCode: "Sequential_Tasks_4", TaskName: "创建 1 个定时任务",
+		AcceptStatus: "not_accepted",
+	}}}
+	s := growthTestScheduler(t, stub, &auth.Auth{UID: "u1", AccessToken: "at", Nickname: "CN"})
+	rep, err := s.RunGrowthAccountReport(context.Background(), "u1", "Sequential_Tasks_4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Reported != 1 {
+		t.Fatalf("report=%+v", rep)
+	}
+	if stub.reports["default"] != 1 || stub.reports["miniprogram"] != 0 {
+		t.Fatalf("scheduled task report must use desktop/default report path, got %v", stub.reports)
+	}
+	if stub.accepts["miniprogram"] != 1 {
+		t.Fatalf("scheduled task accept must use miniprogram identity, got %v", stub.accepts)
+	}
+}
+
+// TestGrowthTaskSummaryMatchesExpertByDisplayNameWhenCodeChanges 上游偶尔会改
+// task_code，但任务展示名仍保留具体专家名；面板不能因此把真实专家任务降级成
+// 手动任务。匹配只认注册的具体别名，且小程序平台仍不能误放行桌面执行器。
+func TestGrowthTaskSummaryMatchesExpertByDisplayNameWhenCodeChanges(t *testing.T) {
+	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
+		{UID: "desktop", Nickname: "desktop", Realm: "cn", Platform: "default", OK: true, Tasks: []upstream.GrowthTask{
+			{TaskCode: "some_new_valorant_code", TaskName: "无畏契约拼豆专家", AcceptStatus: "not_accepted"},
+			{TaskCode: "some_new_ecommerce_code", TaskName: "卖得好", AcceptStatus: "not_accepted"},
+		}},
+		{UID: "mini", Nickname: "mini", Realm: "cn", Platform: "miniprogram", OK: true, Tasks: []upstream.GrowthTask{
+			{TaskCode: "some_new_valorant_code", TaskName: "无畏契约拼豆专家", AcceptStatus: "not_accepted"},
+		}},
+	}}
+	out := GrowthTaskSummary(res)
+	accounts := out["accounts"].([]growthSummaryAccount)
+	byUID := map[string]growthSummaryAccount{}
+	for _, acc := range accounts {
+		byUID[acc.UID] = acc
+	}
+	action := func(uid, code string) string {
+		for _, task := range byUID[uid].Tasks {
+			if task.TaskCode == code {
+				return task.Action
+			}
+		}
+		return ""
+	}
+	if got := action("desktop", "some_new_valorant_code"); got != "run" {
+		t.Fatalf("valorant alias action=%q want run: %+v", got, byUID["desktop"].Tasks)
+	}
+	if got := action("desktop", "some_new_ecommerce_code"); got != "run" {
+		t.Fatalf("maidehao alias action=%q want run: %+v", got, byUID["desktop"].Tasks)
+	}
+	if got := action("mini", "some_new_valorant_code"); got != "manual" {
+		t.Fatalf("mini expert alias action=%q want manual: %+v", got, byUID["mini"].Tasks)
+	}
+}
+
+// TestRunGrowthExecutorMatchesExpertByDisplayNameWhenCodeChanges 执行路径也必须
+// 用同一套别名匹配，不能只在面板显示“可帮做”、点击后却找不到执行器。
+func TestRunGrowthExecutorMatchesExpertByDisplayNameWhenCodeChanges(t *testing.T) {
+	oldClaim, oldAccept, oldGap, oldExec, oldRetry := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay
+	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = 0, 0, 0, 0, 0
+	t.Cleanup(func() {
+		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = oldClaim, oldAccept, oldGap, oldExec, oldRetry
+	})
+	stub := &growthStub{defaultTasks: []upstream.GrowthTask{{TaskCode: "renamed_valorant_code", TaskName: "无畏契约拼豆专家", AcceptStatus: "not_accepted", Progress: upstream.GrowthProgress{Current: 0, Target: 1}}}}
+	s := growthTestScheduler(t, stub, &auth.Auth{UID: "u1", AccessToken: "at", Nickname: "账号"})
+	oldWeb := growthWebChatFn
+	oldLocal := growthLocalExpertFn
+	t.Cleanup(func() { growthWebChatFn = oldWeb; growthLocalExpertFn = oldLocal })
+	growthWebChatFn = func(context.Context, *upstream.Client, *auth.Auth, string, string, map[string]any) (upstream.GrowthChatReply, error) {
+		return upstream.GrowthChatReply{ConversationID: "conv-real", Text: "done"}, nil
+	}
+	growthLocalExpertFn = func(string) (upstream.GrowthMarketExpert, bool) {
+		return upstream.GrowthMarketExpert{ExpertID: "ex_real", DisplayNameZH: "无畏契约拼豆专家", ExpertType: "agent"}, true
+	}
+	rep, err := s.RunGrowthAccountReport(context.Background(), "u1", "renamed_valorant_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Reported != 1 {
+		t.Fatalf("renamed expert task must still execute by display name: %+v", rep)
+	}
+}
+
+func TestGrowthTaskSummaryRespectsExecutorPlatform(t *testing.T) {
+	res := GrowthScanResult{Accounts: []GrowthTaskStatus{
+		{
+			UID: "mini", Nickname: "mini", Realm: "cn", Platform: "miniprogram", OK: true,
+			Tasks: []upstream.GrowthTask{
+				{TaskCode: "Sequential_Tasks_3", TaskName: "小程序对话", AcceptStatus: "accepted"},
+				{TaskCode: "Expert_lighthouse", TaskName: "桌面专家", AcceptStatus: "accepted"},
+			},
+		},
+		{
+			UID: "desktop", Nickname: "desktop", Realm: "cn", Platform: "default", OK: true,
+			Tasks: []upstream.GrowthTask{
+				{TaskCode: "Expert_lighthouse", TaskName: "桌面专家", AcceptStatus: "accepted"},
+				{TaskCode: "Sequential_Tasks_3", TaskName: "小程序对话", AcceptStatus: "accepted"},
+			},
+		},
+	}}
+	out := GrowthTaskSummary(res)
+	accounts, ok := out["accounts"].([]growthSummaryAccount)
+	if !ok || len(accounts) != 2 {
+		t.Fatalf("accounts=%#v", out["accounts"])
+	}
+	byUID := map[string]growthSummaryAccount{}
+	for _, acc := range accounts {
+		byUID[acc.UID] = acc
+	}
+	action := func(uid, code string) string {
+		for _, task := range byUID[uid].Tasks {
+			if task.TaskCode == code {
+				return task.Action
+			}
+		}
+		return ""
+	}
+	if got := action("mini", "Sequential_Tasks_3"); got != "run" {
+		t.Fatalf("mini Sequential_Tasks_3 action=%q want run: %+v", got, byUID["mini"].Tasks)
+	}
+	if got := action("desktop", "Expert_lighthouse"); got != "run" {
+		t.Fatalf("desktop Expert_lighthouse action=%q want run: %+v", got, byUID["desktop"].Tasks)
+	}
+	if got := action("mini", "Expert_lighthouse"); got != "manual" {
+		t.Fatalf("mini Expert_lighthouse action=%q want manual: %+v", got, byUID["mini"].Tasks)
+	}
+	if got := action("desktop", "Sequential_Tasks_3"); got != "manual" {
+		t.Fatalf("desktop Sequential_Tasks_3 action=%q want manual: %+v", got, byUID["desktop"].Tasks)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,10 +41,64 @@ const (
 	growthReportWeb     growthReportMode = "web"
 )
 
+// growthMiniChatGap 是小程序“有效对话”事件的最小间隔。参考实现实测：
+// 2 秒连发会被上游反作弊回滚，45 秒 + 0~10 秒抖动才稳定入账。这里不把
+// mini 事件冒充真实 Web 对话；它只用于用户明确点击的“补进度”。
+var growthMiniChatGap = 45 * time.Second
+
+// growthMiniChatJitterFn 可被测试替换，避免测试真的等待抖动。
+var growthMiniChatJitterFn = growthMiniChatJitter
+
+// growthMiniChatExecutor 处理 Sequential_Tasks_3：小程序口径按差额补报
+// chat_request_send 事件。它不是真实小程序 UI 对话，因此 UI 上必须标注为
+// “补进度”；调用方仍会回读 accept_status，只有 completed 才 claim。
+type growthMiniChatExecutor struct {
+	code string
+}
+
+func (e growthMiniChatExecutor) Code() string   { return e.code }
+func (e growthMiniChatExecutor) isMini() bool   { return true }
+func (e growthMiniChatExecutor) maxTarget() int { return 5 }
+
+// growthMiniChatJitter 给每一条补报叠加 0~10 秒抖动。种子含纳秒时间，避免多个
+// 账号/多轮补报形成固定节拍；它只用于规避上游反作弊，不影响任务判定。
+func growthMiniChatJitter(a *auth.Auth, i int) time.Duration {
+	seed := fmt.Sprintf("%s:%d:%d", a.UID, i, time.Now().UnixNano())
+	sum := md5.Sum([]byte(seed))
+	ms := int64(sum[0])<<8 | int64(sum[1])
+	return time.Duration(ms%10000) * time.Millisecond
+}
+func (e growthMiniChatExecutor) Run(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) error {
+	target := task.Progress.Target
+	if target <= 0 {
+		target = 5
+	}
+	remain := target - task.Progress.Current
+	if remain <= 0 {
+		return nil
+	}
+	if remain > 20 {
+		remain = 20
+	}
+	for i := 0; i < remain; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !sleepCtx(ctx, growthMiniChatGap+growthMiniChatJitterFn(a, i)) {
+			return ctx.Err()
+		}
+		cid := upstream.NewGrowthConversationID("growth-mp")
+		ev := upstream.NewGrowthMiniChatEvent(cid)
+		if err := c.ReportGrowthMPEvents(a, []map[string]any{ev}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // growthChatExecutor 通过 chat_request_send 事件点亮“真实对话 N 次”类任务。
-// mini=true 走小程序口径（任务列表/accept/claim 带 X-Client-Platform），事件形状
-// 使用 source=mini_program。事件只上报，不直接 claim；完成后由 RunGrowthNow
-// 统一回读 accept_status，只有 completed 才领取。
+// mini=true 走独立的小程序事件与上报头；桌面路径才发起真实 Web 对话。事件只上报，
+// 不直接 claim；完成后由 RunGrowthNow 统一回读 accept_status，只有 completed 才领取。
 type growthChatExecutor struct {
 	code      string
 	target    int
@@ -89,12 +144,18 @@ func (e growthChatExecutor) Run(ctx context.Context, c *upstream.Client, a *auth
 				cid = reply.ConversationID
 			}
 		}
-		ev := growthChatEvent(a, cid, modelID, modelName, e.mini)
-		if chatErr == nil && reply.Text != "" {
-			ev["inputLength"] = len([]rune(prompt))
+		var reportErr error
+		if e.mini {
+			reportErr = c.ReportGrowthMPEvents(a, []map[string]any{upstream.NewGrowthMiniChatEvent(cid)})
+		} else {
+			ev := growthChatEvent(a, cid, modelID, modelName)
+			if chatErr == nil && reply.Text != "" {
+				ev["inputLength"] = len([]rune(prompt))
+			}
+			reportErr = c.ReportGrowthEvents(a, []map[string]any{ev})
 		}
-		if err := c.ReportGrowthEvents(a, []map[string]any{ev}); err != nil {
-			return err
+		if reportErr != nil {
+			return reportErr
 		}
 		if chatErr != nil {
 			return fmt.Errorf("真实对话失败（未上报任务事件）: %w", chatErr)
@@ -151,10 +212,12 @@ func (e growthEventExecutor) Run(ctx context.Context, c *upstream.Client, a *aut
 			return nil
 		}
 		var err error
-		switch e.mode {
-		case growthReportDesktop:
+		switch {
+		case e.mini:
+			err = c.ReportGrowthMPEvents(a, events)
+		case e.mode == growthReportDesktop:
 			err = c.ReportGrowthDesktopEvents(a, events)
-		case growthReportWeb:
+		case e.mode == growthReportWeb:
 			err = c.ReportGrowthWebEvents(a, events)
 		default:
 			err = c.ReportGrowthEvents(a, events)
@@ -211,8 +274,8 @@ func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyT
 				if t.AcceptStatus == "completed" || t.AcceptStatus == "claimed" {
 					continue
 				}
-				ex, ok := growthTaskExecutors[t.TaskCode]
-				if !ok || ex == nil {
+				ex := growthExecutorForTask(t)
+				if ex == nil {
 					continue
 				}
 				// 小程序任务必须从小程序口径列表里触发，避免普通口径误报。
@@ -260,7 +323,51 @@ func growthExecutorMatchesPlatform(e GrowthTaskExecutor, platform upstream.Growt
 	return !mini
 }
 
-func growthChatEvent(a *auth.Auth, cid, modelID, modelName string, mini bool) map[string]any {
+// growthTaskMatcher 允许执行器在上游 task_code 改名时，仍按任务展示名匹配。
+// 只允许具体别名匹配，不能用泛化的“专家”二字放行。
+type growthTaskMatcher interface {
+	matchesTask(upstream.GrowthTask) bool
+}
+
+// growthExecutorForTask 先按 task_code 精确匹配，再按具体展示名/描述匹配。
+// 注册表是 map，遍历前排序，避免多个别名同时命中时结果随机。
+func growthExecutorForTask(t upstream.GrowthTask) GrowthTaskExecutor {
+	if ex := growthTaskExecutors[strings.TrimSpace(t.TaskCode)]; ex != nil {
+		return ex
+	}
+	keys := make([]string, 0, len(growthTaskExecutors))
+	for code := range growthTaskExecutors {
+		keys = append(keys, code)
+	}
+	sort.Strings(keys)
+	for _, code := range keys {
+		ex := growthTaskExecutors[code]
+		if matcher, ok := ex.(growthTaskMatcher); ok && matcher.matchesTask(t) {
+			return ex
+		}
+	}
+	return nil
+}
+
+func growthNormalizeTaskText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	replacer := strings.NewReplacer(
+		" ", "", "\t", "", "\n", "", "\r", "",
+		"「", "", "」", "", "《", "", "》", "",
+		"\"", "", "'", "", "·", "", "-", "", "_", "",
+		":", "", "：", "", "，", "", ",", "", ".", "", "。", "",
+		"(", "", ")", "", "（", "", "）", "",
+	)
+	return replacer.Replace(s)
+}
+
+func growthTaskTextMatches(value, alias string) bool {
+	value = growthNormalizeTaskText(value)
+	alias = growthNormalizeTaskText(alias)
+	return alias != "" && strings.Contains(value, alias)
+}
+
+func growthChatEvent(a *auth.Auth, cid, modelID, modelName string) map[string]any {
 	now := time.Now().UnixMilli()
 	ev := map[string]any{
 		"eventCode": "chat_request_send", "timestamp": now, "reportDelay": 0,
@@ -275,13 +382,6 @@ func growthChatEvent(a *auth.Auth, cid, modelID, modelName string, mini bool) ma
 		"traceId": "", "rootRequestId": cid, "parentConversationId": cid,
 		"agentName": "default", "agentType": "conversation", "userId": a.UID,
 	}
-	if mini {
-		ev["source"] = "mini_program"
-		ev["ideName"] = "wx_app_cloud"
-		ev["ideType"] = "WorkBuddy_MP"
-		ev["extName"] = "workbuddy-mp"
-		ev["extVersion"] = "2.4.0"
-	}
 	return ev
 }
 
@@ -292,6 +392,8 @@ var growthTaskExecutors = map[string]GrowthTaskExecutor{
 	"Model_chat_GLM5.2":  growthChatExecutor{code: "Model_chat_GLM5.2", target: 1, modelID: "glm-5.2", modelName: "GLM-5.2"},
 	"Sequential_Tasks_1": growthChatExecutor{code: "Sequential_Tasks_1", target: 1, mini: true},
 	"Sequential_Tasks_2": growthEventExecutor{code: "Sequential_Tasks_2", target: 1, mini: true, prepare: prepareGrowthMiniExpert, build: growthMiniExpertEvents},
+	"Sequential_Tasks_3": growthMiniChatExecutor{code: "Sequential_Tasks_3"},
+	"Sequential_Tasks_4": growthSequentialAutomationExecutor{code: "Sequential_Tasks_4"},
 
 	"create_canvas":   growthEventExecutor{code: "create_canvas", target: 1, build: growthCanvasEvents},
 	"automation_1":    growthEventExecutor{code: "automation_1", target: 1, build: growthAutomationEvents},
@@ -354,6 +456,66 @@ func growthCanvasEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string
 			"id": "wbx-canvas-" + growthStableID(a, fmt.Sprintf("canvas-%d", i)), "cost": 0,
 			"isSuccessful": true, "conversationId": cid, "requestId": rid, "userId": a.UID},
 	}
+}
+
+// growthSequentialAutomationExecutor 处理 Sequential_Tasks_4（小程序「创建 1 个
+// 定时任务」）。任务列表/accept 走小程序口径，但服务端判据认桌面端的
+// automated_task_create_suc 事件；2026-10-25 00:00 解锁后单账号实测：
+// accepted 0/1 → 上报一次 → completed 1/1 → claim +100c +5e。
+//
+// 它必须显式声明“小程序平台 + 桌面上报”两套口径，不能复用 growthEventExecutor：
+// 后者的 mini 同时决定平台匹配和上报路径，无法表达这种组合。
+type growthSequentialAutomationExecutor struct {
+	code string
+}
+
+func (e growthSequentialAutomationExecutor) Code() string   { return e.code }
+func (e growthSequentialAutomationExecutor) isMini() bool   { return true }
+func (e growthSequentialAutomationExecutor) maxTarget() int { return 1 }
+
+func (e growthSequentialAutomationExecutor) Run(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) error {
+	target := task.Progress.Target
+	if target <= 0 {
+		target = 1
+	}
+	if task.Progress.Current >= target {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.ReportGrowthDesktopEvents(a, growthScheduledAutomationEvents(a, task, 0))
+}
+
+// growthScheduledAutomationEvents 复刻官方桌面端创建定时任务成功的事件字段。
+// 字段名以参考实现抓到的真实事件为准；判据只看 automated_task_create_suc，
+// 但完整字段能避免上游因缺字段而静默丢弃。
+func growthScheduledAutomationEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
+	cid, rid := growthIDs("scheduled-automation", i)
+	now := time.Now().UnixMilli()
+	return []map[string]any{{
+		"eventCode":         "automated_task_create_suc",
+		"timestamp":         now,
+		"reportDelay":       0,
+		"name":              "每日资讯简报",
+		"source":            "manually",
+		"modelId":           "fast-model",
+		"modelIsThinking":   true,
+		"expertId":          "",
+		"expertMarketplace": "",
+		"connectorIds":      "",
+		"connectorCount":    0,
+		"skills":            "",
+		"skillCount":        0,
+		"scheduleType":      "once",
+		"pushToWeChat":      false,
+		"pushToWecomBot":    false,
+		"conversationId":    cid,
+		"requestId":         rid,
+		"prompt":            "每天 7 点提醒我读书",
+		"schedule":          map[string]any{"type": "once", "time": "07:00"},
+		"userId":            a.UID,
+	}}
 }
 
 func growthAutomationEvents(a *auth.Auth, _ upstream.GrowthTask, i int) []map[string]any {
