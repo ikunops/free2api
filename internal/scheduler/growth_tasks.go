@@ -92,6 +92,7 @@ type GrowthAccountRunReport struct {
 	Claimed  int       `json:"claimed"`
 	Already  int       `json:"already"`
 	Failed   int       `json:"failed"`
+	Errors   []string  `json:"errors,omitempty"`
 	Credit   int64     `json:"credit,omitempty"`
 	Energy   int64     `json:"energy,omitempty"`
 }
@@ -258,7 +259,7 @@ var growthClaimRetryDelay = 8 * time.Second
 func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 	growthTaskMu.Lock()
 	defer growthTaskMu.Unlock()
-	reported := s.runGrowthExecutorsLocked(ctx, "", "")
+	reported, execErrors := s.runGrowthExecutorsLocked(ctx, "", "")
 	rep := s.claimCompletedGrowthTasksLocked(ctx, false, "")
 	if len(rep.Results) == 0 && reported > 0 && growthClaimRetryDelay > 0 {
 		select {
@@ -285,6 +286,9 @@ func (s *Scheduler) RunGrowthNowReport(ctx context.Context) GrowthClaimReport {
 		}
 	}
 	log.Printf("growth scan+claim: reported=%d claimed=%d already=%d failed=%d", reported, claimed, already, failed)
+	for _, msg := range execErrors {
+		log.Printf("WARN: growth run: %s", msg)
+	}
 	return rep
 }
 
@@ -305,9 +309,23 @@ func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid, taskCode st
 		return rep, err
 	}
 	rep.Nickname = st.Nickname
-	reported := s.runGrowthExecutorsLocked(ctx, uid, taskCode)
+	reported, execErrors := s.runGrowthExecutorsLocked(ctx, uid, taskCode)
 	claim := s.claimCompletedGrowthTasksLocked(ctx, false, uid)
+	// WorkBuddy 的完成状态异步落库：事件刚上报时立即回读可能仍是
+	// not_accepted。单项操作也等一个短窗口再回读，避免用户看到“做了但没完成”。
+	if len(claim.Results) == 0 && reported > 0 && growthClaimRetryDelay > 0 {
+		select {
+		case <-time.After(growthClaimRetryDelay):
+		case <-ctx.Done():
+			rep.Reported = reported
+			rep.Errors = append(rep.Errors, execErrors...)
+			rep.Finished = time.Now()
+			return rep, nil
+		}
+		claim = s.claimCompletedGrowthTasksLocked(ctx, false, uid)
+	}
 	rep.Reported = reported
+	rep.Errors = append(rep.Errors, execErrors...)
 	for _, r := range claim.Results {
 		switch r.Status {
 		case "claimed":
@@ -318,6 +336,7 @@ func (s *Scheduler) RunGrowthAccountReport(ctx context.Context, uid, taskCode st
 			rep.Already++
 		case "failed":
 			rep.Failed++
+			rep.Errors = append(rep.Errors, r.Code+": "+r.Error)
 		}
 	}
 	rep.Finished = time.Now()

@@ -596,15 +596,16 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-assets .urgent{border-color:rgba(255,165,0,.34);color:var(--warn-fg)}
 .growth-act{justify-self:end}
 .growth-tasks{border-top:1px solid var(--line2);padding:3px 12px 8px}
-.growth-task{display:grid;grid-template-columns:minmax(0,1fr) 72px 96px 84px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
+.growth-task{display:grid;grid-template-columns:minmax(0,1fr) 72px 88px 96px 84px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
 .growth-task:last-child{border-bottom:0}
 .growth-task-main{min-width:0}
 .growth-task .tn{font-weight:500;color:var(--fg);overflow-wrap:anywhere}
 .growth-task .td{font-size:11px;color:var(--fg3);margin-top:2px;overflow-wrap:anywhere}
-.growth-reward{display:inline-flex;align-items:center;gap:5px;vertical-align:2px;margin-left:6px;white-space:nowrap;font-size:10.5px;color:var(--fg3);font-variant-numeric:tabular-nums}
-.growth-reward span{padding:1px 6px;border:1px solid var(--line2);border-radius:999px}
-.growth-reward .credit{color:var(--warn-fg);border-color:var(--warn-line);background:var(--warn-bg)}
-.growth-reward .energy{color:var(--acc-fg);border-color:var(--acc-bg);background:var(--acc-bg)}
+
+.growth-task-reward{display:flex;align-items:center;justify-content:flex-end;gap:4px;white-space:nowrap;font-size:11px;font-variant-numeric:tabular-nums}
+.growth-task-reward .credit{color:var(--warn-fg)}
+.growth-task-reward .energy{color:var(--acc-fg)}
+.growth-task-reward-empty{color:var(--fg3)}
 .growth-task .prog{text-align:right;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
 .growth-task .act{text-align:right;white-space:nowrap;color:var(--fg3)}
 .growth-task .act.run{color:var(--acc-fg)}
@@ -616,14 +617,17 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-progress{height:4px;width:120px;border-radius:999px;background:var(--line2);overflow:hidden;flex:none}
 .growth-progress>span{display:block;height:100%;background:var(--acc);border-radius:inherit;transition:width .25s ease}
 .growth-facts b{color:var(--fg2);font-variant-numeric:tabular-nums}
-.growth-btn-spin{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--line2);border-radius:7px;color:var(--acc-fg)}
+.growth-task-btn{display:inline-flex;align-items:center;justify-content:center;min-width:70px;height:28px;padding:0 9px}
+.growth-task-btn:disabled{cursor:default;opacity:1}
+.growth-task-btn-label{display:inline-block}
+.growth-btn-spin{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:0;border-radius:0;color:var(--acc-fg)}
 .growth-btn-spin svg{width:14px;height:14px;animation:spin .75s linear infinite}
 .growth-empty{padding:10px 12px;color:var(--fg3);font-size:12px}
 @media(max-width:760px){
   .growth-head{grid-template-columns:minmax(0,1fr) 88px;gap:8px;padding-right:8px}
   .growth-det>summary{gap:8px;padding:9px 8px}
   .growth-count{gap:8px}
-  .growth-task{grid-template-columns:minmax(0,1fr) 64px 84px 76px;gap:8px}
+  .growth-task{grid-template-columns:minmax(0,1fr) 60px 78px 88px 76px;gap:8px}
   .growth-task .td{display:none}
 }
 /* 折叠卡片（Codex / ZCode 一键接入）：open 类挂在 .card.fold 自己身上，
@@ -1014,6 +1018,18 @@ function render(opt){
   var keepListTop = 0, l0 = $("#mList");
   if (l0) keepListTop = l0.scrollTop;
   var keepPageTop = window.scrollY || window.pageYOffset || 0;
+  // <details> 的 open 状态是 DOM 状态，不是业务数据。render() 换掉节点后，
+  // 如果只依赖 toggle 事件，轮询触发的重画会把用户展开的账号重新折叠。
+  // 在重画前把真实 DOM 状态同步回持久层，保证 20 秒轮询后仍然展开。
+  if (S.tab === "runtime"){
+    $$("details.growth-det").forEach(function(d){
+      var uid = d.getAttribute("data-growth-uid") || "";
+      if (!uid) return;
+      if (d.open) S.growthOpen[uid] = true;
+      else delete S.growthOpen[uid];
+    });
+    saveGrowthOpen();
+  }
   var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, stats: viewStats, runtime: viewRuntime, settings: viewSettings, help: viewHelp }[S.tab] || viewOverview;
   var down = DESKTOP && S.desk && !(S.desk.running || S.desk.external);
   if (down && S.tab !== "overview" && S.tab !== "help"){
@@ -2691,7 +2707,7 @@ function viewOutput(){
   var avail = o.available_models || [];
   var entAvail = entitledOf(avail);
   var sel = S.modelSel || {};
-  var unentAvail = avail.filter(function(m){ return m.entitled === false; });
+  var unentAvail = avail.filter(function(m){ return m.entitled === false || m.route_available === false; });
   var modelBody;
   if (!avail.length){
     modelBody = '<div class="empty">暂时没有可勾的模型：池里需要有健康账号，网关才能从上游拉到模型表。</div>';
@@ -2716,13 +2732,13 @@ function viewOutput(){
       // 活动只送 glm-5.3-flash，可上游 /models 照样列 11 个 GLM）。默认收进折叠区：
       // 「可用模型 N 个」数的是真有额度的那些，未授权的另标一个数，想看能展开。
       var ent = entitledOf(g);
-      var unent = g.filter(function(m){ return m.entitled === false; });
+      var unent = g.filter(function(m){ return m.entitled === false || m.route_available === false; });
       var gopen = !!S.mgroupOpen[pk];
       var head = '<div class="mgroup tog' + (gopen ? " open" : "") + '" data-action="mgroup-toggle" ' +
         'data-g="' + esc(pk) + '" title="点击展开 / 收起这个来源的模型">' +
         '<span><span class="mcaret">\u25B8</span><b>' + esc(groupName) + '</b> · 可用模型 ' +
         ent.length + ' 个' + (unent.length ? '<span class="tag mut" style="margin-left:6px">另有 ' +
-        unent.length + ' 个未授权</span>' : "") +
+        unent.length + ' 个不可用</span>' : "") +
         '</span><span class="hint" style="margin:0" data-gcount="' + esc(pk) + '">' +
         gcountText(ent, unent, sel) + '</span></div>';
       var rowOf = function(m){
@@ -2735,8 +2751,9 @@ function viewOutput(){
         // 补一枚「免费」标记，否则光看行看不出它扣不扣积分。
         else if (m.free) bits.push('<span class="tag ok">免费</span>');
         if (m.is_default) bits.push('<span class="tag ok">默认</span>');
-        var un = m.entitled === false;
-        if (un) bits.push('<span class="tag mut">未授权</span>');
+        var un = m.entitled === false || m.route_available === false;
+        if (m.entitled === false) bits.push('<span class="tag mut">未授权</span>');
+        if (m.route_available === false) bits.push('<span class="tag mut" title="' + esc(m.route_reason || "static route unavailable") + '">不可路由</span>');
         // auto：保存清单之后上游才新增的型号，被基线机制自动放行（不是用户亲手勾的）。
         // 必须显式标出来：否则「我明明没勾它怎么出去了」会变成一个查不出来的问题。
         if (m.auto) bits.push('<span class="tag mut" title="保存这份清单之后上游新增的型号，已自动放行；不需要就取消勾选再保存">新增</span>');
@@ -2748,7 +2765,7 @@ function viewOutput(){
         var mprod = (m.producer || "workbuddy") + (m.realm ? "/" + m.realm : "");
         return '<label class="mrow' + (on ? "" : " off") + (un ? " unent" : "") + (paid ? " paid" : "") + '"' +
           ' data-msearch="' + esc(hay.toLowerCase()) + '" data-mprod="' + esc(mprod) + '" data-mfree="' + (m.free ? "1" : "0") + '">' +
-          '<input type="checkbox" data-model="' + esc(key) + '"' + (on ? " checked" : "") + '>' +
+          '<input type="checkbox" data-model="' + esc(key) + '"' + (on ? " checked" : "") + (m.entitled === false || m.route_available === false ? " disabled" : "") + '>' +
           '<span class="mid mono">' + esc(m.full_id) + '</span>' +
           '<span class="mname hint">' + esc(m.name || "") + '</span>' +
           '<span class="mbits">' + bits.join("") + '</span><span class="mmeta">' + modelBitsHtml(m) + '</span></label>';
@@ -2801,7 +2818,7 @@ function viewOutput(){
         '<label class="inlinechk" title="只看不消耗积分的模型（opencode Zen 目录 79 个里大部分是收费的，勾上后只留免费层）">' +
           '<input type="checkbox" id="onlyFree"' + (S.onlyFree ? ' checked' : '') + '>只看免费</label>' +
         '<label class="inlinechk" title="上游目录里有、号池任何号都没额度的模型（默认收起）">' +
-          '<input type="checkbox" id="showUnent"' + (S.showUnent ? ' checked' : '') + '>显示未授权</label>' +
+          '<input type="checkbox" id="showUnent"' + (S.showUnent ? ' checked' : '') + '>显示不可用</label>' +
         '<label class="inlinechk" title="勾上：国内版与国际版（wba）各用一把开关，同名型号互不影响；取消：裸名字一把开关同时管两域（旧清单语义）">' +
           '<input type="checkbox" id="realmScoped"' + (S.realmScoped ? ' checked' : '') + '>国际版单独控制</label>' +
         '<span class="grow"></span>' +
@@ -3558,7 +3575,7 @@ function initModelSel(){
   if (S.modelSel) return;
   var avail = (S.out && S.out.available_models) || [];
   var sel = {};
-  avail.forEach(function(m){ sel[m.key || m.id] = !!m.selected; });
+  avail.forEach(function(m){ sel[m.key || m.id] = !!m.selected && m.entitled !== false && m.route_available !== false; });
   S.modelSel = sel;
 }
 async function loadModels(){
@@ -4061,19 +4078,26 @@ function growthCard(){
       var rewards = [];
       if (Number(t.reward_credit) > 0) rewards.push('<span class="credit">+' + fmtInt(Number(t.reward_credit)) + ' 积分</span>');
       if (Number(t.reward_energy) > 0) rewards.push('<span class="energy">+' + fmtInt(Number(t.reward_energy)) + ' 能量</span>');
-      var reward = rewards.length ? '<span class="growth-reward">' + rewards.join("") + '</span>' : "";
+
+      var rewardCell = rewards.length
+        ? rewards.join("")
+        : '<span class="growth-task-reward-empty">—</span>';
       var tk = a.uid + "|" + (t.task_code || "");
       var isTaskBusy = taskBusy === tk;
       var op = "";
       if (action === "run" || action === "claim"){
-        op = isTaskBusy
-          ? '<span class="growth-btn-spin" title="处理中">' + svg("refresh") + '</span>'
-          : '<button class="tiny" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '">' + (action === "claim" ? "领取" : "做这一项") + '</button>';
+        var actionLabel = action === "claim" ? "领取" : "做这一项";
+        op = '<button class="tiny growth-task-btn" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '"' + (isTaskBusy ? ' disabled' : '') + '>' +
+          (isTaskBusy
+            ? '<span class="growth-btn-spin" title="处理中">' + svg("refresh") + '</span>'
+            : '<span class="growth-task-btn-label">' + actionLabel + '</span>') +
+          '</button>';
       }
-      var main = '<div class="tn">' + esc(taskTitle) + reward + '</div>' + taskDesc;
+      var main = '<div class="tn">' + esc(taskTitle) + '</div>' + taskDesc;
       return '<div class="growth-task' + (isTaskBusy ? " is-busy" : "") + '">' +
         '<div class="growth-task-main">' + main + '</div>' +
         '<div class="prog">' + esc(prog) + '</div>' +
+        '<div class="growth-task-reward" title="完成并领取后到账">' + rewardCell + '</div>' +
         '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div>' +
         '<div class="growth-task-op">' + op + '</div></div>';
     }).join("");
@@ -4689,8 +4713,9 @@ function mgroupKeys(){
 function setModelSel(fn){
   var avail = (S.out && S.out.available_models) || [];
   var sel = {};
-  // 未授权的行不参与「全选/只留默认」：它们是目录残留，不是这个号池的能力。
-  avail.forEach(function(m){ sel[m.key || m.id] = (m.entitled === false) ? false : !!fn(m); });
+  // 未授权 / 不可路由的行不参与「全选/只留默认」：它们看得见，但不是这个号池
+  // 现在真能出流的能力，复选框也已禁用。
+  avail.forEach(function(m){ sel[m.key || m.id] = (m.entitled === false || m.route_available === false) ? false : !!fn(m); });
   S.modelSel = sel;
   S.modelDirty = true; // 用户动过草稿：热切换「国际版单独控制」时别用服务端回显把它冲掉
   render();
@@ -4729,24 +4754,24 @@ function loadMgroupOpen(){
   } catch (e) {}
   return {};
 }
-/* entitledOf 只留「号池真的有额度」的模型（后端 entitled 字段；缺省视为有额度）。
-   计数与「全选」都按它走：未授权的行看得见、能勾，但不该混进默认口径。 */
+/* entitledOf 只留真正可发布的模型：后端 entitled 与 route_available 缺省都视为
+   可用（非 ZCode 来源没有 route 字段）；任一项明确为 false 都不能勾。 */
 function entitledOf(list){
-  return (list || []).filter(function(m){ return m.entitled !== false; });
+  return (list || []).filter(function(m){ return m.entitled !== false && m.route_available !== false; });
 }
 /* gcountText 一组模型的「已勾」文案。分母只数真有额度的（可用模型 N 个那个口径）；
    未授权那些勾上了单独报一个数——它们不在分母里，不单独说就看不见自己勾了什么。 */
 function gcountText(ent, unent, sel){
   var gsel = (ent || []).filter(function(m){ return sel[m.key || m.id]; }).length;
   var usel = (unent || []).filter(function(m){ return sel[m.key || m.id]; }).length;
-  return "已勾 " + gsel + " / " + (ent || []).length + (usel ? " · 另勾 " + usel + " 未授权" : "");
+  return "已勾 " + gsel + " / " + (ent || []).length + (usel ? " · 另勾 " + usel + " 不可用" : "");
 }
 /* updModelCount 勾选数就地更新（不整页重渲染，避免滚动位置被冲掉）：
    顶部总计数 + 每个分组表头那行「已勾 x / y」一起刷。 */
 function updModelCount(){
   var avail = (S.out && S.out.available_models) || [];
   var sel = S.modelSel || {};
-  var unentOf = function(list){ return list.filter(function(m){ return m.entitled === false; }); };
+  var unentOf = function(list){ return list.filter(function(m){ return m.entitled === false || m.route_available === false; }); };
   var el = $("#mSelCount");
   if (el) el.textContent = gcountText(entitledOf(avail), unentOf(avail), sel);
   // 分组表头用 render() 同一套键（producer + realm）重算，别让表头停在旧数字上。
@@ -5039,12 +5064,22 @@ async function growthRunAccount(uid, taskCode){
     render();
     var fresh = await api("/admin/growth/tasks");
     S.growth = fresh;
-    var msg = grew ? "这一项已完成" : "已处理该账号";
-    if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
-    if (r && Number(r.credit) > 0) msg += "，到账 " + fmtInt(Number(r.credit)) + " 积分";
-    if (r && Number(r.energy) > 0) msg += "、" + fmtInt(Number(r.energy)) + " 能量";
-    if (r && r.failed) msg += "，" + fmtInt(r.failed) + " 项未成功";
-    toast("ok", msg, 5200);
+    var errs = (r && Array.isArray(r.errors)) ? r.errors : [];
+    var reported = Number(r && r.reported) || 0;
+    var ok = grew || (r && (Number(r.claimed) > 0 || Number(r.already) > 0)) || (!taskCode && reported > 0);
+    var msg;
+    if (ok){
+      msg = grew ? "这一项已完成" : (taskCode ? "已提交这一项，等待上游确认" : "已处理该账号");
+      if (errs.length) msg = (taskCode ? "这一项已提交，但有 " + fmtInt(errs.length) + " 条失败" : "处理完成，但有 " + fmtInt(errs.length) + " 条失败");
+      if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
+      if (r && Number(r.credit) > 0) msg += "，到账 " + fmtInt(Number(r.credit)) + " 积分";
+      if (r && Number(r.energy) > 0) msg += "、" + fmtInt(Number(r.energy)) + " 能量";
+      if (r && r.failed) msg += "，" + fmtInt(r.failed) + " 项领取失败";
+      toast("ok", msg, 6500);
+    } else {
+      var reason = errs.length ? errs[0] : "上游没有返回可确认的结果";
+      toast("err", (taskCode ? "这一项未完成：" : "没有可执行的任务：") + reason, 10000);
+    }
   } catch (e) { toast("err", e.message || String(e), 9000); }
   finally { S.growthAccountBusy = ""; S.growthTaskBusy = ""; render(); }
 }

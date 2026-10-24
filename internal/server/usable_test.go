@@ -3,6 +3,7 @@ package server
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"free2api/internal/auth"
 	"free2api/internal/pool"
@@ -27,7 +28,7 @@ func usableOf(t *testing.T, h *Handler, producer string) (total, healthy, usable
 // 线上症状：zcode 7 个号状态机全健康 → 旧实现显示可用 7，但套餐只给其中一个号发了
 // glm-5.3-flash，真正能出流量的只有 1 个。这里锚定按来源分的判定：
 //   - workbuddy：目录里有免费模型 → 健康号即可用（credits 为 0 也算）；
-//   - zcode：看该号自己的套餐权益，不是号池并集；
+//   - zcode：该号自己的套餐权益 + 近期真实 chat 成功，二者缺一不可；
 //   - opencode / kilo：匿名免费层，健康即可用。
 func TestProducerUsableCounts(t *testing.T) {
 	seedFreeCatalog(t) // CN 目录含 hy3-free → workbuddy 走「有免费模型」分支
@@ -35,6 +36,7 @@ func TestProducerUsableCounts(t *testing.T) {
 		{UID: "zcode-a", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
 		{UID: "zcode-b", Producer: source.ProducerZCode, OK: true}, // 读到但确实没额度
 	})
+	stubZCodeRoute("zcode-a", true, "")
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "wb1", Domain: "www.codebuddy.cn", AccessToken: "at"})
@@ -58,7 +60,7 @@ func TestProducerUsableCounts(t *testing.T) {
 		t.Errorf("workbuddy 可用 = %d, want 1（有免费模型，credits=0 也算可用）", usable)
 	}
 	if _, _, usable, _ := usableOf(t, h, source.ProducerZCode); usable != 1 {
-		t.Errorf("zcode 可用 = %d, want 1（只有 zcode-a 有套餐权益，zcode-b 没有）", usable)
+		t.Errorf("zcode 可用 = %d, want 1（只有 zcode-a 同时有权益和 route）", usable)
 	}
 	if _, _, usable, _ := usableOf(t, h, source.ProducerOpenCode); usable != 1 {
 		t.Errorf("opencode 可用 = %d, want 1（匿名免费层，健康即可用）", usable)
@@ -77,6 +79,7 @@ func TestProducerUsableZCodeUnknownNotCounted(t *testing.T) {
 		{UID: "zcode-a", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
 		{UID: "zcode-b", Producer: source.ProducerZCode, OK: false}, // 读不到
 	})
+	stubZCodeRoute("zcode-a", true, "")
 
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "zcode-a", Domain: "https://open.bigmodel.cn/api/paas/v4", AccessToken: "k.s"})
@@ -101,19 +104,54 @@ func TestZCodeByUIDPersistsAcrossRestart(t *testing.T) {
 		{UID: "zcode-a", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
 		{UID: "zcode-b", Producer: source.ProducerZCode, OK: true},
 	})
+	stubZCodeRoute("zcode-a", true, "")
 
 	zcodeEntitledCache.Lock()
 	zcodeEntitledCache.set = nil
 	zcodeEntitledCache.byUID = nil
+	zcodeEntitledCache.modelsByUID = nil
+	zcodeEntitledCache.routeByUID = nil
 	zcodeEntitledCache.known = false
 	zcodeEntitledCache.Unlock()
 
 	LoadZCodeEntitled()
 
 	if ok, present := zcodeAccountUsable("zcode-a"); !present || !ok {
-		t.Fatalf("重启后 zcode-a 应仍是有权益（present=%v ok=%v）", present, ok)
+		t.Fatalf("重启后 zcode-a 应仍有权益 + route 证据（present=%v ok=%v）", present, ok)
 	}
 	if ok, present := zcodeAccountUsable("zcode-b"); !present || ok {
 		t.Fatalf("重启后 zcode-b 应仍是「读过、没权益」（present=%v ok=%v）", present, ok)
+	}
+}
+
+// TestZCodeAccountUsableRequiresEntitlementAndRoute 三层口径必须一起看：
+// entitlement=false 或 route 未知/失败/过期，都不能算“可用”。
+func TestZCodeAccountUsableRequiresEntitlementAndRoute(t *testing.T) {
+	stubZCodeEntitled([]creditRow{
+		{UID: "zcode-a", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+		{UID: "zcode-b", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+	})
+
+	if ok, present := zcodeAccountUsable("zcode-a"); !present || ok {
+		t.Fatalf("只有 entitlement、没有 route 证据时不能算可用（present=%v ok=%v）", present, ok)
+	}
+
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+	if ok, present := zcodeAccountUsable("zcode-a"); !present || ok {
+		t.Fatalf("route 明确失败时不能算可用（present=%v ok=%v）", present, ok)
+	}
+
+	stubZCodeRoute("zcode-a", true, "")
+	if ok, present := zcodeAccountUsable("zcode-a"); !present || !ok {
+		t.Fatalf("entitlement + route 都满足时应可用（present=%v ok=%v）", present, ok)
+	}
+
+	zcodeEntitledCache.Lock()
+	zcodeEntitledCache.routeByUID["zcode-a"] = zcodeRouteState{
+		OK: true, CheckedAt: time.Now().Add(-zcodeRouteTTL - time.Minute).Unix(),
+	}
+	zcodeEntitledCache.Unlock()
+	if ok, present := zcodeAccountUsable("zcode-a"); !present || ok {
+		t.Fatalf("route 证据过期后不能算可用（present=%v ok=%v）", present, ok)
 	}
 }

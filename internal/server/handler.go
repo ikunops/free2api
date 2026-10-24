@@ -793,16 +793,19 @@ func (h *Handler) modelList() []map[string]any {
 	if h.producerAllowed(upstream.ProducerZCode) {
 		zcodeModels = h.fetchZCodeCatalog()
 	}
-	// 对外只列号池**真的有额度**的 zcode 模型：上游 /models 是整家厂商的目录（所有 GLM
-	// 型号），号池里的号套餐常常只覆盖其中一两个——列出去就等于承诺「这个模型能调」，让
-	// 客户端选到一个必失败的模型是更差的体验。用户显式勾进发布清单的照旧列出（白名单即
-	// 用户意图，覆盖这条收敛）；一条额度信息都还没读到过时也不收敛（宁可多列，不假装没有）。
+	// 对外先按套餐权益收敛，再用「明确负证据」收窄。未知 / 从未验证 / 证据过期
+	// 不能直接藏模型，否则新号会陷入死锁：模型不发布 → 没有第一次成功 → 永远无 route。
+	// 显式白名单只能决定“发布哪几条”，不能绕过权益或已确认的不可路由性。
 	zcEnt, zcKnown := h.zcodeEntitledModels()
+	zcBlocked, _, zcBlockedKnown := zcodeBlockedModels()
 	for _, mi := range zcodeModels {
 		if !h.publishAllows(published, known, "cn", upstream.ProducerZCode, mi.ID) {
 			continue
 		}
-		if published == nil && zcKnown && !zcEnt[mi.ID] {
+		if zcKnown && !zcEnt[mi.ID] {
+			continue
+		}
+		if zcBlockedKnown && zcBlocked[mi.ID] {
 			continue
 		}
 		// 池级可服务性：与 cn 段同一口径（zcode 段的 1211「模型不存在」同样权威）。
@@ -1142,10 +1145,12 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		infos    []upstream.ModelInfo
 	}
 	// zcode 的 /models 是**整家厂商的目录**（所有 GLM 型号），不等于号池里的号能跑什么
-	// （周末活动只送 glm-5.3-flash，目录照样列 11 个）。所以每个条目额外带 entitled 标
-	// 记：前端把没额度的收进折叠区并标「未授权」，对外 /v1/models 也据此收敛。workbuddy
-	// 的目录本身就是账号口径，恒为 true。
+	// （周末活动只送 glm-5.3-flash，目录照样列 11 个）；套餐有权益也不等于静态反代
+	// 配额仍有效。所以每条同时带 entitled 与 route_available：前端保留整份目录供诊断。
+	// route_available=false 只在「所有有权益号都有近期明确失败证据」时出现；
+	// unknown/过期仍可勾选并发布一次，避免新号永远等不到第一次成功。
 	zcEnt, zcKnown := h.zcodeEntitledModels()
+	zcBlocked, zcodeRouteReasons, zcBlockedKnown := zcodeBlockedModels()
 	for _, g := range []group{
 		{"workbuddy", h.fetchDynamicModels()},
 		{upstream.ProducerZCode, h.fetchZCodeCatalog()},
@@ -1161,8 +1166,21 @@ func (h *Handler) availableOutputModels() []map[string]any {
 				pid = g.producer
 			}
 			entitled := true
-			if g.producer == upstream.ProducerZCode && zcKnown {
-				entitled = zcEnt[mi.ID]
+			routeAvailable := true
+			routeReason := ""
+			if g.producer == upstream.ProducerZCode {
+				if zcKnown {
+					entitled = zcEnt[mi.ID]
+				}
+				if zcBlockedKnown {
+					routeAvailable = !zcBlocked[mi.ID]
+				}
+				if !routeAvailable {
+					routeReason = zcodeRouteReasons[mi.ID]
+					if routeReason == "" {
+						routeReason = "no route-ready account for this model"
+					}
+				}
 			}
 			key := modelKey(g.producer, mi.ID)
 			// selected = 「这条现在真的会发出去吗」，口径必须与 modelList 完全一致：
@@ -1170,7 +1188,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			// 所以勾选态要如实为 false——否则面板一打开就显示「未授权也全勾着」，用户随手
 			// 一保存就把它们写进白名单，反而真的把 11 条全发出去。
 			selected := h.publishAllows(sel, known, "cn", g.producer, mi.ID)
-			if g.producer == upstream.ProducerZCode && sel == nil && zcKnown && !entitled {
+			if g.producer == upstream.ProducerZCode && (!entitled || !routeAvailable) {
 				selected = false
 			}
 			e := map[string]any{
@@ -1184,6 +1202,12 @@ func (h *Handler) availableOutputModels() []map[string]any {
 				// 管理页「只看免费」靠它筛行：opencode Zen 的目录是整家厂商的（79 个），
 				// 用户实际能用的是免费层那一小撮，不筛就得在 79 行里翻。
 				"free": mi.Free,
+			}
+			if g.producer == upstream.ProducerZCode {
+				e["route_available"] = routeAvailable
+				if routeReason != "" {
+					e["route_reason"] = routeReason
+				}
 			}
 			if mi.Name != "" {
 				e["name"] = mi.Name
@@ -1249,7 +1273,8 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			out = append(out, e)
 		}
 	}
-	// 有额度、但上游目录里没列出来的型号（少见）也得让用户勾得到，否则「有额度却发不出去」。
+	// 有额度、但上游目录里没列出来的型号（少见）也得让用户勾得到；只排除
+	// 「所有有权益号都有近期明确失败证据」的型号。未知仍允许首次验证。
 	if zcKnown {
 		seen := map[string]bool{}
 		for _, e := range out {
@@ -1261,6 +1286,9 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		}
 		extra := make([]string, 0, len(zcEnt))
 		for id := range zcEnt {
+			if zcBlockedKnown && zcBlocked[id] {
+				continue
+			}
 			if !seen[id] {
 				extra = append(extra, id)
 			}
@@ -1269,12 +1297,13 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		for _, id := range extra {
 			key := modelKey(upstream.ProducerZCode, id)
 			e := map[string]any{
-				"id":       id,
-				"key":      key,
-				"full_id":  h.modelIDFor("cn", upstream.ProducerZCode, id, ""),
-				"producer": upstream.ProducerZCode,
-				"selected": h.publishAllows(sel, known, "cn", upstream.ProducerZCode, id),
-				"entitled": true,
+				"id":              id,
+				"key":             key,
+				"full_id":         h.modelIDFor("cn", upstream.ProducerZCode, id, ""),
+				"producer":        upstream.ProducerZCode,
+				"selected":        h.publishAllows(sel, known, "cn", upstream.ProducerZCode, id),
+				"entitled":        true,
+				"route_available": true,
 			}
 			// 这些条目没有上游 ModelInfo（目录里根本没列），上下文交给四级查找链兜底。
 			h.decorateModelEntry(e, upstream.ModelInfo{ID: id}, "cn", upstream.ProducerZCode, sel, known)
@@ -1804,6 +1833,10 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 
 	tried := map[string]bool{}
 	var lastErr error
+	// zcodeNoRoute 记录本轮是否因 ZCode 静态凭据整池不可路由而没有候选。
+	// 该状态必须在末端显式映射为 429，不能只写在 st.status 上——末端响应
+	// 使用独立局部变量，否则会退回笼统的 503 no_healthy_account。
+	zcodeNoRoute := false
 
 	// 会话粘性：从请求体提取会话键并解析绑定号（找不到/无效则 stickyUID 为空，走普通轮换）。
 	// 按模型解析：同一个会话可能换模型，绑定号若在当前模型上被 6004 限额（对其他模型
@@ -1979,6 +2012,13 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 		}
 		if acct == nil {
 			st.status = http.StatusServiceUnavailable
+			// ZCode 的静态凭据可能整池失效（1113 余额/套餐、401 session），而客户端
+			// 套餐本身仍可用。有 ZCode 号但没有一条 route 证据时，明确报 429
+			// insufficient_quota，别把“凭据没配额”误导成“网关暂时没号”。
+			if producer == upstream.ProducerZCode && h.poolHasZCode() && !h.zcodeAnyRouteAvailable() {
+				st.status = http.StatusTooManyRequests
+				zcodeNoRoute = true
+			}
 			break
 		}
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
@@ -2199,6 +2239,10 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 			sErr := sink.Stream(w, stats, upstream.FrameHintFunc(func() upstream.HintContext {
 				return h.hintContext(bareModel, reqHasImage)
 			}))
+			if sErr == nil && acct.Producer() == upstream.ProducerZCode {
+				// 只有完整 SSE 成功结束才把静态反代标成可路由；上游 200 头 / 空流都不算。
+				markZCodeRouteAvailable(acct.UID)
+			}
 			if upstream.IsEmptyStreamError(sErr) {
 				// 上游 200 但空流（0 有效帧）：StreamHint 已写 error 帧 + [DONE]
 				// 兜底（HTTP 头已发出只能 200），但这是上游缺陷不是成功——日志/
@@ -2256,6 +2300,10 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 		}
 		writeJSON(w, http.StatusOK, out)
 		st.status = http.StatusOK
+		if acct.Producer() == upstream.ProducerZCode {
+			// 非流式同样以 Aggregate + 出口编码全部成功为证据，而不是仅凭上游状态码。
+			markZCodeRouteAvailable(acct.UID)
+		}
 		st.toks = completionTokens(resp)
 		// 成本账本（非流式）：从聚合响应的 usage 取 credit 与 token 总数。
 		if credit, total, ok := usageCreditTotal(resp); ok {
@@ -2317,10 +2365,31 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 				msg = "waf ip-level block: upstream firewall is blocking the gateway IP, rotation stopped; retry after the block window expires"
 			}
 		}
+		// ZCode 的 1113 / 401 是“静态凭据没有上游配额”或“会话失效”，不是
+		// 普通无健康号。保留上游原文，同时用 429 insufficient_quota 让客户端停止
+		// 无意义重试；套餐在 ZCode 客户端内可能仍然可用。
+		if producer == upstream.ProducerZCode &&
+			(ue.Kind == upstream.ErrHardCredit || ue.Kind == upstream.ErrSessionDead) {
+			status = http.StatusTooManyRequests
+			code = "insufficient_quota"
+			hint = "the ZCode client plan may still work inside the ZCode app, but this gateway static route has no upstream quota or the session is expired; import a valid static credential before retrying"
+		}
 		if s := strings.TrimSpace(ue.Msg); s != "" {
 			// 上游原文优先：透传 code/msg/requestId，不拼接本地前缀。
 			msg = s
 		}
+	}
+	// 没有上游错误（例如号池里所有 ZCode 号都已冷却）时，lastErr 为空，
+	// 上面的 ue 分支不会执行；此时仍要把“整池静态 route 不可用”映射成
+	// 429，而不是笼统的 503。若之前已有传输层错误，保留原来的 503 语义。
+	if lastErr == nil && zcodeNoRoute {
+		status = http.StatusTooManyRequests
+		code = "insufficient_quota"
+		msg = "zcode static API credentials are unavailable (upstream 1113/insufficient balance or session expired)"
+		hint = "the ZCode client plan may still work inside the ZCode app, but this gateway static route has no upstream quota or the session is expired; import a valid static credential before retrying"
+	}
+	if status == http.StatusTooManyRequests && code == "insufficient_quota" && msg == "all accounts are temporarily unavailable, please retry later" {
+		msg = "zcode static API credentials are unavailable (upstream 1113/insufficient balance or session expired)"
 	}
 	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
@@ -2432,6 +2501,14 @@ func rotateBackoff(i int, ctx context.Context) bool {
 // 恢复出口：CoolSoft/CoolHard 各自到期自动恢复；熔断按其指数退避截止到期；
 // 成功（NoteSuccess）清 fails/熔断；签到解冻（ReenableIfCredits→reviveCoolingLocked）只清冷却，不动熔断。
 func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, model string, uerr *upstream.Error) {
+	if a := h.cfg.Pool.AuthByUID(uid); a != nil && a.Producer() == upstream.ProducerZCode {
+		switch kind {
+		case upstream.ErrHardCredit:
+			markZCodeRouteUnavailable(uid, "upstream 1113 insufficient balance")
+		case upstream.ErrSessionDead:
+			markZCodeRouteUnavailable(uid, "upstream 401/session dead")
+		}
+	}
 	switch kind {
 	case upstream.ErrHardCredit:
 		// 402 + 余额关键词即积分耗尽：同步冷却到次日 04:00（签到任务 09/21 点恢复），

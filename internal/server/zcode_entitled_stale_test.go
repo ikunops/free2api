@@ -41,6 +41,7 @@ func agedZCodeEntitled() {
 func TestZCodeEntitledStaleStillConverges(t *testing.T) {
 	h := newZCodeCatalogHandler(t)
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 	agedZCodeEntitled()
 
 	set, known, _ := zcodeEntitledState()
@@ -97,10 +98,14 @@ func TestZCodeEntitledPersistsAcrossRestart(t *testing.T) {
 	t.Cleanup(func() { SetZCodeEntitledPath("") })
 
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 
 	// 模拟进程重启：内存缓存清空，再从盘上读回。
 	zcodeEntitledCache.Lock()
 	zcodeEntitledCache.set = nil
+	zcodeEntitledCache.byUID = nil
+	zcodeEntitledCache.modelsByUID = nil
+	zcodeEntitledCache.routeByUID = nil
 	zcodeEntitledCache.known = false
 	zcodeEntitledCache.fetched = time.Time{}
 	zcodeEntitledCache.Unlock()
@@ -110,5 +115,8 @@ func TestZCodeEntitledPersistsAcrossRestart(t *testing.T) {
 	set, known, _ := zcodeEntitledState()
 	if !known || !set["glm-5.3-flash"] || len(set) != 1 {
 		t.Fatalf("重启后应从 zcode_entitled.json 读回收敛结果，得到 known=%v set=%v", known, set)
+	}
+	if ok, present := zcodeAccountUsable("zcode-a"); !present || !ok {
+		t.Fatalf("重启后 route 证据也必须保留（present=%v ok=%v）", present, ok)
 	}
 }

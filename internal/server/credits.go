@@ -35,6 +35,10 @@ import (
 // creditsTTL 余额缓存有效期。手动「刷新余额」不受它限制（强制重查）。
 const creditsTTL = 10 * time.Minute
 
+// zcodeRouteTTL 静态反代成功证据的有效期。ZCode 套餐与静态 API 配额会独立变化，
+// 超过一天没有真实 chat 成功就必须重新证明；GET /models 与套餐权益都不能续期。
+const zcodeRouteTTL = 24 * time.Hour
+
 // creditRow 单账号余额行（脱敏：只给 uid/昵称/域 + 数值，不含任何凭证）。
 type creditRow struct {
 	UID      string `json:"uid"`
@@ -379,10 +383,25 @@ var zcodeEntitledCache struct {
 	// byUID 每个 zcode 号自己**有没有**至少一个可用模型（uid → true/false）。
 	// 并集 set 只能回答「这些号整体能跑哪些模型」，回答不了「哪个号能跑」——
 	// 概览页的「可用」列（健康 且 至少能跑一个模型）要的正是后者，故单独存一份。
-	byUID   map[string]bool
-	known   bool
-	fetched time.Time
-	triedAt time.Time
+	byUID map[string]bool
+	// modelsByUID 每个 zcode 号自己有哪些套餐权益模型。byUID 只能回答「有没有」，
+	// 发布清单要按「该模型是否至少有一个号既有权益、又能静态出流」收敛，故保留明细。
+	modelsByUID map[string]map[string]bool
+	// routeByUID 静态反代（Bearer API key → /chat/completions）的真实证据。
+	// 与套餐权益严格分层：权益非空不代表 route OK；GET /models 200 也不算。
+	routeByUID map[string]zcodeRouteState
+	known      bool
+	fetched    time.Time
+	triedAt    time.Time
+}
+
+// zcodeRouteState 某个 zcode 号的静态反代可用性证据。OK=false 且 Reason 非空表示
+// 有明确的不可用证据；CheckedAt 为零表示从未验证过（未知，不参与发布封禁，
+// 但也不能计入概览的“可用”）。
+type zcodeRouteState struct {
+	OK        bool   `json:"ok"`
+	Reason    string `json:"reason,omitempty"`
+	CheckedAt int64  `json:"checked_at,omitempty"`
 }
 
 // zcodeEntitledPath 收敛快照的落盘路径（数据目录，与 output.json / model.json 同级）。
@@ -391,9 +410,11 @@ var zcodeEntitledPath string
 
 // zcodeEntitledSnapshot 收敛快照的落盘形态：模型并集 + 读到它的时刻。
 type zcodeEntitledSnapshot struct {
-	Models  []string        `json:"models"`
-	ByUID   map[string]bool `json:"by_uid,omitempty"`
-	Fetched int64           `json:"fetched_at"`
+	Models      []string                   `json:"models"`
+	ByUID       map[string]bool            `json:"by_uid,omitempty"`
+	ModelsByUID map[string][]string        `json:"models_by_uid,omitempty"`
+	RouteByUID  map[string]zcodeRouteState `json:"route_by_uid,omitempty"`
+	Fetched     int64                      `json:"fetched_at"`
 }
 
 // SetZCodeEntitledPath 接线快照落盘路径（起服务前调用一次）。
@@ -422,7 +443,8 @@ func LoadZCodeEntitled() {
 		return
 	}
 	var snap zcodeEntitledSnapshot
-	if err := json.Unmarshal(raw, &snap); err != nil || len(snap.Models) == 0 {
+	if err := json.Unmarshal(raw, &snap); err != nil ||
+		(len(snap.Models) == 0 && len(snap.RouteByUID) == 0) {
 		return
 	}
 	set := make(map[string]bool, len(snap.Models))
@@ -441,10 +463,31 @@ func LoadZCodeEntitled() {
 			byUID[uid] = ok
 		}
 	}
+	modelsByUID := make(map[string]map[string]bool, len(snap.ModelsByUID))
+	for uid, models := range snap.ModelsByUID {
+		if uid == "" {
+			continue
+		}
+		set := make(map[string]bool, len(models))
+		for _, m := range models {
+			if m != "" {
+				set[m] = true
+			}
+		}
+		modelsByUID[uid] = set
+	}
+	routeByUID := make(map[string]zcodeRouteState, len(snap.RouteByUID))
+	for uid, route := range snap.RouteByUID {
+		if uid != "" {
+			routeByUID[uid] = route
+		}
+	}
 	zcodeEntitledCache.Lock()
 	zcodeEntitledCache.set = set
 	zcodeEntitledCache.byUID = byUID
-	zcodeEntitledCache.known = true
+	zcodeEntitledCache.modelsByUID = modelsByUID
+	zcodeEntitledCache.routeByUID = routeByUID
+	zcodeEntitledCache.known = len(set) > 0
 	zcodeEntitledCache.fetched = fetched
 	zcodeEntitledCache.Unlock()
 }
@@ -452,7 +495,7 @@ func LoadZCodeEntitled() {
 // saveZCodeEntitledLocked 原子落盘（tmp + rename，pool state.json / model.json 同模式）。
 // 调用方须持 zcodeEntitledCache 锁（路径也在锁内读）。空路径 / 写失败 → 静默
 // （内存缓存仍生效，只是这次重启要重新问一遍上游）。
-func saveZCodeEntitledLocked(set, byUID map[string]bool) {
+func saveZCodeEntitledLocked(set, byUID map[string]bool, modelsByUID map[string]map[string]bool, routeByUID map[string]zcodeRouteState) {
 	path := zcodeEntitledPath
 	if path == "" {
 		return
@@ -462,7 +505,19 @@ func saveZCodeEntitledLocked(set, byUID map[string]bool) {
 		models = append(models, m)
 	}
 	sort.Strings(models)
-	raw, err := json.MarshalIndent(zcodeEntitledSnapshot{Models: models, ByUID: byUID, Fetched: time.Now().Unix()}, "", "  ")
+	modelsUID := make(map[string][]string, len(modelsByUID))
+	for uid, set := range modelsByUID {
+		list := make([]string, 0, len(set))
+		for m := range set {
+			list = append(list, m)
+		}
+		sort.Strings(list)
+		modelsUID[uid] = list
+	}
+	raw, err := json.MarshalIndent(zcodeEntitledSnapshot{
+		Models: models, ByUID: byUID, ModelsByUID: modelsUID,
+		RouteByUID: routeByUID, Fetched: time.Now().Unix(),
+	}, "", "  ")
 	if err != nil {
 		return
 	}
@@ -492,6 +547,7 @@ func saveZCodeEntitledLocked(set, byUID map[string]bool) {
 func storeZCodeEntitled(rows []creditRow) {
 	set := map[string]bool{}
 	byUID := map[string]bool{}
+	modelsByUID := map[string]map[string]bool{}
 	sawZCode := false
 	readOK := false // 至少有一行真的从上游读回来了
 	for _, r := range rows {
@@ -506,19 +562,24 @@ func storeZCodeEntitled(rows []creditRow) {
 		}
 		readOK = true
 		entitled := false
+		own := map[string]bool{}
 		for _, m := range r.EntitledModels {
 			if m != "" {
 				set[m] = true
+				own[m] = true
 				entitled = true
 			}
 		}
 		byUID[r.UID] = entitled
+		modelsByUID[r.UID] = own
 	}
 	zcodeEntitledCache.Lock()
 	defer zcodeEntitledCache.Unlock()
 	if !sawZCode {
 		zcodeEntitledCache.set = nil
 		zcodeEntitledCache.byUID = nil
+		zcodeEntitledCache.modelsByUID = nil
+		zcodeEntitledCache.routeByUID = nil
 		zcodeEntitledCache.known = false
 		zcodeEntitledCache.fetched = time.Now()
 		return
@@ -529,11 +590,10 @@ func storeZCodeEntitled(rows []creditRow) {
 	}
 	zcodeEntitledCache.set = set
 	zcodeEntitledCache.byUID = byUID
+	zcodeEntitledCache.modelsByUID = modelsByUID
 	zcodeEntitledCache.known = len(set) > 0
 	zcodeEntitledCache.fetched = time.Now()
-	if zcodeEntitledCache.known {
-		saveZCodeEntitledLocked(set, byUID)
-	}
+	saveZCodeEntitledLocked(set, byUID, modelsByUID, zcodeEntitledCache.routeByUID)
 }
 
 // zcodeAccountUsable 报告某个 zcode 号**现在是否至少能跑一个模型**（供概览「可用」列）。
@@ -543,17 +603,261 @@ func storeZCodeEntitled(rows []creditRow) {
 func zcodeAccountUsable(uid string) (bool, bool) {
 	zcodeEntitledCache.RLock()
 	defer zcodeEntitledCache.RUnlock()
-	if !zcodeEntitledCache.known {
-		return false, false
-	}
 	if zcodeEntitledCache.byUID == nil {
 		return false, false
 	}
-	ok, present := zcodeEntitledCache.byUID[uid]
+	entitled, present := zcodeEntitledCache.byUID[uid]
 	if !present {
 		return false, false
 	}
-	return ok, true
+	if !entitled {
+		return false, true
+	}
+	return zcodeRouteValidLocked(zcodeEntitledCache.routeByUID[uid], time.Now()), true
+}
+
+// zcodeRouteValidLocked 只有近期真实 chat 成功才算静态反代可用。CheckedAt=0 表示
+// 从未验证（不是“很久以前成功”）；未来时间戳按无效处理，避免时钟回拨把证据永久续命。
+func zcodeRouteValidLocked(route zcodeRouteState, now time.Time) bool {
+	if !route.OK || route.CheckedAt <= 0 {
+		return false
+	}
+	checked := time.Unix(route.CheckedAt, 0)
+	age := now.Sub(checked)
+	return age >= 0 && age <= zcodeRouteTTL
+}
+
+// zcodeRouteNegativeLocked 是否为**仍在证据窗内**的明确失败。未知、成功证据过期、
+// 失败证据过期都不算确定不可用：放行一次新请求，让真实结果重新证明。
+func zcodeRouteNegativeLocked(route zcodeRouteState, now time.Time) bool {
+	if route.OK || strings.TrimSpace(route.Reason) == "" || route.CheckedAt <= 0 {
+		return false
+	}
+	checked := time.Unix(route.CheckedAt, 0)
+	age := now.Sub(checked)
+	return age >= 0 && age <= zcodeRouteTTL
+}
+
+// zcodeRouteReason 给发布清单展示不可路由原因。未知与过期分开说，避免把
+// “还没验证过”误写成“上游明确拒绝”。
+func zcodeRouteReason(route zcodeRouteState, now time.Time) string {
+	if zcodeRouteValidLocked(route, now) {
+		return ""
+	}
+	if zcodeRouteNegativeLocked(route, now) {
+		return route.Reason
+	}
+	if route.CheckedAt > 0 {
+		return "route evidence expired; no successful chat in the last 24h"
+	}
+	return "route not verified; no successful chat yet"
+}
+
+// markZCodeRouteAvailable 记录真实 chat 成功。只在流完整结束 / 非流式聚合成功后调用；
+// 上游 200 头不算证据。状态变化才落盘，避免每个成功请求都重写 JSON。
+func markZCodeRouteAvailable(uid string) {
+	if uid == "" {
+		return
+	}
+	now := time.Now()
+	zcodeEntitledCache.Lock()
+	defer zcodeEntitledCache.Unlock()
+	if zcodeEntitledCache.routeByUID == nil {
+		zcodeEntitledCache.routeByUID = map[string]zcodeRouteState{}
+	}
+	old, ok := zcodeEntitledCache.routeByUID[uid]
+	if ok && old.OK && zcodeRouteValidLocked(old, now) {
+		return
+	}
+	zcodeEntitledCache.routeByUID[uid] = zcodeRouteState{OK: true, CheckedAt: now.Unix()}
+	saveZCodeEntitledLocked(zcodeEntitledCache.set, zcodeEntitledCache.byUID,
+		zcodeEntitledCache.modelsByUID, zcodeEntitledCache.routeByUID)
+}
+
+// markZCodeRouteUnavailable 记录明确的静态反代不可用证据（1113/余额不足/401）。
+// 相同原因不重复写盘；恢复只能由新的真实 chat 成功覆盖。
+func markZCodeRouteUnavailable(uid, reason string) {
+	if uid == "" {
+		return
+	}
+	now := time.Now()
+	if strings.TrimSpace(reason) == "" {
+		reason = "zcode static route unavailable"
+	}
+	zcodeEntitledCache.Lock()
+	defer zcodeEntitledCache.Unlock()
+	if zcodeEntitledCache.routeByUID == nil {
+		zcodeEntitledCache.routeByUID = map[string]zcodeRouteState{}
+	}
+	old, ok := zcodeEntitledCache.routeByUID[uid]
+	if ok && !old.OK && old.Reason == reason && zcodeRouteNegativeLocked(old, now) {
+		return
+	}
+	zcodeEntitledCache.routeByUID[uid] = zcodeRouteState{
+		OK: false, Reason: reason, CheckedAt: now.Unix(),
+	}
+	saveZCodeEntitledLocked(zcodeEntitledCache.set, zcodeEntitledCache.byUID,
+		zcodeEntitledCache.modelsByUID, zcodeEntitledCache.routeByUID)
+}
+
+// zcodeRouteModels 合并“近期真实 chat 成功”的账号各自的套餐权益模型。
+// known=false 表示没有 per-UID entitlement 明细；known=true 且空集合表示
+// “目前没有已验证成功的 route”。它用于「可用」统计和整池错误分流，不用于
+// 隐藏首次未验证的模型——发布门控见 zcodeBlockedModels。
+func zcodeRouteModels() (map[string]bool, bool) {
+	zcodeEntitledCache.RLock()
+	defer zcodeEntitledCache.RUnlock()
+	if len(zcodeEntitledCache.modelsByUID) == 0 {
+		return nil, false
+	}
+	now := time.Now()
+	out := map[string]bool{}
+	for uid, models := range zcodeEntitledCache.modelsByUID {
+		if !zcodeRouteValidLocked(zcodeEntitledCache.routeByUID[uid], now) {
+			continue
+		}
+		for id := range models {
+			if id != "" {
+				out[id] = true
+			}
+		}
+	}
+	return out, true
+}
+
+// zcodeBlockedModels 汇总「该模型所有有权益账号都已有近期明确失败证据」的集合。
+// 这是发布门控，不是「可用」口径：
+//   - unknown / 从未验证 / 证据过期 → 不 block，允许首次请求去证明；
+//   - 一个号明确失败、另一个号未知 → 不 block，仍可换未知号重试；
+//   - 所有有权益号都明确失败 → block，避免把必然失败的模型继续对外承诺。
+//
+// 返回 known=false 表示没有 per-UID 权益明细，调用方不应据此收敛。
+func zcodeBlockedModels() (blocked map[string]bool, reasons map[string]string, known bool) {
+	zcodeEntitledCache.RLock()
+	defer zcodeEntitledCache.RUnlock()
+	if len(zcodeEntitledCache.modelsByUID) == 0 {
+		return nil, nil, false
+	}
+	now := time.Now()
+	entitledCount := map[string]int{}
+	failedCount := map[string]int{}
+	reasons = map[string]string{}
+	for uid, models := range zcodeEntitledCache.modelsByUID {
+		route := zcodeEntitledCache.routeByUID[uid]
+		negative := zcodeRouteNegativeLocked(route, now)
+		for id := range models {
+			if id == "" {
+				continue
+			}
+			entitledCount[id]++
+			if !negative {
+				continue
+			}
+			failedCount[id]++
+			if _, exists := reasons[id]; !exists {
+				reasons[id] = zcodeRouteReason(route, now)
+			}
+		}
+	}
+	blocked = map[string]bool{}
+	for id, total := range entitledCount {
+		if total > 0 && failedCount[id] == total {
+			blocked[id] = true
+		}
+	}
+	return blocked, reasons, true
+}
+
+// zcodeAnyRouteAvailable 是否至少有一个 ZCode 号近期真实 chat 成功。用于把
+// “全池静态凭据失效”从笼统 503 收敛为 429 insufficient_quota。
+func (h *Handler) zcodeAnyRouteAvailable() bool {
+	models, known := zcodeRouteModels()
+	return known && len(models) > 0
+}
+
+// seedZCodeRoutesFromPool 从号池状态补种 route 证据，兼容升级前已经成功过的号。
+// 只采信两条强证据：近期成功且晚于最近错误；或明确 hard-credit/session-dead 的失败。
+// 其余未知保持未知，绝不因为账号“健康”就伪造 route OK。
+func (h *Handler) seedZCodeRoutesFromPool() {
+	if h.cfg.Pool == nil {
+		return
+	}
+	now := time.Now()
+	var updates map[string]zcodeRouteState
+	// syntheticNow 标记「号池状态明确，但历史状态没有失败时间」的补种。
+	// 这种证据只能首次落时间，不能被每轮 /status 刷新无限续期。
+	syntheticNow := map[string]bool{}
+	for _, st := range h.cfg.Pool.List() {
+		if st.Producer != source.ProducerZCode {
+			continue
+		}
+		reason := strings.ToLower(strings.TrimSpace(st.DisabledReason + " " + st.Reason))
+		if st.Disabled && (strings.Contains(reason, "session dead") || strings.Contains(reason, "401")) {
+			if updates == nil {
+				updates = map[string]zcodeRouteState{}
+			}
+			checkedAt := st.LastErrTime.Unix()
+			if st.LastErrTime.IsZero() {
+				checkedAt = now.Unix()
+				syntheticNow[st.UID] = true
+			}
+			updates[st.UID] = zcodeRouteState{OK: false, Reason: "upstream 401/session dead", CheckedAt: checkedAt}
+			continue
+		}
+		if st.Cooling && (st.CoolKind == "hard_credit" ||
+			strings.Contains(reason, "余额不足") || strings.Contains(reason, "credit") || strings.Contains(reason, "balance")) {
+			if updates == nil {
+				updates = map[string]zcodeRouteState{}
+			}
+			checkedAt := st.LastErrTime.Unix()
+			if st.LastErrTime.IsZero() {
+				checkedAt = now.Unix()
+				syntheticNow[st.UID] = true
+			}
+			updates[st.UID] = zcodeRouteState{OK: false, Reason: "upstream 1113 insufficient balance", CheckedAt: checkedAt}
+			continue
+		}
+		if st.SuccessCount > 0 && !st.LastSuccessTime.IsZero() &&
+			now.Sub(st.LastSuccessTime) >= 0 && now.Sub(st.LastSuccessTime) <= zcodeRouteTTL &&
+			(st.LastErrTime.IsZero() || !st.LastSuccessTime.Before(st.LastErrTime)) {
+			if updates == nil {
+				updates = map[string]zcodeRouteState{}
+			}
+			updates[st.UID] = zcodeRouteState{OK: true, CheckedAt: st.LastSuccessTime.Unix()}
+		}
+	}
+	if len(updates) == 0 {
+		return
+	}
+	zcodeEntitledCache.Lock()
+	defer zcodeEntitledCache.Unlock()
+	if zcodeEntitledCache.routeByUID == nil {
+		zcodeEntitledCache.routeByUID = map[string]zcodeRouteState{}
+	}
+	changed := false
+	for uid, next := range updates {
+		old, ok := zcodeEntitledCache.routeByUID[uid]
+		if ok && old.OK == next.OK && old.Reason == next.Reason && old.CheckedAt == next.CheckedAt {
+			continue
+		}
+		// 同向证据只由更「新」的检查覆盖，不能拿更旧的号池快照回退它。
+		// 对不可用证据，CheckedAt 是失败发生时刻；对可用证据，它是成功发生时刻。
+		// 无时间戳的旧失败只在首次观察时补当前时间；已有同向负证据不能
+		// 因为面板每几秒刷新一次就不断把 CheckedAt 推到当下。
+		if ok && syntheticNow[uid] && !old.OK && !next.OK &&
+			old.Reason == next.Reason && old.CheckedAt > 0 {
+			continue
+		}
+		if ok && old.CheckedAt > next.CheckedAt && old.OK == next.OK && old.Reason == next.Reason {
+			continue
+		}
+		zcodeEntitledCache.routeByUID[uid] = next
+		changed = true
+	}
+	if changed {
+		saveZCodeEntitledLocked(zcodeEntitledCache.set, zcodeEntitledCache.byUID,
+			zcodeEntitledCache.modelsByUID, zcodeEntitledCache.routeByUID)
+	}
 }
 
 // zcodeEntitledModels 号池里 zcode 账号**真正能用**的模型并集，以及「是否问到过」。
@@ -567,7 +871,6 @@ func zcodeAccountUsable(uid string) (bool, bool) {
 // 问到的结果继续收，也不能中途退回「整家目录」——那会让用户眼皮底下的清单从 1 条
 // 变回 11 条（旧实现就是这样：TTL 一到先返回「不知道」）。只有**从没问到过**
 // （known=false，冷启动）才说不知道，调用方那时不要收敛：宁可按上游全量目录列出，
-// 也不假装号池一个模型都没有。
 func (h *Handler) zcodeEntitledModels() (map[string]bool, bool) {
 	if !h.poolHasZCode() {
 		return nil, false
@@ -575,7 +878,8 @@ func (h *Handler) zcodeEntitledModels() (map[string]bool, bool) {
 	now := time.Now()
 	zcodeEntitledCache.Lock()
 	set, known := zcodeEntitledCache.set, zcodeEntitledCache.known
-	stale := !known || now.Sub(zcodeEntitledCache.fetched) >= creditsTTL
+	fetched := zcodeEntitledCache.fetched
+	stale := !known || now.Sub(fetched) >= creditsTTL
 	trigger := stale && now.Sub(zcodeEntitledCache.triedAt) >= creditsTTL
 	if trigger {
 		zcodeEntitledCache.triedAt = now
@@ -640,6 +944,8 @@ func humanizeUpstreamErr(msg string) string {
 }
 
 // unixOrZero 零值时间 → 0（前端按 0 判「还没查过」）。
+
+// unixOrZero 把可选时间转成 Unix 秒；零值保持 0，供 JSON 表示“从未发生”。
 func unixOrZero(t time.Time) int64 {
 	if t.IsZero() {
 		return 0

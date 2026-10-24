@@ -174,11 +174,15 @@ func (e growthEventExecutor) Run(ctx context.Context, c *upstream.Client, a *aut
 // runGrowthExecutors 扫描任务并在白名单内补未完成进度；只对 CN workbuddy 账号。
 // 返回本轮实际上报的任务数。不在此处 claim：调用方随后 ClaimCompletedGrowthTasks
 // 会重新回读，避免“上报成功但服务端尚未刷新”被误判为可领。
-func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyTask string) int {
+func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyTask string) (int, []string) {
 	reported := 0
+	var errs []string
+	appendErr := func(format string, args ...any) {
+		errs = append(errs, fmt.Sprintf(format, args...))
+	}
 	for _, st := range s.cfg.Pool.List() {
 		if ctx.Err() != nil {
-			return reported
+			return reported, errs
 		}
 		if st.Disabled {
 			continue
@@ -197,6 +201,7 @@ func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyT
 			tasks, err := s.cfg.Upstream.ListGrowthTasks(a, platform)
 			if err != nil {
 				log.Printf("WARN: growth executor list %s %s: %v", logfmt.Label(st.UID, st.Nickname), platformLabel(platform), err)
+				appendErr("%s %s: 读取任务失败: %v", st.Nickname, platformLabel(platform), err)
 				continue
 			}
 			for _, t := range tasks {
@@ -217,25 +222,27 @@ func (s *Scheduler) runGrowthExecutorsLocked(ctx context.Context, onlyUID, onlyT
 				if t.AcceptStatus == "not_accepted" {
 					if _, err := s.cfg.Upstream.AcceptGrowthTasks(a, []string{t.TaskCode}, platform); err != nil {
 						log.Printf("WARN: growth accept %s %s: %v", logfmt.Label(st.UID, st.Nickname), t.TaskCode, err)
+						appendErr("%s: 报名失败: %v", t.TaskName, err)
 						continue
 					}
 					if !sleepCtx(ctx, growthAcceptDelay) {
-						return reported
+						return reported, errs
 					}
 				}
 				if err := ex.Run(ctx, s.cfg.Upstream, a, t); err != nil {
 					log.Printf("WARN: growth executor %s %s: %v", logfmt.Label(st.UID, st.Nickname), t.TaskCode, err)
+					appendErr("%s: %v", t.TaskName, err)
 					continue
 				}
 				reported++
 				log.Printf("growth executor %s %s: reported %s", logfmt.Label(st.UID, st.Nickname), t.TaskCode, platformLabel(platform))
 				if !sleepCtx(ctx, growthExecutorGap) {
-					return reported
+					return reported, errs
 				}
 			}
 		}
 	}
-	return reported
+	return reported, errs
 }
 
 type growthMiniExecutor interface {

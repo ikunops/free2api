@@ -94,8 +94,8 @@ func (h *Handler) producerTotalsView() []map[string]any {
 // 口径按来源分（用户确认）：
 //   - workbuddy：目录里有免费模型（-free）→ 健康号即可用（号之间对免费模型可互换）；
 //     没有免费模型时才看 credits > 0。
-//   - zcode：看该号自己的套餐权益（entitled_models 非空）——免费额度按账号发，号池
-//     并集有模型不代表每个号都能跑。
+//   - zcode：看该号自己的套餐权益（entitled_models 非空），并且必须有近 24h 的
+//     真实 chat 成功证据——套餐权益按账号发，静态反代配额还可能独立失效。
 //   - opencode / kilo：匿名免费层，健康即可用。
 //   - 未接反代的来源（qoder 等）：0（进不了选号候选）。
 func (h *Handler) usableCountsByProducer() map[string]int {
@@ -103,6 +103,9 @@ func (h *Handler) usableCountsByProducer() map[string]int {
 	if h.cfg.Pool == nil {
 		return out
 	}
+	// 兼容升级前的运行态：历史上真实成功过的 ZCode 号先从号池补种 route 证据。
+	// 只补有强证据的项，不把“健康”当成“能出流”。
+	h.seedZCodeRoutesFromPool()
 	// workbuddy 免费目录：CN / 国际任一份里有 -free 模型，健康号就算可用。
 	wbFree := false
 	for _, mi := range cachedModelsSnapshot() {

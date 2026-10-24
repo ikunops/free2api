@@ -40,6 +40,23 @@ func stubZCodeEntitled(rows []creditRow) {
 	zcodeEntitledCache.Unlock()
 }
 
+// stubZCodeRoute 把某个 ZCode 号的静态反代证据摆成想要的状态。
+// 权益和 route 是两层：只有真实 chat 成功才会写 OK=true。
+func stubZCodeRoute(uid string, ok bool, reason string) {
+	zcodeEntitledCache.Lock()
+	defer zcodeEntitledCache.Unlock()
+	if zcodeEntitledCache.routeByUID == nil {
+		zcodeEntitledCache.routeByUID = map[string]zcodeRouteState{}
+	}
+	st := zcodeRouteState{OK: ok, Reason: reason, CheckedAt: time.Now().Unix()}
+	if !ok && reason == "" {
+		st.Reason = "stub route unavailable"
+	}
+	zcodeEntitledCache.routeByUID[uid] = st
+	saveZCodeEntitledLocked(zcodeEntitledCache.set, zcodeEntitledCache.byUID,
+		zcodeEntitledCache.modelsByUID, zcodeEntitledCache.routeByUID)
+}
+
 // newZCodeCatalogHandler 一个只有 zcode 号的网关 + 假上游目录。
 func newZCodeCatalogHandler(t *testing.T) *Handler {
 	t.Helper()
@@ -80,11 +97,12 @@ func zcodeIDs(list []map[string]any) []string {
 	return out
 }
 
-// TestZCodePublishListMarksUnentitled 发布清单保留整份上游目录（未授权的也要看得见、
-// 能勾），但逐条标出号池到底有没有额度——前端据此把没额度的收进折叠区。
+// TestZCodePublishListMarksUnentitled 发布清单保留整份上游目录（未授权/不可路由的也看得见供诊断），
+// 但逐条标出号池有没有额度；前端据此禁用不可用行并收进折叠区。
 func TestZCodePublishListMarksUnentitled(t *testing.T) {
 	h := newZCodeCatalogHandler(t)
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 	got := map[string]bool{}
 	for _, e := range h.availableOutputModels() {
 		if p, _ := e["producer"].(string); p != upstream.ProducerZCode {
@@ -109,10 +127,77 @@ func TestZCodePublishListMarksUnentitled(t *testing.T) {
 func TestModelListHidesUnentitledZCode(t *testing.T) {
 	h := newZCodeCatalogHandler(t)
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 	ids := zcodeIDs(h.modelList())
 	if len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
 		t.Fatalf("/v1/models 的 zcode 段应只剩有额度的那一个，得到 %v", ids)
 	}
+}
+
+// TestModelListAllowsFirstUnverifiedRoute 新号有权益但还没有 route 证据时必须允许发布：
+// 否则模型永远不出现，客户端没有机会打出第一次成功，route 也就永远无法被证明。
+// 但概览「可用」仍保持保守，不能把“未知”算成“可用”。
+func TestModelListAllowsFirstUnverifiedRoute(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
+		t.Fatalf("route 未验证时模型应允许首次发布，得到 %v", ids)
+	}
+	if ok, present := zcodeAccountUsable("zcode-a"); !present || ok {
+		t.Fatalf("route 未验证时可用数必须保守为 false（present=%v ok=%v）", present, ok)
+	}
+}
+
+// TestModelListHidesAllKnownRouteFailures 所有有权益账号都明确失败时，模型必须收敛。
+func TestModelListHidesAllKnownRouteFailures(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+	if ids := zcodeIDs(h.modelList()); len(ids) != 0 {
+		t.Fatalf("唯一的权益号已明确失败，模型应隐藏，得到 %v", ids)
+	}
+}
+
+// TestModelListKeepsRouteWithUnknownAccount 一个号明确失败、另一个号尚未验证时不能
+// 把整条模型判死：未知号仍可能成功，必须保留一次验证机会。
+func TestModelListKeepsRouteWithUnknownAccount(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled([]creditRow{
+		{UID: "zcode-a", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+		{UID: "zcode-b", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+	})
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
+		t.Fatalf("还有未知权益号时模型应保留，得到 %v", ids)
+	}
+}
+
+// TestModelListHidesWhenEveryEntitledAccountFailed 多个权益号全部明确失败才隐藏；
+// 同时发布清单要透出 route_available=false 供诊断。
+func TestModelListHidesWhenEveryEntitledAccountFailed(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled([]creditRow{
+		{UID: "zcode-a", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+		{UID: "zcode-b", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+	})
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+	stubZCodeRoute("zcode-b", false, "upstream 401/session dead")
+	if ids := zcodeIDs(h.modelList()); len(ids) != 0 {
+		t.Fatalf("所有权益号都明确失败时模型应隐藏，得到 %v", ids)
+	}
+	for _, e := range h.availableOutputModels() {
+		if p, _ := e["producer"].(string); p != upstream.ProducerZCode {
+			continue
+		}
+		if id, _ := e["id"].(string); id != "glm-5.3-flash" {
+			continue
+		}
+		if route, _ := e["route_available"].(bool); route {
+			t.Fatal("所有权益号失败时 route_available 必须为 false")
+		}
+		return
+	}
+	t.Fatal("发布清单应保留 glm-5.3-flash 供诊断")
 }
 
 // TestModelListKeepsCatalogWhenEntitlementUnknown 读不到任何套餐额度时**不收敛**：
@@ -125,17 +210,30 @@ func TestModelListKeepsCatalogWhenEntitlementUnknown(t *testing.T) {
 	}
 }
 
-// TestModelListKeepsExplicitlyPublishedUnentitled 用户显式勾进发布清单的照发：
-// 白名单就是用户意图，压过这条自动收敛（否则「勾了等于没勾」）。
+// TestModelListKeepsExplicitlyPublishedUnentitled 白名单只能决定“发布哪几条”，
+// 不能把没有套餐权益的模型重新放出来。
 func TestModelListKeepsExplicitlyPublishedUnentitled(t *testing.T) {
 	h := newZCodeCatalogHandler(t)
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 	st := NewOutputStore("")
 	st.cur = OutputConfig{Format: FormatOpenAI, Models: []string{modelKey(upstream.ProducerZCode, "glm-4.6")}}
 	h.cfg.Output = st
-	ids := zcodeIDs(h.modelList())
-	if len(ids) != 1 || ids[0] != "zcode:glm-4.6" {
-		t.Fatalf("白名单里的模型要照发，得到 %v", ids)
+	if ids := zcodeIDs(h.modelList()); len(ids) != 0 {
+		t.Fatalf("显式白名单不能绕过 entitlement；应无 zcode 模型，得到 %v", ids)
+	}
+}
+
+// TestModelListExplicitPublishStillNeedsRoute 用户显式勾进白名单也不能绕过 route。
+func TestModelListExplicitPublishStillNeedsRoute(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+	st := NewOutputStore("")
+	st.cur = OutputConfig{Format: FormatOpenAI, Models: []string{modelKey(upstream.ProducerZCode, "glm-5.3-flash")}}
+	h.cfg.Output = st
+	if ids := zcodeIDs(h.modelList()); len(ids) != 0 {
+		t.Fatalf("route 不可用时显式白名单也必须被挡住，得到 %v", ids)
 	}
 }
 
@@ -147,6 +245,7 @@ func TestZCodeEntitlementSharedAcrossHandlers(t *testing.T) {
 	// 模拟一个出口：同一份 pool / upstream，另起一个 handler（没有自己的额度缓存）。
 	exit := NewHandler(Config{Pool: main.cfg.Pool, Upstream: main.cfg.Upstream, ProducerAllow: []string{upstream.ProducerZCode}})
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 	for name, h := range map[string]*Handler{"主口": main, "出口": exit} {
 		if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-5.3-flash" {
 			t.Fatalf("%s：额度信息该是包级共享的，出口也得收敛成 1 条，得到 %v", name, ids)
@@ -162,6 +261,7 @@ func TestZCodeEntitlementSharedAcrossHandlers(t *testing.T) {
 func TestZCodePublishListUnentitledNotSelectedByDefault(t *testing.T) {
 	h := newZCodeCatalogHandler(t)
 	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", true, "")
 
 	selectedOf := func() map[string]bool {
 		out := map[string]bool{}
@@ -187,7 +287,7 @@ func TestZCodePublishListUnentitledNotSelectedByDefault(t *testing.T) {
 		t.Error("未授权的 glm-4.6 在全放时不该显示成已勾选（它本来就不会发出去）")
 	}
 
-	// 用户显式勾上（写进白名单）→ 立刻如实变回已勾选，且对外真的发得出去。
+	// 用户显式勾上未授权模型：草稿里可以显示意图，但它仍然不可路由、不会发布。
 	st := NewOutputStore("")
 	if _, err := st.Set(OutputConfig{Format: FormatOpenAI,
 		Models: []string{modelKey(upstream.ProducerZCode, "glm-4.6")}}); err != nil {
@@ -195,13 +295,113 @@ func TestZCodePublishListUnentitledNotSelectedByDefault(t *testing.T) {
 	}
 	h.cfg.Output = st
 	sel2 := selectedOf()
-	if !sel2["glm-4.6"] {
-		t.Error("显式勾进白名单的未授权模型，selected 应如实为 true")
+	if sel2["glm-4.6"] {
+		t.Error("未授权模型即使写进白名单，selected 也必须为 false")
 	}
-	if sel2["glm-5.3-flash"] {
-		t.Error("白名单里没有 glm-5.3-flash，它不该显示成已勾选")
+	if ids := zcodeIDs(h.modelList()); len(ids) != 0 {
+		t.Fatalf("未授权模型不能因为白名单就对外发布，得到 %v", ids)
 	}
-	if ids := zcodeIDs(h.modelList()); len(ids) != 1 || ids[0] != "zcode:glm-4.6" {
-		t.Errorf("白名单点名了 glm-4.6，对外就该只发这一条，得到 %v", ids)
+}
+
+// TestAvailableOutputModelsExposesRouteUnavailable 目录里保留有权益但静态凭据
+// 不可路由的行，供诊断；selected=false 且 route_available=false，前端会禁用复选框。
+func TestAvailableOutputModelsExposesRouteUnavailable(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+
+	var row map[string]any
+	for _, e := range h.availableOutputModels() {
+		if p, _ := e["producer"].(string); p != upstream.ProducerZCode {
+			continue
+		}
+		if id, _ := e["id"].(string); id == "glm-5.3-flash" {
+			row = e
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("发布清单应保留有权益但不可路由的 ZCode 行供诊断")
+	}
+	if ent, _ := row["entitled"].(bool); !ent {
+		t.Fatal("glm-5.3-flash 有权益，entitled 应为 true")
+	}
+	if route, _ := row["route_available"].(bool); route {
+		t.Fatal("静态凭据失败时 route_available 必须为 false")
+	}
+	if selected, _ := row["selected"].(bool); selected {
+		t.Fatal("不可路由的模型不能显示为已选中")
+	}
+	if reason, _ := row["route_reason"].(string); !strings.Contains(reason, "insufficient balance") {
+		t.Fatalf("应透出真实不可路由原因，得到 %q", reason)
+	}
+}
+
+// TestSeedZCodeRoutesTimestampsPoolOnlyFailure 线上旧快照里存在「明确 1113/401，
+// 但没有 checked_at」的负证据。升级后号池仍处于 hard-credit / session-dead 时，
+// 补种必须给它一个当前时间，否则发布门控会把它当成“从未验证”，导致
+// /admin/output 显示 route_available=true，而 /v1/models 又把模型藏掉。
+// 同时该合成时间只能写一次，不能被每次 /status 刷新不断续期。
+func TestSeedZCodeRoutesTimestampsPoolOnlyFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		mark   func(*Handler)
+		reason string
+	}{
+		{
+			name:   "hard credit without last error",
+			mark:   func(h *Handler) { h.cfg.Pool.CooldownUntilTomorrow4AM("zcode-a", "余额不足") },
+			reason: "insufficient balance",
+		},
+		{
+			name:   "session dead without last error",
+			mark:   func(h *Handler) { h.cfg.Pool.Disable("zcode-a", "upstream 401/session dead") },
+			reason: "session dead",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newZCodeCatalogHandler(t)
+			stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+			tc.mark(h)
+
+			for _, st := range h.cfg.Pool.List() {
+				if st.UID == "zcode-a" && !st.LastErrTime.IsZero() {
+					t.Fatalf("测试前提失败：号池失败时间应为零，得到 %v", st.LastErrTime)
+				}
+			}
+			h.seedZCodeRoutesFromPool()
+
+			zcodeEntitledCache.RLock()
+			route := zcodeEntitledCache.routeByUID["zcode-a"]
+			zcodeEntitledCache.RUnlock()
+			if route.CheckedAt <= 0 {
+				t.Fatal("号池已有明确失败时，补种必须写入 checked_at")
+			}
+			if !strings.Contains(route.Reason, tc.reason) {
+				t.Fatalf("route reason=%q 应包含 %q", route.Reason, tc.reason)
+			}
+			if ids := zcodeIDs(h.modelList()); len(ids) != 0 {
+				t.Fatalf("所有权益号都有明确失败时模型应隐藏，得到 %v", ids)
+			}
+			blocked, reasons, known := zcodeBlockedModels()
+			if !known || !blocked["glm-5.3-flash"] {
+				t.Fatalf("明确失败应进入发布门控：known=%v blocked=%v reasons=%v", known, blocked, reasons)
+			}
+
+			// 模拟时间已经过去一分钟；再次刷新 /status 不应把它续到现在。
+			old := time.Now().Add(-time.Minute).Unix()
+			zcodeEntitledCache.Lock()
+			route.CheckedAt = old
+			zcodeEntitledCache.routeByUID["zcode-a"] = route
+			zcodeEntitledCache.Unlock()
+			h.seedZCodeRoutesFromPool()
+			zcodeEntitledCache.RLock()
+			got := zcodeEntitledCache.routeByUID["zcode-a"].CheckedAt
+			zcodeEntitledCache.RUnlock()
+			if got != old {
+				t.Fatalf("同一负证据被刷新续期：checked_at=%d want %d", got, old)
+			}
+		})
 	}
 }

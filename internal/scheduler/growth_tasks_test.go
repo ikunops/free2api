@@ -384,6 +384,30 @@ func TestGrowthExpertExecutorUsesOfficialWebModelInEvents(t *testing.T) {
 		t.Fatalf("expert events must use the real web model, got %s", reported)
 	}
 }
+
+// TestRunGrowthAccountReportsExecutorFailure 执行器失败时接口必须带回错误明细，
+// 不能只写日志再返回 reported=0 让前端显示成功。
+func TestRunGrowthAccountReportsExecutorFailure(t *testing.T) {
+	oldClaim, oldAccept, oldGap, oldExec, oldRetry := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay
+	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = 0, 0, 0, 0, 0
+	t.Cleanup(func() {
+		growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = oldClaim, oldAccept, oldGap, oldExec, oldRetry
+	})
+	stub := &growthStub{defaultTasks: []upstream.GrowthTask{
+		{TaskCode: "chat_5", TaskName: "对话任务", AcceptStatus: "accepted", Progress: upstream.GrowthProgress{Current: 0, Target: 5}},
+	}}
+	s := growthTestScheduler(t, stub, &auth.Auth{UID: "u1", AccessToken: "at", Nickname: "账号"})
+	growthWebChatFn = func(context.Context, *upstream.Client, *auth.Auth, string, string, map[string]any) (upstream.GrowthChatReply, error) {
+		return upstream.GrowthChatReply{}, fmt.Errorf("upstream chat rejected")
+	}
+	rep, err := s.RunGrowthAccountReport(context.Background(), "u1", "chat_5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Reported != 0 || len(rep.Errors) == 0 || !strings.Contains(strings.Join(rep.Errors, " "), "upstream chat rejected") {
+		t.Fatalf("executor failure must be visible in report: %+v", rep)
+	}
+}
 func TestRunGrowthAccountOnlyTarget(t *testing.T) {
 	oldClaim, oldAccept, oldGap, oldExec, oldRetry := growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay
 	growthClaimDelay, growthAcceptDelay, growthEventGap, growthExecutorGap, growthClaimRetryDelay = 0, 0, 0, 0, 0

@@ -392,3 +392,78 @@ func TestZCodeCatalogNoAccountNoNegativeCache(t *testing.T) {
 		t.Errorf("目录缺 glm-4.6（got=%v）", seen)
 	}
 }
+
+// TestZCodeChatSuccessMarksRouteAvailable 真实 chat 成功（SSE 完整结束）才写入 route
+// 证据；权益本身不会自动把账号标成可路由。
+func TestZCodeChatSuccessMarksRouteAvailable(t *testing.T) {
+	_, _, h := zcodeTestPool(t)
+	stubZCodeEntitled([]creditRow{{
+		UID: "zc1", Producer: source.ProducerZCode, OK: true,
+		EntitledModels: []string{"glm-4.6"},
+	}})
+	stubZCodeRoute("zc1", false, "before success")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"cn:zcode:glm-4.6","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
+	}
+	if ok, present := zcodeAccountUsable("zc1"); !present || !ok {
+		t.Fatalf("真实 chat 成功后 route 应变 OK（present=%v ok=%v）", present, ok)
+	}
+}
+
+// TestZCodeHardCreditReturnsInsufficientQuota 上游 1113 必须映射成 429
+// insufficient_quota，并保留上游原文；不能退化成笼统 503。
+func TestZCodeHardCreditReturnsInsufficientQuota(t *testing.T) {
+	_, _, h := zcodeTestPool(t)
+	stubZCodeEntitled([]creditRow{{
+		UID: "zc1", Producer: source.ProducerZCode, OK: true,
+		EntitledModels: []string{"glm-4.6"},
+	}})
+	stubZCodeRoute("zc1", true, "")
+
+	up := h.cfg.Upstream
+	up.HTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"code":1113,"msg":"Insufficient balance or no resource package"}`)),
+		}, nil
+	})}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"cn:zcode:glm-4.6","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d want 429, body=%s", rec.Code, rec.Body)
+	}
+	assertJSONErrorCode(t, rec.Body.String(), "insufficient_quota")
+	if !strings.Contains(rec.Body.String(), "Insufficient balance or no resource package") {
+		t.Fatalf("必须保留上游原文，body=%s", rec.Body)
+	}
+	if ok, present := zcodeAccountUsable("zc1"); !present || ok {
+		t.Fatalf("1113 后 route 应变不可用（present=%v ok=%v）", present, ok)
+	}
+}
+
+// TestZCodeAllAccountsHardCoolingReturnsInsufficientQuota 池里有 ZCode 号、但全部因
+// 1113 硬冷却而选不出候选时，应返回 429 insufficient_quota，而不是 503。
+func TestZCodeAllAccountsHardCoolingReturnsInsufficientQuota(t *testing.T) {
+	_, _, h := zcodeTestPool(t)
+	stubZCodeEntitled([]creditRow{{
+		UID: "zc1", Producer: source.ProducerZCode, OK: true,
+		EntitledModels: []string{"glm-4.6"},
+	}})
+	stubZCodeRoute("zc1", false, "upstream 1113 insufficient balance")
+	h.cfg.Pool.CooldownUntilTomorrow4AM("zc1", "余额不足")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"cn:zcode:glm-4.6","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d want 429, body=%s", rec.Code, rec.Body)
+	}
+	assertJSONErrorCode(t, rec.Body.String(), "insufficient_quota")
+}
