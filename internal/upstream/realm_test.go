@@ -20,10 +20,10 @@ func globalTestClient(t *testing.T, chatSrv, billingSrv *httptest.Server) *Clien
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
 	return &Client{
-		HTTP:             &http.Client{}, // DefaultTransport → 走 httptest 服务器真实地址
-		ChatBaseCN:       "https://chat.example",
-		BillingBaseCN:    "https://billing.example",
-		ChatBaseGlobal:   strings.TrimSuffix(chatSrv.URL, "/"),
+		HTTP:              &http.Client{}, // DefaultTransport → 走 httptest 服务器真实地址
+		ChatBaseCN:        "https://chat.example",
+		BillingBaseCN:     "https://billing.example",
+		ChatBaseGlobal:    strings.TrimSuffix(chatSrv.URL, "/"),
 		BillingBaseGlobal: strings.TrimSuffix(billingSrv.URL, "/"),
 		GlobalEnabled:     true,
 	}
@@ -249,6 +249,7 @@ func TestGlobalChatServerFallbackErrorCode(t *testing.T) {
 		t.Errorf("500 calls=%v want exactly [/v2/chat/completions] (no retry)", calls)
 	}
 }
+
 // TestEffortsKeyedByRealm efforts 缓存按 realm 隔离：CN 探测写入的 supportedEfforts
 // 不得被 global 同模型名请求复用（C-2）。global 侧无 efforts 探测 → 原样透传不降级；
 // 同 Client 上 CN 请求仍按 CN 探测结果降级。
@@ -287,11 +288,11 @@ func TestEffortsKeyedByRealm(t *testing.T) {
 
 	base := strings.TrimSuffix(srv.URL, "/")
 	c := &Client{
-		HTTP:               http.DefaultClient,
-		ChatBaseCN:         base,
-		BillingBaseCN:      "https://billing.example",
-		ChatBaseGlobal:     base,
-		GlobalEnabled:      true,
+		HTTP:                 http.DefaultClient,
+		ChatBaseCN:           base,
+		BillingBaseCN:        "https://billing.example",
+		ChatBaseGlobal:       base,
+		GlobalEnabled:        true,
 		SanitizeFingerprints: true,
 	}
 	cn := &auth.Auth{AccessToken: "at", UID: "cn1", Domain: "www.codebuddy.cn"}

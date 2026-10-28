@@ -514,13 +514,16 @@ func (p *Pool) weightOfFree(e *entry, now time.Time) float64 {
 //	            （匿名免费通道，无需 key，见 upstream/kilo.go）
 //	            （智谱账号自带的 49 位 id.secret，Bearer 即可，见 upstream/zcode.go）
 //
-// qoder 仍未接入：这类号可以进池、管理页要看得到、余额也要能查，但选号一律跳过
-// ——拿别家的凭据去打别家上游，轻则 4xx 重则被风控标记，属于「错得比没有更坏」。
+// qoder → https://gateway.qoder.com.cn（COSY 签名协议，见 upstream/qoder.go）。
+//
+// 未接入的来源可以进池、管理页要看得到、余额也要能查，但选号一律跳过——拿别家的
+// 凭据去打别家上游，轻则 4xx 重则被风控标记，属于「错得比没有更坏」。
 //
 // 空串（历史凭证没有台账标注）按 workbuddy 处理，保证零回归。
 // 再接入一家上游时改这一个函数即可放开。
 func servableProducer(producer string) bool {
-	return producer == "" || producer == "workbuddy" || producer == "zcode" || producer == "opencode" || producer == "kilo"
+	return producer == "" || producer == "workbuddy" || producer == "zcode" ||
+		producer == "opencode" || producer == "kilo" || producer == "qoder"
 }
 
 // producerMatch 报告账号是否属于请求指定的生产者。非空时要求精确匹配台账/凭证上的

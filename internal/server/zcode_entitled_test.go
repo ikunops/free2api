@@ -337,6 +337,107 @@ func TestAvailableOutputModelsExposesRouteUnavailable(t *testing.T) {
 	}
 }
 
+// TestAvailableOutputModelsKeepsBlockedEntitledRowWhenCatalogEmpty 上游目录拉不到时，
+// 有权益但明确不可路由的模型仍必须出现在发布清单里供诊断；它显示为未选中，
+// 但用户原来持久化的选择不能被后端静默删掉，路线恢复后仍可重新生效。
+func TestAvailableOutputModelsKeepsBlockedEntitledRowWhenCatalogEmpty(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+
+	key := modelKey(upstream.ProducerZCode, "glm-5.3-flash")
+	st := NewOutputStore("")
+	if _, err := st.Set(OutputConfig{Format: FormatOpenAI, Models: []string{key}}); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	h.cfg.Output = st
+
+	// 模拟目录拉取失败后的负缓存：infos 为空，但仍在冷却窗内，不触发网络。
+	zcodeCatalogCache.Lock()
+	zcodeCatalogCache.infos = nil
+	zcodeCatalogCache.fetched = time.Time{}
+	zcodeCatalogCache.lastFail = time.Now()
+	zcodeCatalogCache.Unlock()
+
+	var row map[string]any
+	for _, e := range h.availableOutputModels() {
+		if p, _ := e["producer"].(string); p != upstream.ProducerZCode {
+			continue
+		}
+		if id, _ := e["id"].(string); id == "glm-5.3-flash" {
+			row = e
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("目录为空时仍应保留有权益的 ZCode 诊断行")
+	}
+	if ent, _ := row["entitled"].(bool); !ent {
+		t.Fatal("glm-5.3-flash 有套餐权益，entitled 应为 true")
+	}
+	if route, _ := row["route_available"].(bool); route {
+		t.Fatal("所有权益号明确失败时 route_available 必须为 false")
+	}
+	if selected, _ := row["selected"].(bool); selected {
+		t.Fatal("不可路由行不能显示为已选中")
+	}
+	if reason, _ := row["route_reason"].(string); !strings.Contains(reason, "insufficient balance") {
+		t.Fatalf("诊断行应透出真实不可路由原因，得到 %q", reason)
+	}
+	kept := false
+	for _, m := range st.Get().Models {
+		if m == key {
+			kept = true
+			break
+		}
+	}
+	if !kept {
+		t.Fatalf("后端不应静默删掉用户原来的发布选择，当前清单=%v", st.Get().Models)
+	}
+}
+
+// TestAvailableOutputModelsRespectsProducerAllow 出口只服务某个来源时，发布清单候选
+// 也必须按同一范围收窄；否则面板会列出这个口请求侧必然 404 的别家模型。
+func TestAvailableOutputModelsRespectsProducerAllow(t *testing.T) {
+	h := newZCodeCatalogHandler(t)
+	stubZCodeEntitled(nil)
+	seedCatalogs(t,
+		[]upstream.ModelInfo{{ID: "cn-model"}},
+		[]upstream.ModelInfo{{ID: "zcode-model"}})
+
+	opencodeCatalogCache.Lock()
+	opencodeCatalogCache.infos = []upstream.ModelInfo{{ID: "opencode-model"}}
+	opencodeCatalogCache.fetched = time.Now()
+	opencodeCatalogCache.lastFail = time.Time{}
+	opencodeCatalogCache.Unlock()
+	kiloCatalogCache.Lock()
+	kiloCatalogCache.infos = []upstream.ModelInfo{{ID: "kilo-model"}}
+	kiloCatalogCache.fetched = time.Now()
+	kiloCatalogCache.lastFail = time.Time{}
+	kiloCatalogCache.Unlock()
+	t.Cleanup(func() {
+		opencodeCatalogCache.Lock()
+		opencodeCatalogCache.infos = nil
+		opencodeCatalogCache.fetched = time.Time{}
+		opencodeCatalogCache.lastFail = time.Time{}
+		opencodeCatalogCache.Unlock()
+		kiloCatalogCache.Lock()
+		kiloCatalogCache.infos = nil
+		kiloCatalogCache.fetched = time.Time{}
+		kiloCatalogCache.lastFail = time.Time{}
+		kiloCatalogCache.Unlock()
+	})
+
+	h.cfg.ProducerAllow = []string{upstream.ProducerZCode}
+	got := h.availableOutputModels()
+	if len(got) != 1 {
+		t.Fatalf("zcode 专用口应只列 1 个候选，得到 %d：%v", len(got), publishKeysOf(got))
+	}
+	if p, _ := got[0]["producer"].(string); p != upstream.ProducerZCode {
+		t.Fatalf("zcode 专用口列出了别家模型：%v", publishKeysOf(got))
+	}
+}
+
 // TestSeedZCodeRoutesTimestampsPoolOnlyFailure 线上旧快照里存在「明确 1113/401，
 // 但没有 checked_at」的负证据。升级后号池仍处于 hard-credit / session-dead 时，
 // 补种必须给它一个当前时间，否则发布门控会把它当成“从未验证”，导致
@@ -403,5 +504,23 @@ func TestSeedZCodeRoutesTimestampsPoolOnlyFailure(t *testing.T) {
 				t.Fatalf("同一负证据被刷新续期：checked_at=%d want %d", got, old)
 			}
 		})
+	}
+}
+
+func TestZCodeStartAccountEntitledGate(t *testing.T) {
+	stubZCodeEntitled([]creditRow{
+		{UID: "zcode-good", Producer: source.ProducerZCode, OK: true, EntitledModels: []string{"glm-5.3-flash"}},
+		{UID: "zcode-bad", Producer: source.ProducerZCode, OK: true},
+		{UID: "zcode-unknown", Producer: source.ProducerZCode, OK: false},
+	})
+	t.Cleanup(func() { stubZCodeEntitled(nil) })
+	if ok, known := zcodeStartAccountEntitled("zcode-good", "glm-5.3-flash"); !ok || !known {
+		t.Fatalf("good: ok=%v known=%v", ok, known)
+	}
+	if ok, known := zcodeStartAccountEntitled("zcode-bad", "glm-5.3-flash"); ok || !known {
+		t.Fatalf("bad: ok=%v known=%v want known unentitled", ok, known)
+	}
+	if ok, known := zcodeStartAccountEntitled("zcode-unknown", "glm-5.3-flash"); ok || !known {
+		t.Fatalf("unknown: ok=%v known=%v；池里已有确认有权益号时应跳过未知号", ok, known)
 	}
 }

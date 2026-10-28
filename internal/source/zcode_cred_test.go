@@ -175,3 +175,135 @@ func TestResolveZCodeQuotaCredPrefersOwn(t *testing.T) {
 		t.Fatalf("应优先用自己的凭据，得到 ok=%v %+v miss=%q", ok, got, miss)
 	}
 }
+
+// TestParseZCodeAccountReadsEncryptedAccountProviderAPIKey 账号快照的
+// account-provider:*:api-key 是 ZCode 自己保存的静态 API Key。解析器必须按
+// 本机口令解密并纳入候选；否则 UI 会显示「没有可用凭据」，实际却把可用 key
+// 藏在 credentials 里没读。第三方 provider 和 JWT 仍然必须排除。
+func TestParseZCodeAccountReadsEncryptedAccountProviderAPIKey(t *testing.T) {
+	cands := zcodeCredSecretCandidates()
+	if len(cands) == 0 {
+		t.Skip("本机没有可用的口令候选")
+	}
+	enc, err := encryptZCodeCred("0123456789abcdef0123456789abcdef.secretPart", cands[0])
+	if err != nil {
+		t.Fatalf("加密：%v", err)
+	}
+	body := `{"id":"acc-key","name":"key-test","credentials":{` +
+		`"account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:1:api-key":"` + enc + `",` +
+		`"account-provider:coding-plan:account:zai-individual-coding-plan:account:1:api-key":"not-a-real-key"` +
+		`},"config":{"provider":{}}}`
+	acc, err := ParseZCodeAccount([]byte(body), "acc-key.json")
+	if err != nil {
+		t.Fatalf("解析：%v", err)
+	}
+	if len(acc.Keys) == 0 {
+		t.Fatal("account-provider 的加密 api-key 没被纳入候选")
+	}
+	key, ok := acc.UsableKey()
+	if !ok || key.APIKey != "0123456789abcdef0123456789abcdef.secretPart" {
+		t.Fatalf("解出的静态 key 不对：ok=%v key=%+v", ok, key)
+	}
+	if key.BaseURL != "https://open.bigmodel.cn/api/paas/v4" || !key.IDSecret {
+		t.Fatalf("base / IDSecret 判定不对：%+v", key)
+	}
+}
+
+// TestParseZCodeAccountCredentialNameMapsZAI 键名中的 zai 必须映射到国际站，
+// 不能默认打国内站；两个站点余额与鉴权独立，打错会得到误导性的 429。
+func TestParseZCodeAccountCredentialNameMapsZAI(t *testing.T) {
+	cases := map[string]string{
+		"account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:1:api-key": "https://open.bigmodel.cn/api/paas/v4",
+		"account-provider:coding-plan:account:zai-individual-coding-plan:account:1:api-key":      "https://api.z.ai/api/paas/v4",
+		"account-provider:whatever:api-key":                                                      "",
+		"not-an-account-provider":                                                                "",
+	}
+	for in, want := range cases {
+		if got := zcodeBaseFromCredentialName(in); got != want {
+			t.Errorf("zcodeBaseFromCredentialName(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+// TestLoadZCodeAppAccountKeepsJWTAndStaticKeySeparate 登录态里的 JWT 只能作为
+// 观测凭据（读额度），不能混进 Keys；只有 account-provider:*:api-key 才可导入。
+func TestLoadZCodeAppAccountKeepsJWTAndStaticKeySeparate(t *testing.T) {
+	dir := t.TempDir()
+	key := "0123456789abcdef0123456789abcdef.secretPart"
+	creds := `{
+  "oauth:active_provider":"zai",
+  "oauth:zai:user_info":"{\"displayName\":\"旅行者8215\",\"id\":\"u-app\"}",
+  "oauth:zai:access_token":"aaa.bbb.ccc",
+  "zcodejwttoken":"head.payload.signature",
+  "account-provider:coding-plan:account:zai-individual-coding-plan:account:1:api-key":"` + key + `"
+}`
+	if err := os.WriteFile(filepath.Join(dir, "credentials.json"), []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	acc, err := LoadZCodeAppAccount(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acc.Keys) != 1 || acc.Keys[0].APIKey != key {
+		t.Fatalf("静态 key 抽取错误：%+v", acc.Keys)
+	}
+	if acc.JWT != "head.payload.signature" {
+		t.Fatalf("JWT 应单独保留，得到 %q", acc.JWT)
+	}
+	for _, k := range acc.Keys {
+		if looksLikeJWT(k.APIKey) {
+			t.Fatal("JWT 不得进入静态 key 集合")
+		}
+	}
+}
+
+// TestLoadZCodeAppAccountJWTAloneIsNotImportable 只有官方客户端登录态时，
+// 必须返回零个静态 key，候选 Usable=false，不能把 JWT 当账号数。
+func TestLoadZCodeAppAccountJWTAloneIsNotImportable(t *testing.T) {
+	dir := t.TempDir()
+	creds := `{
+  "oauth:active_provider":"zai",
+  "oauth:zai:user_info":"{\"displayName\":\"旅行者8215\",\"id\":\"u-app\"}",
+  "oauth:zai:access_token":"aaa.bbb.ccc",
+  "zcodejwttoken":"head.payload.signature"
+}`
+	if err := os.WriteFile(filepath.Join(dir, "credentials.json"), []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	acc, err := LoadZCodeAppAccount(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acc.Keys) != 0 || acc.JWT == "" {
+		t.Fatalf("应只保留 JWT、不产生静态 key：keys=%+v jwt=%q", acc.Keys, acc.JWT)
+	}
+	cands, err := ZCodeAppCandidates(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 || cands[0].Usable {
+		t.Fatalf("只有 JWT 时不能报可导入：%+v", cands)
+	}
+}
+
+// TestLoadZCodeAppModelsReadsTopLevelProvider 应用自己的 config.json 是顶层 provider，
+// 不是 zcode-switch 的 config.provider。读错层级会让候选页模型为空，
+// 进而用错兜底模型做静态 chat 探活。
+func TestLoadZCodeAppModelsReadsTopLevelProvider(t *testing.T) {
+	dir := t.TempDir()
+	config := "{\"provider\":{\"builtin:zai-coding-plan\":{\"models\":{\"GLM-5.3-Flash\":{\"limit\":{\"context\":1000000,\"output\":128000},\"modalities\":{\"input\":[\"text\",\"image\"]},\"reasoning\":{\"enabled\":true}},\"GLM-5.3\":{\"limit\":{\"context\":1000000,\"output\":128000}}}}}}"
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models := loadZCodeAppModels(path)
+	if len(models) != 2 {
+		t.Fatalf("顶层 provider 应读出 2 个模型，得到 %+v", models)
+	}
+	if models[0].ID != "GLM-5.3" || models[0].Context != 1000000 {
+		t.Fatalf("模型或上下文读取错误：%+v", models[0])
+	}
+	if !models[1].Image || !models[1].Reasoning {
+		t.Fatalf("多模态/推理能力读取错误：%+v", models[1])
+	}
+}

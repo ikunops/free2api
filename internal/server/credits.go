@@ -39,6 +39,11 @@ const creditsTTL = 10 * time.Minute
 // 超过一天没有真实 chat 成功就必须重新证明；GET /models 与套餐权益都不能续期。
 const zcodeRouteTTL = 24 * time.Hour
 
+// zcodeRouteBlockedTTL 明确失败证据的有效期。与成功证据不同：1113/401 是静态凭据
+// 路线本身不成立，不是短时抖动；按 24h 过期会让同一个确定失败每天重新出现在发布
+// 清单里。保留 7 天作为兜底，期间可由真实成功覆盖，或由用户手动复测重置。
+const zcodeRouteBlockedTTL = 7 * 24 * time.Hour
+
 // creditRow 单账号余额行（脱敏：只给 uid/昵称/域 + 数值，不含任何凭证）。
 type creditRow struct {
 	UID      string `json:"uid"`
@@ -616,6 +621,40 @@ func zcodeAccountUsable(uid string) (bool, bool) {
 	return zcodeRouteValidLocked(zcodeEntitledCache.routeByUID[uid], time.Now()), true
 }
 
+// zcodeStartAccountEntitled 报告某个 ZCode 号是否有 Start Plan 指定模型的权益。
+// Start Plan 只接管 glm-5.3-flash，且实测无权益号会返回 HTTP 200 + 0 个 SSE 帧。
+// 因而这里采用「已知正权益才放行」：额度缓存已经建立后，明确无权益的号跳过，
+// 避免把一次请求浪费在必然空流的号上。known=false 表示还没读到这个号的权益。
+func zcodeStartAccountEntitled(uid, model string) (ok bool, known bool) {
+	zcodeEntitledCache.RLock()
+	defer zcodeEntitledCache.RUnlock()
+	// byUID 是否有记录才是「额度数据已经建立」的准确信号。不能用 known：
+	// known 表示号池并集非空，全部账号都无权益时它同样为 false，会把「确定无权益」
+	// 误当成「未知」而重新选中空流账号。
+	if zcodeEntitledCache.byUID == nil {
+		return false, false
+	}
+	entitled, seen := zcodeEntitledCache.byUID[uid]
+	if !seen {
+		// 只要号池已经确认存在有 Start Plan 权益的号，就不再把「读额度失败/未知」
+		// 的号放进来试。实测这些号会回 200+0 帧，一次请求的 MaxRotate 会全被它们
+		// 吃掉，真正有权益的号反而永远轮不到。全部未知时才放行探测。
+		if len(zcodeEntitledCache.set) > 0 {
+			return false, true
+		}
+		return false, false
+	}
+	if !entitled {
+		return false, true
+	}
+	for m := range zcodeEntitledCache.modelsByUID[uid] {
+		if strings.EqualFold(m, model) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 // zcodeRouteValidLocked 只有近期真实 chat 成功才算静态反代可用。CheckedAt=0 表示
 // 从未验证（不是“很久以前成功”）；未来时间戳按无效处理，避免时钟回拨把证据永久续命。
 func zcodeRouteValidLocked(route zcodeRouteState, now time.Time) bool {
@@ -635,7 +674,7 @@ func zcodeRouteNegativeLocked(route zcodeRouteState, now time.Time) bool {
 	}
 	checked := time.Unix(route.CheckedAt, 0)
 	age := now.Sub(checked)
-	return age >= 0 && age <= zcodeRouteTTL
+	return age >= 0 && age <= zcodeRouteBlockedTTL
 }
 
 // zcodeRouteReason 给发布清单展示不可路由原因。未知与过期分开说，避免把

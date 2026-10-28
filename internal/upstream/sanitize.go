@@ -18,8 +18,8 @@ var sanitizeFeatures = []string{
 	"You are Claude Code",        // 身份句（截断前缀即可命中）
 	"Main branch (",              // 注入指令句（截断前缀即可命中）
 	"You are a coding agent running in the Codex CLI", // Codex instructions 首段（截断前缀即可命中）
-	"github.com/anthropics/",     // 反馈句里的 Anthropic 仓库链接
-	"11128",                      // 上游反探测：裸数字错误码
+	"github.com/anthropics/",                          // 反馈句里的 Anthropic 仓库链接
+	"11128",                                           // 上游反探测：裸数字错误码
 }
 
 // sanitizeHdrRe 剥离层：header 键名即触发（与值无关），整段删除。

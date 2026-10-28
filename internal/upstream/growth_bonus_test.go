@@ -14,14 +14,14 @@ import (
 
 // bonusStub 模拟补签卡 + 礼包/补偿端点（growth 域走 chatBase、billing 域走 billingBase）。
 type bonusStub struct {
-	heatErr     bool // heatmap 返回 500
-	makeupErr   bool // makeup-cards/use 返回业务错误（无卡/无漏签）
-	giftCredit  int64
-	compCredit  int64
-	heatCalls   atomic.Int32
-	makeupBody  atomic.Value
-	giftCalls   atomic.Int32
-	compCalls   atomic.Int32
+	heatErr    bool // heatmap 返回 500
+	makeupErr  bool // makeup-cards/use 返回业务错误（无卡/无漏签）
+	giftCredit int64
+	compCredit int64
+	heatCalls  atomic.Int32
+	makeupBody atomic.Value
+	giftCalls  atomic.Int32
+	compCalls  atomic.Int32
 	// makeupTarget 传入的 target_date（断言用）。
 }
 

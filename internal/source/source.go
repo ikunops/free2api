@@ -65,6 +65,9 @@ type Flat struct {
 	// 它们的话，换机器 / 删账本就再也读不到额度——「大包小包地迁移」正是要避免的。
 	ZCodeJWT       string `json:"zcode_jwt,omitempty"`
 	ZCodeDeviceMID string `json:"zcode_device_mid,omitempty"`
+	// QoderMachineID Qoder 号的 COSY 签名机器标识（auth.machine-id 原文）。
+	// 与 token 同源同机；换机器重导一次即可，不参与任何跨机推导。
+	QoderMachineID string `json:"qoder_machine_id,omitempty"`
 }
 
 // Kind 一类「源」（生产者）。Available=false 表示本机没有该工具的数据，
@@ -167,8 +170,9 @@ type portable struct {
 	EnterpriseID string `json:"enterpriseId"`
 	Nickname     string `json:"nickname"`
 	DeviceToken  string `json:"device_token"`
-	Producer     string `json:"producer"`
-	UpstreamBase string `json:"upstream_base"`
+	Producer       string `json:"producer"`
+	UpstreamBase   string `json:"upstream_base"`
+	QoderMachineID string `json:"qoder_machine_id"`
 	// 嵌套形（插件 OAuth）
 	Auth    *nestedAuth    `json:"auth"`
 	Account *nestedAccount `json:"account"`
@@ -206,8 +210,9 @@ func fromPortable(p portable) (Flat, error) {
 		EnterpriseID: p.EnterpriseID,
 		Nickname:     p.Nickname,
 		DeviceToken:  p.DeviceToken,
-		Producer:     p.Producer,
-		UpstreamBase: p.UpstreamBase,
+		Producer:       p.Producer,
+		UpstreamBase:   p.UpstreamBase,
+		QoderMachineID: p.QoderMachineID,
 	}
 	if p.Auth != nil { // 嵌套形优先（插件 OAuth 输出的权威字段）
 		if p.Auth.AccessToken != "" {
@@ -312,15 +317,28 @@ func AuthFileName(uid string) string {
 }
 
 // Detect 扫描本机所有可用的源，返回给前端渲染来源卡。
+// 保留三参数签名给旧调用方；ZCode 应用目录走本机缺省。
 func Detect(wbSwitchPath, zcodeDir, authDir string) []Kind {
+	return DetectWithZCodeAppDir(wbSwitchPath, zcodeDir, ZCodeAppCredDir(), authDir)
+}
+
+// DetectWithZCodeAppDir 与 Detect 相同，但允许配置覆盖 ZCode 应用登录态目录。
+// 管理页读的是用户在 config.source.zcode_app_dir 指定的目录，不能一边用配置读候选、
+// 一边又拿默认目录做来源探测。
+func DetectWithZCodeAppDir(wbSwitchPath, zcodeDir, zcodeAppDir, authDir string) []Kind {
 	if wbSwitchPath == "" {
 		wbSwitchPath = DefaultWBSwitchPath()
 	}
 	if zcodeDir == "" {
 		zcodeDir = DefaultZCodeSwitchDir()
 	}
+	if zcodeAppDir == "" {
+		zcodeAppDir = ZCodeAppCredDir()
+	}
 	out := []Kind{
-		detectApp(),
+		detectZCodeApp(zcodeAppDir),
+		detectQoder(),
+		detectApp(zcodeAppDir),
 		detectWorkBuddyDesktop(),
 		detectWBSwitch(wbSwitchPath),
 		{
@@ -337,6 +355,61 @@ func Detect(wbSwitchPath, zcodeDir, authDir string) []Kind {
 		detectAuths(authDir),
 	}
 	return out
+}
+
+// detectZCodeApp ZCode 应用当前登录：METHOD=app，是否能导入只看静态 key。
+// 不能把 credentials.json 里的 JWT 数当成账号，否则卡片会写「可直接读」但候选为空。
+func detectZCodeApp(zcodeAppDir string) Kind {
+	if zcodeAppDir == "" {
+		zcodeAppDir = ZCodeAppCredDir()
+	}
+	dir := zcodeAppDir
+	k := Kind{
+		ID:      "zcode-app",
+		Name:    "ZCode 应用当前登录（静态 API key）",
+		Path:    dir,
+		Methods: []string{"app"},
+		Method:  MethodApp,
+	}
+	acc, err := LoadZCodeAppAccount(dir)
+	if err != nil {
+		k.Note = "没读到 ZCode 应用登录态：" + zcodeShortErr(err)
+		return k
+	}
+	key, ok := acc.usableKey()
+	if !ok {
+		k.Note = "读到登录身份 " + acc.Name + "，但没有可用的静态 API key（官方登录 token 不能当 API key）"
+		return k
+	}
+	k.Available = true
+	k.Count = 1
+	k.Usable = 1
+	k.Note = "当前登录 " + acc.Name + " · key " + keyHint(key.APIKey) + " · " + key.BaseURL +
+		"；静态 key 是否真正可调用以 chat 探活为准"
+	return k
+}
+
+// detectQoder Qoder 应用登录态的取源结论：与本机客户端共用一份登录态，
+// 解出来的 device token + machine id 可直接走 COSY 协议反代。
+func detectQoder() Kind {
+	path := QoderAppDir()
+	k := Kind{
+		ID:      "qoder-app",
+		Name:    "Qoder 应用当前登录（CN）",
+		Path:    path,
+		Methods: []string{"app"},
+		Method:  MethodApp,
+	}
+	acc, err := LoadQoderAccount(path)
+	if err != nil {
+		k.Note = "没读到 Qoder 登录态：" + err.Error() + "；先在 Qoder 客户端登录一次（网关需与客户端同一 Windows 用户）"
+		return k
+	}
+	k.Available = true
+	k.Count = 1
+	k.Usable = 1
+	k.Note = "当前登录 " + acc.Name + " · machine " + keyHint(acc.MachineID) + " · COSY → " + qoderGatewayBase
+	return k
 }
 
 // detectOpenCode OpenCode（CLI/TUI）自家账号的取源结论。它只有「本机 auth.json」这一条路
@@ -395,7 +468,10 @@ func detectKilo() Kind {
 
 // detectApp 汇总「应用内登录态」探查结论：本机装了哪些工具、登录态存在哪、
 // 能不能直接读。可用性 = 至少探测到一个工具的数据目录。
-func detectApp() Kind {
+func detectApp(zcodeAppDir string) Kind {
+	if zcodeAppDir == "" {
+		zcodeAppDir = ZCodeAppCredDir()
+	}
 	k := Kind{
 		ID:      "app",
 		Name:    "应用内登录态（本机工具自己存的那一个登录）",
@@ -404,7 +480,7 @@ func detectApp() Kind {
 		Method:  MethodApp,
 	}
 	readable, found := 0, 0
-	for _, t := range Probe() {
+	for _, t := range ProbeWithZCodeAppDir(zcodeAppDir) {
 		if !t.Exists {
 			continue
 		}

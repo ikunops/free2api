@@ -558,6 +558,11 @@ func (h *Handler) modelKnown(realm, producer, bare string) bool {
 			return true
 		}
 	}
+	if producer == "" || producer == upstream.ProducerQoder {
+		if containsModelID(h.fetchQoderCatalog(), bare) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -601,6 +606,11 @@ func (h *Handler) modelFree(realm, producer, bare string) bool {
 	}
 	if producer == "" || producer == upstream.ProducerKilo {
 		if containsFreeModel(kiloCatalogSnapshot(), bare) {
+			return true
+		}
+	}
+	if producer == "" || producer == upstream.ProducerQoder {
+		if containsFreeModel(qoderCatalogSnapshot(), bare) {
 			return true
 		}
 	}
@@ -893,6 +903,42 @@ func (h *Handler) modelList() []map[string]any {
 		entry = h.applyModelInfoFields(entry, mi)
 		out = append(out, entry)
 	}
+	// qoder（Qoder CN）模型名单：与前面几段同构——目录实时从上游拉（1h 缓存），
+	// modelIDFor 带 "qoder" 段，客户端整串回传即路由固定到 qoder 号池。
+	var qoderModels []upstream.ModelInfo
+	if h.producerAllowed(upstream.ProducerQoder) {
+		qoderModels = h.fetchQoderCatalog()
+	}
+	for _, mi := range qoderModels {
+		if !h.publishAllows(published, known, "cn", upstream.ProducerQoder, mi.ID) {
+			continue
+		}
+		if h.modelDead.active("cn", upstream.ProducerQoder, mi.ID) {
+			continue
+		}
+		entry := map[string]any{
+			"id":       h.modelIDFor("cn", upstream.ProducerQoder, mi.ID, mi.Credits),
+			"object":   "model",
+			"created":  1753600000,
+			"owned_by": upstream.ProducerQoder,
+		}
+		if ctx, ok := upstream.ContextWindowListingV4Known(mi.ID, mi.DevBase, mi.ContextWindow, h.cfg.Upstream.HTTP); ok {
+			entry["context_length"] = ctx
+		}
+		if mo, ok := upstream.MaxOutputTokensListingV4For(mi.ID, mi.DevBase, mi.MaxTokens, h.cfg.Upstream.HTTP); ok {
+			entry["max_output_tokens"] = mo
+		}
+		entry = h.applyModelInfoFields(entry, mi)
+		// effort 能力透出（与 CN/zcode 段同口径）：远端 supportedEfforts 权威，
+		// 客户端据此可发现档位。缺声明时省略字段，不编造。
+		if len(mi.Efforts) > 0 {
+			entry["reasoning_supported_efforts"] = mi.Efforts
+			if mi.DefaultEffort != "" {
+				entry["reasoning_default_effort"] = mi.DefaultEffort
+			}
+		}
+		out = append(out, entry)
+	}
 	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
 	// 名单 = 探测结果（fetchGlobalModels 纯动态，失败/无号 → 空）；无 global 账号时
 	// 空名单且零上游调用。
@@ -1151,12 +1197,33 @@ func (h *Handler) availableOutputModels() []map[string]any {
 	// unknown/过期仍可勾选并发布一次，避免新号永远等不到第一次成功。
 	zcEnt, zcKnown := h.zcodeEntitledModels()
 	zcBlocked, zcodeRouteReasons, zcBlockedKnown := zcodeBlockedModels()
-	for _, g := range []group{
-		{"workbuddy", h.fetchDynamicModels()},
-		{upstream.ProducerZCode, h.fetchZCodeCatalog()},
-		{upstream.ProducerOpenCode, h.fetchOpenCodeCatalog()},
-		{upstream.ProducerKilo, h.fetchKiloCatalog()},
-	} {
+	zcodeRouteForOutput := func(id string) (bool, string) {
+		if !zcBlockedKnown || !zcBlocked[id] {
+			return true, ""
+		}
+		reason := zcodeRouteReasons[id]
+		if reason == "" {
+			reason = "no route-ready account for this model"
+		}
+		return false, reason
+	}
+	groups := make([]group, 0, 4)
+	if h.producerAllowed("workbuddy") {
+		groups = append(groups, group{"workbuddy", h.fetchDynamicModels()})
+	}
+	if h.producerAllowed(upstream.ProducerZCode) {
+		groups = append(groups, group{upstream.ProducerZCode, h.fetchZCodeCatalog()})
+	}
+	if h.producerAllowed(upstream.ProducerOpenCode) {
+		groups = append(groups, group{upstream.ProducerOpenCode, h.fetchOpenCodeCatalog()})
+	}
+	if h.producerAllowed(upstream.ProducerKilo) {
+		groups = append(groups, group{upstream.ProducerKilo, h.fetchKiloCatalog()})
+	}
+	if h.producerAllowed(upstream.ProducerQoder) {
+		groups = append(groups, group{upstream.ProducerQoder, h.fetchQoderCatalog()})
+	}
+	for _, g := range groups {
 		for _, mi := range g.infos {
 			if mi.ID == "" {
 				continue
@@ -1172,15 +1239,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 				if zcKnown {
 					entitled = zcEnt[mi.ID]
 				}
-				if zcBlockedKnown {
-					routeAvailable = !zcBlocked[mi.ID]
-				}
-				if !routeAvailable {
-					routeReason = zcodeRouteReasons[mi.ID]
-					if routeReason == "" {
-						routeReason = "no route-ready account for this model"
-					}
-				}
+				routeAvailable, routeReason = zcodeRouteForOutput(mi.ID)
 			}
 			key := modelKey(g.producer, mi.ID)
 			// selected = 「这条现在真的会发出去吗」，口径必须与 modelList 完全一致：
@@ -1230,7 +1289,7 @@ func (h *Handler) availableOutputModels() []map[string]any {
 	// grok-4.7 …）。不列进来，用户在清单里看不见它们，一保存白名单就会把国际版独有的
 	// 型号静默砍掉。key 用 "global:<id>"，与 CN 的同名型号（fast-model、glm-5.3 …）
 	// 各留一把开关，避免「勾了国内版把国际版一起放开」。
-	if h.cfg.GlobalEnabled {
+	if h.cfg.GlobalEnabled && h.producerAllowed("workbuddy") {
 		gids, gacct := h.fetchGlobalModels()
 		ginfos := map[string]upstream.ModelInfo{}
 		for _, gi := range h.cfg.Upstream.FetchGlobalModelInfos(gacct) {
@@ -1273,9 +1332,9 @@ func (h *Handler) availableOutputModels() []map[string]any {
 			out = append(out, e)
 		}
 	}
-	// 有额度、但上游目录里没列出来的型号（少见）也得让用户勾得到；只排除
-	// 「所有有权益号都有近期明确失败证据」的型号。未知仍允许首次验证。
-	if zcKnown {
+	// 有额度、但上游目录里没列出来的型号（少见）也得让用户勾得到；明确不可路由的
+	// 也保留为诊断行（selected=false），未知仍允许首次验证。
+	if zcKnown && h.producerAllowed(upstream.ProducerZCode) {
 		seen := map[string]bool{}
 		for _, e := range out {
 			if p, _ := e["producer"].(string); p == upstream.ProducerZCode {
@@ -1286,9 +1345,6 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		}
 		extra := make([]string, 0, len(zcEnt))
 		for id := range zcEnt {
-			if zcBlockedKnown && zcBlocked[id] {
-				continue
-			}
 			if !seen[id] {
 				extra = append(extra, id)
 			}
@@ -1296,14 +1352,22 @@ func (h *Handler) availableOutputModels() []map[string]any {
 		sort.Strings(extra)
 		for _, id := range extra {
 			key := modelKey(upstream.ProducerZCode, id)
+			routeAvailable, routeReason := zcodeRouteForOutput(id)
+			selected := h.publishAllows(sel, known, "cn", upstream.ProducerZCode, id)
+			if !routeAvailable {
+				selected = false
+			}
 			e := map[string]any{
 				"id":              id,
 				"key":             key,
 				"full_id":         h.modelIDFor("cn", upstream.ProducerZCode, id, ""),
 				"producer":        upstream.ProducerZCode,
-				"selected":        h.publishAllows(sel, known, "cn", upstream.ProducerZCode, id),
+				"selected":        selected,
 				"entitled":        true,
-				"route_available": true,
+				"route_available": routeAvailable,
+			}
+			if routeReason != "" {
+				e["route_reason"] = routeReason
 			}
 			// 这些条目没有上游 ModelInfo（目录里根本没列），上下文交给四级查找链兜底。
 			h.decorateModelEntry(e, upstream.ModelInfo{ID: id}, "cn", upstream.ProducerZCode, sel, known)
@@ -1399,6 +1463,7 @@ func (h *Handler) fetchZCodeCatalog() []upstream.ModelInfo {
 	// 只试 3 个号是收窄的边界：这不是聊天路径，不值得为目录轮转整个池；但也不能
 	// 因为一次坏号就假装这家上游不存在。失败原因经 WARN 落日志，不再静默。
 	tried := map[string]bool{}
+
 	var lastErr error
 	attempts := 0
 	for attempts < zcodeCatalogMaxAttempts {
@@ -1474,6 +1539,7 @@ func (h *Handler) fetchOpenCodeCatalog() []upstream.ModelInfo {
 	opencodeCatalogCache.RUnlock()
 
 	tried := map[string]bool{}
+
 	var lastErr error
 	attempts := 0
 	for attempts < opencodeCatalogMaxAttempts {
@@ -1544,6 +1610,7 @@ func (h *Handler) fetchKiloCatalog() []upstream.ModelInfo {
 	kiloCatalogCache.RUnlock()
 
 	tried := map[string]bool{}
+
 	var lastErr error
 	attempts := 0
 	for attempts < kiloCatalogMaxAttempts {
@@ -1579,6 +1646,72 @@ func (h *Handler) fetchKiloCatalog() []upstream.ModelInfo {
 	return nil
 }
 
+// qoderCatalogCache Qoder 模型目录缓存：1h TTL + 5min 负缓存，与 zcode/opencode/kilo
+// 同形。上游是每账号一份目录（COSY 签名），所以缓存的是「第一个拉通的号」的清单。
+var qoderCatalogCache struct {
+	sync.RWMutex
+	infos    []upstream.ModelInfo
+	fetched  time.Time
+	lastFail time.Time
+}
+
+const qoderCatalogTTL = time.Hour
+
+// qoderCatalogMaxAttempts 目录拉取最多试几个号（与 zcode 同口径）。
+const qoderCatalogMaxAttempts = 3
+
+// fetchQoderCatalog 从池中任一健康 qoder 号拉上游目录，缓存 1h。
+// 失败只进负缓存，不 NoteError——列模型失败 ≠ chat 通道坏了。
+func (h *Handler) fetchQoderCatalog() []upstream.ModelInfo {
+	qoderCatalogCache.RLock()
+	if len(qoderCatalogCache.infos) > 0 && time.Since(qoderCatalogCache.fetched) < qoderCatalogTTL {
+		out := qoderCatalogCache.infos
+		qoderCatalogCache.RUnlock()
+		return out
+	}
+	if !qoderCatalogCache.lastFail.IsZero() && time.Since(qoderCatalogCache.lastFail) < modelsFetchFailCooldown {
+		out := qoderCatalogCache.infos
+		qoderCatalogCache.RUnlock()
+		return out
+	}
+	qoderCatalogCache.RUnlock()
+
+	tried := map[string]bool{}
+
+	var lastErr error
+	attempts := 0
+	for attempts < qoderCatalogMaxAttempts {
+		acct := h.cfg.Pool.PickExcludingForProducerRealm(tried, "", upstream.ProducerQoder, "")
+		if acct == nil {
+			break
+		}
+		attempts++
+		tried[acct.UID] = true
+		infos, err := h.cfg.Upstream.QoderCatalogModels(context.Background(), acct)
+		if err == nil && len(infos) > 0 {
+			qoderCatalogCache.Lock()
+			qoderCatalogCache.infos = infos
+			qoderCatalogCache.fetched = time.Now()
+			qoderCatalogCache.lastFail = time.Time{}
+			qoderCatalogCache.Unlock()
+			return infos
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("上游返回空清单")
+		}
+	}
+	if attempts == 0 {
+		return nil
+	}
+	log.Printf("WARN: [server] qoder 模型目录拉取失败（已试 %d 个号）：%v", attempts, lastErr)
+	qoderCatalogCache.Lock()
+	qoderCatalogCache.lastFail = time.Now()
+	qoderCatalogCache.Unlock()
+	return nil
+}
+
 // modelOwner 推断某裸模型名该走哪家上游。返回 "" = 不唯一/不确定，按 workbuddy。
 //
 // 判据只有一条：**zcode 目录里有、workbuddy 目录里没有** → zcode。两家都有 →
@@ -1601,14 +1734,18 @@ func (h *Handler) modelOwnerEx(bare string) (producer string, ambiguous bool) {
 	oc := h.fetchOpenCodeCatalog()
 	// 两家静态目录都没接进来时直接归 workbuddy，**不拉 CN 目录**——与接入这两家之前的行为一致（那时 fetchZCodeCatalog 为空即早返回）。
 	// fetchDynamicModels 会打上游探测，在「只有 workbuddy 一家」的常见形态下没必要为每次裸名解析付这笔探测。
-	if len(zc) == 0 && len(oc) == 0 {
+	// qoder 与 kilo 同属「静态目录」，一起参与早返回判断（否则只有 qoder 号时可服务却永远
+	// 推断不到归属，裸名请求会落到 workbuddy 池）。
+	kl := h.fetchKiloCatalog()
+	qd := h.fetchQoderCatalog()
+	if len(zc) == 0 && len(oc) == 0 && len(kl) == 0 && len(qd) == 0 {
 		return "", false
 	}
 	inWB := containsModelID(h.fetchDynamicModels(), bare)
 	inZC := len(zc) > 0 && containsModelID(zc, bare)
 	inOC := len(oc) > 0 && containsModelID(oc, bare)
-	kl := h.fetchKiloCatalog()
 	inKL := len(kl) > 0 && containsModelID(kl, bare)
+	inQD := len(qd) > 0 && containsModelID(qd, bare)
 	// 数「目录里有这个裸名的家数」：workbuddy 也是一家（与接入 opencode 之前的口径
 	// 一致——那时 inWB&&inZC 就判歧义）。0 家 → 按 workbuddy（默认，不算歧义）；
 	// 1 家且是 workbuddy → 同样按 workbuddy；1 家是别家 → 确定归它；≥2 家 → 真歧义。
@@ -1628,6 +1765,10 @@ func (h *Handler) modelOwnerEx(bare string) (producer string, ambiguous bool) {
 	if inKL {
 		n++
 		owner = upstream.ProducerKilo
+	}
+	if inQD {
+		n++
+		owner = upstream.ProducerQoder
 	}
 	switch {
 	case n == 0:
@@ -1832,7 +1973,20 @@ func (h *Handler) chatEndpoint(w http.ResponseWriter, r *http.Request, proto cha
 	defer st.done()
 
 	tried := map[string]bool{}
+
 	var lastErr error
+	// ZCode Start Plan 的账号权益门控：已知无 glm-5.3-flash 权益的号直接排除。
+	// 这些号对 Start Plan 会返回 200 + 0 帧，不能等到 handler 开始写 SSE 后才发现。
+	if producer == upstream.ProducerZCode && strings.EqualFold(bareModel, "glm-5.3-flash") {
+		for _, st := range h.cfg.Pool.List() {
+			if st.Producer != upstream.ProducerZCode {
+				continue
+			}
+			if ok, known := zcodeStartAccountEntitled(st.UID, bareModel); known && !ok {
+				tried[st.UID] = true
+			}
+		}
+	}
 	// zcodeNoRoute 记录本轮是否因 ZCode 静态凭据整池不可路由而没有候选。
 	// 该状态必须在末端显式映射为 429，不能只写在 st.status 上——末端响应
 	// 使用独立局部变量，否则会退回笼统的 503 no_healthy_account。
@@ -2721,6 +2875,15 @@ func opencodeCatalogSnapshot() []upstream.ModelInfo {
 		return nil
 	}
 	return opencodeCatalogCache.infos
+}
+
+func qoderCatalogSnapshot() []upstream.ModelInfo {
+	qoderCatalogCache.RLock()
+	defer qoderCatalogCache.RUnlock()
+	if len(qoderCatalogCache.infos) == 0 || time.Since(qoderCatalogCache.fetched) >= qoderCatalogTTL {
+		return nil
+	}
+	return qoderCatalogCache.infos
 }
 
 func kiloCatalogSnapshot() []upstream.ModelInfo {

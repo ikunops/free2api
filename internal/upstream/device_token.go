@@ -26,11 +26,11 @@ const deviceTokenFileMaxLen = 1024
 
 // deviceTokenFileCache 缓存 device token 文件读取结果（path → token+读取时刻）。
 type deviceTokenFileCache struct {
-	mu       sync.Mutex
-	path     string
-	token    string
-	readAt   time.Time
-	lastErr  error
+	mu      sync.Mutex
+	path    string
+	token   string
+	readAt  time.Time
+	lastErr error
 }
 
 var dtFileCache = &deviceTokenFileCache{}

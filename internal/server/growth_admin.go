@@ -16,7 +16,7 @@ import (
 )
 
 func (h *Handler) adminGrowthTasks(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 	out, err := h.cfg.GrowthScan(ctx)
 	if err != nil {
@@ -27,7 +27,7 @@ func (h *Handler) adminGrowthTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminGrowthRun(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 	out, err := h.cfg.GrowthRun(ctx)
 	if err != nil {
@@ -44,7 +44,7 @@ func (h *Handler) adminGrowthRunAccount(w http.ResponseWriter, r *http.Request) 
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "uid is required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 	out, err := h.cfg.GrowthRunAccount(ctx, uid, taskCode)
 	if err != nil {

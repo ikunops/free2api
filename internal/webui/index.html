@@ -124,7 +124,7 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
   padding:15px 18px;box-shadow:var(--sh);margin-bottom:12px}
 .card.pad0{padding:14px 20px}
-.card-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:11px}
+.card-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:7px}
 .card-head h2{line-height:1.35}
 .card-head .grow{flex:1}
 .sep{height:1px;background:var(--line2);margin:16px 0}
@@ -160,10 +160,10 @@ h2{font-size:16px;font-weight:650;margin:0 0 3px}
 .kvrow .row{row-gap:6px}
 /* 密钥行：密钥本体吃掉剩余宽度并省略，操作按钮钉在右边。
    不这么做的话，48 字符的明文密钥会把按钮挤到下一行——「清空」单独掉在下面。 */
-.kvgw{display:flex;flex-wrap:nowrap;gap:8px;align-items:center;min-width:0}
-.kvgw .kvgw-val{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+.kvgw{display:flex;gap:8px;align-items:center;min-width:0;flex-wrap:wrap}
+.kvgw .kvgw-val{flex:1 1 150px;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap}
-.kvgw .kvgw-acts{display:flex;gap:8px;flex:0 0 auto}
+.kvgw .kvgw-acts{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap}
 .kvrow>div:first-child{color:var(--dim);font-size:12px;padding-top:3px}
 @media(max-width:1000px){.grid4,.grid3,.grid2{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.grid4,.grid3,.grid2{grid-template-columns:1fr}
@@ -384,6 +384,19 @@ textarea{min-height:104px;resize:vertical;font-family:Consolas,"Cascadia Mono",m
 label.f{display:block;font-size:12.5px;color:var(--fg2);margin-bottom:5px}
 .field{margin-bottom:13px}
 .hint{font-size:11.5px;color:var(--fg4);margin-top:5px;line-height:1.65}
+/* 设置页两栏：左决策、右事实。不要高卡片挑高整页。 */
+.settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+.settings-grid>.card{margin-bottom:0;min-width:0}
+.settings-srcman{grid-column:1/-1}
+.settings-srcrow{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 0;border-top:1px solid var(--line2)}
+.settings-srcrow:first-child{padding-top:0;border-top:0}
+.settings-srcrow>b,.settings-srcrow>div>b{display:block;font-size:13px;font-weight:600;margin-bottom:3px}
+.settings-srcrow .hint{display:block;margin:0;max-width:620px}
+.settings-srcrow button{flex:0 0 auto}
+@media(max-width:720px){.settings-srcrow{align-items:flex-start;flex-direction:column}.settings-srcrow button{width:100%}}
+@media(max-width:1100px){.settings-grid{grid-template-columns:1fr}}
+/* 浏览器直连时的桌面能力提示：只说明边界，不做成整张空卡。 */
+.settings-tip{font-size:12px;color:var(--fg3);padding:2px 2px 0;line-height:1.7}
 
 /* 分段控件（今天/7天/30天/全部 这类切换）：
    容器边框升到 --line3 让它「是个控件」而不是一段文字；
@@ -569,9 +582,10 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
    只有 .tog 才是可点的——出口自己那份清单复用 .mgroup 但不折叠。 */
 .mgroup.tog{cursor:pointer;user-select:none}
 .mgroup.tog:hover{background:var(--hover2)}
-.mgroup .mcaret{display:inline-block;width:10px;margin-right:1px;color:var(--fg3);
+.mgroup .mcaret{display:inline-block;width:5px;height:5px;margin-right:5px;border-top:1.5px solid currentColor;
+  border-right:1.5px solid currentColor;transform:rotate(45deg);transform-origin:50% 50%;color:var(--fg3);
   transition:transform .12s ease}
-.mgroup.open .mcaret{transform:rotate(90deg)}
+.mgroup.open .mcaret{transform:rotate(135deg)}
 .mbody{display:none}
 .mgroup.open + .mbody{display:block}
 /* 成长任务：账号行和任务行都用固定列，账号名长短不顶动右侧状态。 */
@@ -579,7 +593,7 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-summary b{color:var(--fg);font-size:13px}
 .growth-summary .sep{width:1px;height:12px;background:var(--line2)}
 .growth-acct{border:1px solid var(--line2);border-radius:var(--r2);margin:8px 0;background:var(--panel)}
-.growth-head{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:12px;align-items:center;padding:0 12px 0 0}
+.growth-head{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:12px;align-items:start;padding:0 12px 0 0}
 .growth-head:hover{background:var(--hover2)}
 .growth-det{min-width:0}
 .growth-det>summary{list-style:none;cursor:pointer;padding:11px 12px;display:flex;align-items:center;gap:10px;font-size:12px;min-width:0}
@@ -594,19 +608,25 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-assets .asset{display:inline-flex;align-items:baseline;gap:3px;padding:2px 7px;border:1px solid var(--line2);border-radius:999px;background:rgba(127,127,127,.035)}
 .growth-assets b{color:var(--fg2);font-weight:600}
 .growth-assets .urgent{border-color:rgba(255,165,0,.34);color:var(--warn-fg)}
-.growth-act{justify-self:end}
+.growth-act{justify-self:end;align-self:start;padding-top:14px}
 .growth-tasks{border-top:1px solid var(--line2);padding:3px 12px 8px}
-.growth-task{display:grid;grid-template-columns:minmax(0,1fr) 72px 88px 96px 84px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:12px}
+.growth-task,.growth-task-head{display:grid;grid-template-columns:minmax(0,1fr) 116px 96px 84px;gap:12px;align-items:center;font-size:12px}
+.growth-task.is-manual{grid-template-columns:minmax(0,1fr) 116px 96px 84px}
+.growth-task{padding:8px 0;border-bottom:1px solid var(--line2)}
+.growth-task-head{padding:7px 0 5px;border-bottom:1px solid var(--line2);color:var(--fg3);font-size:10px;letter-spacing:.04em}
+.growth-task-head>div:nth-child(n+2){text-align:right}
+.growth-task.no-op,.growth-task-head.no-op{grid-template-columns:minmax(0,1fr) 116px 96px}
 .growth-task:last-child{border-bottom:0}
 .growth-task-main{min-width:0}
 .growth-task .tn{font-weight:500;color:var(--fg);overflow-wrap:anywhere}
 .growth-task .td{font-size:11px;color:var(--fg3);margin-top:2px;overflow-wrap:anywhere}
+.growth-task .progress-inline{color:var(--fg2);font-variant-numeric:tabular-nums}
 
 .growth-task-reward{display:flex;align-items:center;justify-content:flex-end;gap:4px;white-space:nowrap;font-size:11px;font-variant-numeric:tabular-nums}
 .growth-task-reward .credit{color:var(--warn-fg)}
 .growth-task-reward .energy{color:var(--acc-fg)}
+.growth-task-reward .reward-sep{color:var(--fg3);opacity:.6}
 .growth-task-reward-empty{color:var(--fg3)}
-.growth-task .prog{text-align:right;white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums}
 .growth-task .act{text-align:right;white-space:nowrap;color:var(--fg3)}
 .growth-task .act.run{color:var(--acc-fg)}
 .growth-task .act.claim{color:var(--warn-fg)}
@@ -620,14 +640,16 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .growth-task-btn{display:inline-flex;align-items:center;justify-content:center;min-width:70px;height:28px;padding:0 9px}
 .growth-task-btn:disabled{cursor:default;opacity:1}
 .growth-task-btn-label{display:inline-block}
-.growth-btn-spin{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:0;border-radius:0;color:var(--acc-fg)}
-.growth-btn-spin svg{width:14px;height:14px;animation:spin .75s linear infinite}
+.growth-task-btn .mini-spin{width:14px;height:14px}
+.growth-task-btn.is-loading{width:70px;min-width:70px;gap:0;padding:0}
 .growth-empty{padding:10px 12px;color:var(--fg3);font-size:12px}
 @media(max-width:760px){
   .growth-head{grid-template-columns:minmax(0,1fr) 88px;gap:8px;padding-right:8px}
   .growth-det>summary{gap:8px;padding:9px 8px}
   .growth-count{gap:8px}
-  .growth-task{grid-template-columns:minmax(0,1fr) 60px 78px 88px 76px;gap:8px}
+  .growth-task,.growth-task-head{grid-template-columns:minmax(0,1fr) 104px 88px 76px;gap:8px}
+  .growth-task.is-manual{grid-template-columns:minmax(0,1fr) 104px 88px 76px}
+  .growth-task.no-op,.growth-task-head.no-op{grid-template-columns:minmax(0,1fr) 104px 88px}
   .growth-task .td{display:none}
 }
 /* 折叠卡片（Codex / ZCode 一键接入）：open 类挂在 .card.fold 自己身上，
@@ -635,8 +657,8 @@ ol.steps code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size
 .card.fold > .mbody{display:none}
 .card.fold.open > .mbody{display:block}
 .card.fold > .card-head:hover{background:var(--hover2)}
-.card.fold h2 .mcaret{color:var(--fg3);transition:transform .12s ease}
-.card.fold.open h2 .mcaret{transform:rotate(90deg)}
+.card.fold h2 .mcaret{display:inline-block;width:5px;height:5px;margin-right:5px;border-top:1.5px solid currentColor;border-right:1.5px solid currentColor;transform:rotate(45deg);transform-origin:50% 50%;color:var(--fg3);transition:transform .12s ease}
+.card.fold.open h2 .mcaret{transform:rotate(135deg)}
 @media(max-width:860px){.mrow{grid-template-columns:18px minmax(0,1fr) max-content 152px}.mrow .mname{display:none}}
 /* 多出口：每个出口一块；「服务来源」用圆角标签勾选 */
 .chan{border:1px solid var(--line2);border-radius:var(--r2);padding:13px 15px;margin-bottom:12px}
@@ -843,14 +865,14 @@ const S = {
   apiKey: localStorage.getItem("wb_key") || "",
   health: null, status: null, src: null, origins: null, out: null, models: null,
   srcTab: "app", cand: null, candKind: "", candNote: "",
-  candProbe: false, candBalance: false,
+  candProbe: false, candBalance: false, candChat: false,
   poolFilter: "all", poolClient: "all", poolRealm: "all", checked: {}, busy: false,
   modelSel: null, modelDirty: false, chanDraft: null, codexDraft: null, chanOpen: {}, mgroupOpen: {}, realmScoped: true, showUnent: false, onlyFree: false,
   desk: null,
   credits: null, creditsBusy: false, creditsPolls: 0,
   codex: null, codexPlan: null, codexModel: "", codexDetachPlan: null,
   zcode: null, zcodePlan: null, zcodeShowAll: false, zcodeForm: null, zcodeSel: {}, keyReveal: false, cardOpen: loadCardOpen(),
-  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "", growthTaskBusy: "", growthOpen: loadGrowthOpen(), growthPollBusy: false,
+  stats: null, statsRange: "7d", statsSort: { key: "requests", dir: -1 }, statsAt: null, schedule: null, modeldead: null, selftest: null, growth: null, growthBusy: false, growthAccountBusy: "", growthTaskBusy: "", growthOpen: loadGrowthOpen(), growthPollBusy: false, growthAutoTried: false, growthRendering: false,
   theme: localStorage.getItem("f2a_theme") || "",
   scan: null, scanTimer: null,
   floatwin: null, floatBusy: false,
@@ -990,6 +1012,14 @@ function go(tab, opt){
   if (tab === "runtime" && !S.schedule){
     loadRuntime().then(function(){ if (S.tab === "runtime") render(); });
   }
+  // 首次进入运行态时自动扫描一次成长任务；之后交给 20s 静默轮询。
+  // growthAutoTried 防止上游失败时每次切页都重试，手动扫描按钮仍可随时重试。
+  if (tab === "runtime" && !S.growth && !S.growthBusy && !S.growthAutoTried){
+    S.growthAutoTried = true;
+    setTimeout(function(){
+      if (S.tab === "runtime" && !S.growth && !S.growthBusy) growthScan();
+    }, 100);
+  }
   if (tab === "settings" && DESKTOP && !S.floatwin){
     floatLoad().then(function(){ if (S.tab === "settings") render(); });
   }
@@ -1020,26 +1050,34 @@ function render(opt){
   var keepPageTop = window.scrollY || window.pageYOffset || 0;
   // <details> 的 open 状态是 DOM 状态，不是业务数据。render() 换掉节点后，
   // 如果只依赖 toggle 事件，轮询触发的重画会把用户展开的账号重新折叠。
-  // 在重画前把真实 DOM 状态同步回持久层，保证 20 秒轮询后仍然展开。
+  // 在重画前把真实 DOM 状态同步回持久层；只有 runtime 页真正存在账号节点时
+  // 才扫描，避免切页/首屏把空集合误当成“用户全部折叠”。
   if (S.tab === "runtime"){
-    $$("details.growth-det").forEach(function(d){
-      var uid = d.getAttribute("data-growth-uid") || "";
-      if (!uid) return;
-      if (d.open) S.growthOpen[uid] = true;
-      else delete S.growthOpen[uid];
-    });
-    saveGrowthOpen();
+    var growthDets = $$("details.growth-det");
+    if (growthDets.length){
+      growthDets.forEach(function(d){
+        var uid = d.getAttribute("data-growth-uid") || "";
+        if (!uid) return;
+        if (d.open) S.growthOpen[uid] = true;
+      });
+      saveGrowthOpen();
+    }
   }
   var fn = { overview: viewOverview, sources: viewSources, pool: viewPool, output: viewOutput, stats: viewStats, runtime: viewRuntime, settings: viewSettings, help: viewHelp }[S.tab] || viewOverview;
   var down = DESKTOP && S.desk && !(S.desk.running || S.desk.external);
-  if (down && S.tab !== "overview" && S.tab !== "help"){
-    $("#view").innerHTML = head("网关已停止", "这一页的数据由网关提供，先把它启动起来。") +
-      '<div class="card"><div class="gwrow"><span class="gwdot"></span>' +
-      '<div class="gwtext"><div class="t">没有可显示的数据</div>' +
-      '<div class="d">账号池、来源台账、输出配置都要问运行中的网关拿。启动后这一页会自动恢复。</div></div>' +
-      '<button class="pri gwbtn" data-action="gw-start">启动网关</button></div></div>';
-  } else {
-    $("#view").innerHTML = fn();
+  S.growthRendering = true;
+  try {
+    if (down && S.tab !== "overview" && S.tab !== "help"){
+      $("#view").innerHTML = head("网关已停止", "这一页的数据由网关提供，先把它启动起来。") +
+        '<div class="card"><div class="gwrow"><span class="gwdot"></span>' +
+        '<div class="gwtext"><div class="t">没有可显示的数据</div>' +
+        '<div class="d">账号池、来源台账、输出配置都要问运行中的网关拿。启动后这一页会自动恢复。</div></div>' +
+        '<button class="pri gwbtn" data-action="gw-start">启动网关</button></div></div>';
+    } else {
+      $("#view").innerHTML = fn();
+    }
+  } finally {
+    S.growthRendering = false;
   }
   // 折叠区摘要与发布清单计数从刚画出来的 DOM 现算，保证跟勾选状态一致。
   if (S.tab === "output") $$("[data-chan-row]").forEach(function(x){ updChanRow(x.getAttribute("data-chan-row")); });
@@ -1080,7 +1118,7 @@ function card(title, sub, body, extra, tog){
   var head = '<div class="card-head">' +
     (tog ? '<div class="grow" style="cursor:pointer;user-select:none" data-action="' + tog.action +
       '" data-tog="' + esc(tog.id) + '" title="点击展开 / 收起">' +
-      '<h2><span class="mcaret">' + (tog.open ? "\u25BE" : "\u25B8") + '</span> ' + esc(title) + '</h2>' +
+      '<h2><span class="mcaret" aria-hidden="true"></span>' + esc(title) + '</h2>' +
       (sub ? '<div class="sub" style="margin:0">' + sub + '</div>' : "") +
       (tog.badge ? '<div style="margin-top:5px">' + tog.badge + "</div>" : "") +
       '</div>' : '<div class="grow"><h2>' + esc(title) + '</h2>' +
@@ -1652,8 +1690,12 @@ function panelApp(d){
   var rows = probes.map(function(p){ return probeRowHtml(p); }).join("");
   var kind = (d.kinds || []).filter(function(k){ return k.id === "app"; })[0] || {};
   var usable = usableKinds.map(function(k){
-    var btn = '<button class="pri tiny" data-action="cands" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>看候选</button> ' +
-      '<button class="tiny" data-action="quick" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>全部导入</button>';
+    var btn = '<button class="pri tiny" data-action="cands" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>看候选</button> ';
+    // ZCode 只能导入「解出来的静态 key」。登录 JWT 存在不代表可导入；
+    // 必须先看候选并做完静态 chat 验活，不能一键把无静态余额的号塞进池子。
+    if (k.id !== "zcode-app" && k.id !== "zcode-switch"){
+      btn += '<button class="tiny" data-action="quick" data-kind="' + esc(k.id) + '"' + (k.available ? "" : " disabled") + '>全部导入</button>';
+    }
     return '<div class="mini" style="cursor:default">' +
       '<div class="row"><div class="grow"><div class="t">' + esc(k.name) + '</div>' +
       '<div class="hint mono" style="margin-top:3px;word-break:break-all">' + esc(k.path || "（无路径）") + '</div></div>' +
@@ -1733,7 +1775,7 @@ function panelFile(d){
 }
 function panelCandidates(){
   var c = S.cand || [];
-  if (S.candKind === "zcode-switch") return panelZCandidates(c);
+  if (S.candKind === "zcode-switch" || S.candKind === "zcode-app") return panelZCandidates(c);
   var rows = c.map(function(x){
     var dim = x.imported ? "dim" : "";
     var first;
@@ -1783,6 +1825,19 @@ function zcodeProbeTag(pr){
   return '<span title="' + esc(t) + '">' + bits + '</span>' +
     '<div class="hint" style="margin:2px 0 0">' + esc(short) + '</div>';
 }
+// zcodeStaticTag 展示「真实 chat 探活」结果。它与 /models 探活是两件事：
+// /models 200 只证明 key 格式对；static_probe 才证明静态额度能支付 chat。
+function zcodeStaticTag(sp){
+  if (!sp) return '<span class="tag mut">未试</span>';
+  var v = ZCODE_PROBE_VIEW[sp.status] || { cls: "mut", txt: (sp.status || "未知") };
+  var bits = '<span class="tag ' + v.cls + '">' + esc(v.txt) + '</span>' +
+    (sp.http ? ' <span class="tag mut">' + esc(String(sp.http)) + '</span>' : "");
+  var t = sp.msg || "";
+  if (!t) return bits;
+  var short = t.length > 34 ? t.slice(0, 34) + "…" : t;
+  return '<span title="' + esc(t) + '">' + bits + '</span>' +
+    '<div class="hint" style="margin:2px 0 0">' + esc(short) + '</div>';
+}
 function zcodeModelsCell(x){
   var ent  = (x.entitled_models && x.entitled_models.length) ? x.entitled_models : null;
   var live = (x.live_models && x.live_models.length) ? x.live_models : null;
@@ -1815,7 +1870,7 @@ function zcodeModelsCell(x){
   var ids = live || snap || [];
   if (!ids.length){
     return x.usable
-      ? '<span class="hint" style="margin:0">未读额度，点「读全部额度」才准</span>'
+      ? '<span class="hint" style="margin:0">仅有凭据形态，尚未证明可调用；点「读全部额度」才准</span>'
       : '<span class="hint" style="margin:0">—</span>';
   }
   var show = ids.slice(0, 3).join(" · ") + (ids.length > 3 ? " …" : "");
@@ -1857,11 +1912,13 @@ function panelZCandidates(c){
         (bits.length ? '<div class="hint mono" style="margin:2px 0 0;word-break:break-all">' + esc(bits.join(" · ")) + '</div>' : "") +
         (x.detail ? '<div class="hint" style="margin:2px 0 0">' + esc(x.detail) + '</div>' : "") + '</td>' +
       '<td style="min-width:150px">' + zcodeModelsCell(x) + '</td>' +
-      '<td style="width:120px">' + (x.usable ? zcodeProbeTag(x.probe) : '<span class="tag mut">无可用凭据</span>') + '</td>' +
+      '<td style="width:130px">' + (x.usable || x.credential_complete ? zcodeProbeTag(x.probe) : '<span class="tag mut">无凭据</span>') + '</td>' +
+      '<td style="width:130px">' + (x.credential_complete ? zcodeStaticTag(x.static_probe) : '<span class="tag mut">—</span>') + '</td>' +
       '<td style="width:220px">' + zcodeQuotaCell(x) + '</td></tr>';
   }).join("");
   var n = checkedIDs().length;
-  var usable = c.filter(function(x){ return x.usable; }).length;
+  var complete = c.filter(function(x){ return x.credential_complete; }).length;
+  var staticOK = c.filter(function(x){ return x.static_usable; }).length;
   var bar = '<div class="row" style="margin-bottom:10px">' +
     '<button class="tiny" data-action="cand-all">全选未导入</button>' +
     '<button class="tiny" data-action="cand-none">全不选</button>' +
@@ -1869,16 +1926,18 @@ function panelZCandidates(c){
     '<span style="width:6px"></span>' +
     '<button class="tiny" data-action="zcode-probe" title="逐个号打一次上游 /models，每个号一次外网往返">探活全部</button>' +
     '<button class="tiny" data-action="zcode-balance" title="逐个号读一次上游 billing/balance：才知道套餐真正覆盖了哪些模型">读全部额度</button>' +
+    '<button class="tiny" data-action="zcode-chat" title="真实发送一次最小 chat：会消耗极少量 token；返回 1113 表示没有静态资源包">试静态 chat</button>' +
     (S.candProbe ? '<span class="tag ok">已探活</span>' : '') +
     (S.candBalance ? '<span class="tag ok">已读额度</span>' : '') +
+    (S.candChat ? '<span class="tag warn">已试 chat</span>' : '') +
     '<span class="grow"></span>' +
-    '<span class="hint" style="margin:0">可取用 ' + usable + ' / ' + c.length + ' 个存档</span>' +
+    '<span class="hint" style="margin:0">凭据完整 ' + complete + ' / ' + c.length + ' · 静态 chat 可用 ' + staticOK + '</span>' +
     '<button class="tiny" data-action="cand-close">收起候选</button></div>';
-  return card("候选账号 · zcode-switch", esc(S.candNote || ""),
-    bar + '<table><thead><tr><th style="width:52px"></th><th style="width:24%">账号</th><th>可用模型</th>' +
-    '<th style="width:132px">探活</th><th style="width:238px">额度</th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="5"><div class="empty">没有候选</div></td></tr>') + '</tbody></table>' +
-    '<div class="hint" style="margin-top:10px"><b>可用模型</b>按账号套餐/额度实际覆盖计算；未读额度时为凭据列出的参考值。</div>');
+  return card("候选账号 · " + S.candKind, esc(S.candNote || ""),
+    bar + '<table><thead><tr><th style="width:52px"></th><th style="width:22%">账号</th><th>可用模型</th>' +
+    '<th style="width:132px">目录探活</th><th style="width:132px">静态 chat</th><th style="width:220px">额度</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="6"><div class="empty">没有候选</div></td></tr>') + '</tbody></table>' +
+    '<div class="hint" style="margin-top:10px"><b>目录探活 200</b> 只证明这把 key 能通过鉴权、能列模型；<b>静态 chat</b> 才是真正最小计费探活，返回 1113 就是没有静态资源包。要长期反代，需在 BigModel / Z.ai 控制台给对应 key 开通或充值静态 API 额度。</div>');
 }
 
 /* ---------- 账号池 ---------- */
@@ -2249,7 +2308,7 @@ function producerChoices(){
     var p = x.producer || "";
     if (p && !seen[p]){ seen[p] = 1; out.push({ id: p, name: x.name || producerName(p) }); }
   });
-  ["workbuddy", "zcode"].forEach(function(p){
+  ["workbuddy", "zcode", "qoder"].forEach(function(p){
     if (!seen[p]){ seen[p] = 1; out.push({ id: p, name: PRODUCER_FALLBACK[p] || p }); }
   });
   return out;
@@ -2736,7 +2795,7 @@ function viewOutput(){
       var gopen = !!S.mgroupOpen[pk];
       var head = '<div class="mgroup tog' + (gopen ? " open" : "") + '" data-action="mgroup-toggle" ' +
         'data-g="' + esc(pk) + '" title="点击展开 / 收起这个来源的模型">' +
-        '<span><span class="mcaret">\u25B8</span><b>' + esc(groupName) + '</b> · 可用模型 ' +
+        '<span><span class="mcaret" aria-hidden="true"></span><b>' + esc(groupName) + '</b> · 可用模型 ' +
         ent.length + ' 个' + (unent.length ? '<span class="tag mut" style="margin-left:6px">另有 ' +
         unent.length + ' 个不可用</span>' : "") +
         '</span><span class="hint" style="margin:0" data-gcount="' + esc(pk) + '">' +
@@ -2824,7 +2883,7 @@ function viewOutput(){
         '<span class="grow"></span>' +
         '<span class="hint" style="margin:0" id="mSelCount">' + gcountText(entAvail, unentAvail, sel) + '</span>' +
       '</div>' +
-      '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + (S.onlyFree ? ' freeonly' : '') + '" id="mList">' + rows + '</div>' +
+      '<div class="mlist' + (S.showUnent ? '' : ' hideunent') + (S.onlyFree ? ' freeonly' : '') + '" id="mList">' + rows.join("") + '</div>' +
       '<div class="hint" style="margin-top:9px">勾上的才出现在 <span class="mono">GET /v1/models</span>，一个都不勾 = 全部放开。</div>';
   }
   var pt2 = (S.status && S.status.producer_totals) || [];
@@ -3329,7 +3388,8 @@ function viewRuntime(){
       (sc.config_path ? ('<br>配置文件：<span class="mono">' + esc(sc.config_path) + '</span>') : "") + '</div>');
   }
 
-  // 成长任务：默认不自动扫描（每次扫描都会打上游）。先给按钮，用户点再拉。
+  // 成长任务：首次进入运行态自动扫描一次，之后由 20s 静默轮询校准；
+  // 扫描按钮仍保留，用于手动刷新当前上游状态。
   html += growthCard();
 
   // 死信模型
@@ -3490,18 +3550,51 @@ function floatSwitchItem(it, on, icon){
 }
 var FLOAT_ICONS = { inflight: "pulse", rate: "chart", requests: "clock", tokens: "copy", source: "inbox", topmost: "layers", passthru: "mouse" };
 function viewSettings(){
-  var html = head("设置", "本机偏好。");
-  if (!DESKTOP){
-    html += card("桌面专属设置", "", '<div class="empty">当前是浏览器直连网关，没有桌面宿主，' +
-      '这一页只对 Free2API 桌面程序有效。配置请直接改 config.json。</div>');
-  } else {
+  var html = head("设置", DESKTOP
+    ? "桌面程序 · 悬浮窗与网关由本机托管。"
+    : "浏览器直连网关 · 桌面专属功能不可用。");
+  var o = S.out || {};
+  var src = S.src || {};
+  var cfgPath = o.config_path || "（未记录）";
+  var authDir = src.auth_dir || "（未读取）";
+  var ledgerPath = src.origin_path || "（未生成）";
+  var runtime = DESKTOP ? (S.desk && S.desk.running ? "Free2API 桌面程序（网关运行中）" : "Free2API 桌面程序") : "浏览器直连网关服务";
+  // 两张卡各自按内容高度排列，不互相拉高；上游凭据单独占下一行。
+  html += '<div class="settings-grid">' +
+    card("本机配置", "只读信息，便于核对配置文件与账号落点。", kv([
+      ["监听地址", o.listen || "（未读取）"],
+      ["配置文件", cfgPath],
+      ["账号目录", authDir],
+      ["来源台账", ledgerPath],
+      ["运行方式", runtime]
+    ])) +
+    card("网关密钥", "外部客户端访问网关时需要；留空则本机直连免密钥。",
+      '<div class="row">' + gwKeyInline(S.apiKey) + '</div>') +
+    '<div class="settings-srcman">' +
+    card("上游凭据入口", "这里只管理本地网关；上游账号看「获取源」。",
+      '<div class="settings-srcrow">' +
+        '<div><b>ZCode 应用登录态</b><span class="hint">先登录 ZCode 应用，再看候选。目录探活只验证 key；静态 chat 才验证余额。</span></div>' +
+        '<button class="pri tiny" data-action="goto-zcode-app">打开登录态</button>' +
+      '</div>' +
+      '<div class="settings-srcrow">' +
+        '<div><b>其他上游来源</b><span class="hint">WorkBuddy / OpenCode / Kilo / switch 账本统一走这里导入。</span></div>' +
+        '<button class="gh tiny" data-action="goto-sources">打开获取源</button>' +
+      '</div>') +
+    '</div>' +
+  '</div>';
+  if (DESKTOP){
     var fw = S.floatwin || {};
+    var fwReady = !!S.floatwin;
     var avail = fw.available || [];
     var on = !!fw.enabled;
     var items = fw.items || [];
     // 网关没跑时主动说清楚，而不是让用户对着一个不动的小窗猜。
     var conn = fw.connected ? '<span class="tag ok">数据已连接</span>'
       : '<span class="tag warn">等网关上线</span>';
+    if (!fwReady){
+      html += card("桌面悬浮窗", "桌面右下角，可拖动。",
+        '<div class="empty">正在读取悬浮窗设置…</div>');
+    } else {
     html += card("桌面悬浮窗", "桌面右下角，可拖动。",
       '<div class="row" style="margin-bottom:12px">' +
         '<button class="toggle big' + (on ? " on" : "") + '" data-action="float-main" data-next="' + (on ? "0" : "1") + '"' +
@@ -3533,10 +3626,10 @@ function viewSettings(){
         '</div>' +
         '<div class="hint" style="margin-top:11px">配置保存在 <span class="mono">data/floatwin.json</span>。</div>');
     }
+    }
+  } else {
+    html += '<div class="settings-tip">悬浮窗、网关启停等桌面功能仅在 Free2API 桌面程序中可用。</div>';
   }
-  html += card("网关密钥", "配置 api_key 后，外部客户端需带密钥。",
-    '<div class="row"><button class="tiny withico" data-action="open-key">' + svg("key") + '设置网关密钥</button>' +
-    '<span class="hint" style="margin:0">' + (S.apiKey ? "本机已保存密钥。" : "当前未保存密钥（本机直连免密钥）。") + '</span></div>');
   return html;
 }
 
@@ -4016,6 +4109,11 @@ function loadGrowthOpen(){
 function saveGrowthOpen(){
   try { localStorage.setItem("wb_growth_open", JSON.stringify(S.growthOpen || {})); } catch (e) {}
 }
+function growthAccountName(a){
+  var n = String((a && a.nickname) || "")
+    .replace(/[\s\u3164\u200B-\u200D\uFEFF]/g, "");
+  return n || String((a && a.uid) || "").slice(0, 8);
+}
 function growthFmtAgo(t){
   if (!t) return "";
   var ms = Date.now() - new Date(t).getTime();
@@ -4028,6 +4126,14 @@ function growthFmtAgo(t){
   return Math.floor(hr / 24) + " 天前";
 }
 /* growthCard 成长任务面板：只回答“哪些账号还有哪些没做、能不能帮做”。 */
+// growthManualText 区分“真的需要用户操作”和“已报名但上游要等待”。
+// 关注公众号这类任务 accepted 只是计时开始，继续写“需你完成”会让用户误以为
+// 还要再点一次；已 accepted 的普通任务统一显示“等待上游确认”。
+function growthManualText(t){
+  var st = String((t && t.status) || "");
+  if (st === "accepted") return "等待上游确认";
+  return "需你完成";
+}
 function growthCard(){
   var g = S.growth;
   var busy = S.growthBusy;
@@ -4069,10 +4175,14 @@ function growthCard(){
       (succ ? '<span class="asset"><b>' + fmtInt(succ) + '</b> 次成功请求</span>' : "") +
       (last ? '<span class="asset">活跃 ' + esc(last) + '</span>' : "") +
       '</span>';
+    var hasOp = tasks.some(function(t){ var a = t.action || "manual"; return a === "run" || a === "claim"; });
+    var thead = '<div class="growth-task-head' + (hasOp ? '' : ' no-op') + '">' +
+      '<div>任务</div><div>奖励</div><div>状态</div>' +
+      (hasOp ? '<div>操作</div>' : '') + '</div>';
     var trows = tasks.map(function(t){
-      var prog = (t.progress && t.progress.target) ? (t.progress.current + " / " + t.progress.target) : "—";
+      var progressInline = (t.progress && t.progress.target) ? '<div class="td progress-inline">进度 ' + esc(t.progress.current + " / " + t.progress.target) + '</div>' : "";
       var action = t.action || "manual";
-      var actionText = action === "run" ? "可自动补进度" : action === "claim" ? "奖励可领取" : "需要真实客户端";
+      var actionText = action === "run" ? "可帮做" : action === "claim" ? "奖励可领取" : growthManualText(t);
       var taskTitle = t.task_name || (t.task_desc ? t.task_desc.slice(0, 28) + (t.task_desc.length > 28 ? "…" : "") : (t.task_code || "未命名任务"));
       var taskDesc = (t.task_desc && t.task_desc !== taskTitle) ? '<div class="td">' + esc(t.task_desc) + '</div>' : "";
       var rewards = [];
@@ -4080,26 +4190,26 @@ function growthCard(){
       if (Number(t.reward_energy) > 0) rewards.push('<span class="energy">+' + fmtInt(Number(t.reward_energy)) + ' 能量</span>');
 
       var rewardCell = rewards.length
-        ? rewards.join("")
+        ? rewards.join('<span class="reward-sep" aria-hidden="true">·</span>')
         : '<span class="growth-task-reward-empty">—</span>';
       var tk = a.uid + "|" + (t.task_code || "");
       var isTaskBusy = taskBusy === tk;
       var op = "";
       if (action === "run" || action === "claim"){
         var actionLabel = action === "claim" ? "领取" : "做这一项";
-        op = '<button class="tiny growth-task-btn" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '"' + (isTaskBusy ? ' disabled' : '') + '>' +
+        // 单项 busy 只换按钮里的文字；任务名/描述/进度/奖励/状态始终留在原节点。
+        op = '<button class="tiny growth-task-btn' + (isTaskBusy ? ' is-loading' : '') + '" data-action="growth-run-task" data-uid="' + esc(a.uid) + '" data-task="' + esc(t.task_code) + '"' + (isTaskBusy ? ' disabled' : '') + '>' +
           (isTaskBusy
-            ? '<span class="growth-btn-spin" title="处理中">' + svg("refresh") + '</span>'
+            ? '<span class="mini-spin" title="处理中" aria-label="处理中"></span>'
             : '<span class="growth-task-btn-label">' + actionLabel + '</span>') +
           '</button>';
       }
-      var main = '<div class="tn">' + esc(taskTitle) + '</div>' + taskDesc;
-      return '<div class="growth-task' + (isTaskBusy ? " is-busy" : "") + '">' +
+      var main = '<div class="tn">' + esc(taskTitle) + '</div>' + taskDesc + progressInline;
+      return '<div class="growth-task' + (isTaskBusy ? " is-busy" : "") + (hasOp && !op ? " is-manual" : (hasOp ? "" : " no-op")) + '">' +
         '<div class="growth-task-main">' + main + '</div>' +
-        '<div class="prog">' + esc(prog) + '</div>' +
         '<div class="growth-task-reward" title="完成并领取后到账">' + rewardCell + '</div>' +
         '<div class="act ' + esc(action) + '">' + esc(actionText) + '</div>' +
-        '<div class="growth-task-op">' + op + '</div></div>';
+        (hasOp ? '<div class="growth-task-op">' + op + '</div>' : '') + '</div>';
     }).join("");
     var btn = "";
     if (canHelp > 0){
@@ -4111,17 +4221,18 @@ function growthCard(){
       btn = '<button class="tiny" data-action="growth-run-account" data-uid="' + esc(a.uid) + '" ' +
         (busy || accountBusy ? "disabled" : "") + '>' + (claimBusy ? '<span class="mini-spin"></span>' : "领取奖励") + '</button>';
     }
+    var accountName = growthAccountName(a);
     var isOpen = !!(S.growthOpen || {})[a.uid];
     return '<div class="growth-acct"><div class="growth-head">' +
       '<details class="growth-det" data-growth-uid="' + esc(a.uid) + '"' + (isOpen ? " open" : "") + '><summary>' +
-      '<span class="growth-name"><span class="n" title="' + esc(a.nickname || a.uid) + '">' + esc(a.nickname || a.uid) + '</span>' +
+      '<span class="growth-name"><span class="n" title="' + esc(accountName) + '">' + esc(accountName) + '</span>' +
       '<span class="u">' + esc((a.uid || "").slice(0,8)) + ' · ' + esc(a.realm || "cn") + '</span></span>' +
       '<span class="growth-count">' +
         '<span class="done"><b>' + done + '</b> 已完成</span>' +
         '<span class="todo"><b>' + pending + '</b> 未完成</span>' +
       '</span></summary>' +
       '<div class="growth-acct-facts">' + bar + facts + assets + '</div>' +
-      (trows ? '<div class="growth-tasks">' + trows + '</div>' : '<div class="growth-empty">' + esc(a.error || "没有可展示的任务") + '</div>') +
+      (trows ? '<div class="growth-tasks">' + thead + trows + '</div>' : '<div class="growth-empty">' + esc(a.error || "没有可展示的任务") + '</div>') +
       '</details><div class="growth-act">' + btn + '</div></div></div>';
   }).join("");
   var summary = '<div class="growth-summary">' +
@@ -4156,7 +4267,7 @@ async function srcRefresh(){
   var req = beginScan();
   try {
     await Promise.all([loadSources(), loadOrigins()]);
-    if (S.candKind){ await reloadCands(false, false, true); }
+    if (S.candKind){ await reloadCands(false, false, true, false); }
     finishScan(req);
     var d = S.src || {};
     var n = (d.kinds || []).filter(function(k){ return k.available; }).length;
@@ -4256,7 +4367,7 @@ async function refreshAll(silent, force){
   if (S.modeldead) jobs.push(loadRuntime());
   // 候选面板开着就顺手重拉——但只在**没探过活/读过额度**时做：
   // 那两个动作每个号一次外网往返，全局刷新不该把它们偷偷重跑一遍。
-  if (S.candKind && S.srcTab === "switch" && !S.candProbe && !S.candBalance){
+  if (S.candKind && !S.candProbe && !S.candBalance && !S.candChat){
     jobs.push(reloadCands(false, false, true));
   }
   await Promise.all(jobs);
@@ -4289,6 +4400,8 @@ const CAND_IMPORT_META = {
   "opencode":          { tab: "app",    method: "app",    detail: "opencode auth.json" },
   "kilo":              { tab: "app",    method: "app",    detail: "kilo anonymous free lane" },
   "wb-switch":         { tab: "switch", method: "switch", detail: "wb-switch 账本" },
+  "zcode-app":         { tab: "app",    method: "app",    detail: "ZCode 应用登录态" },
+  "qoder-app":         { tab: "app",    method: "app",    detail: "Qoder 应用登录态" },
   "zcode-switch":      { tab: "switch", method: "switch", detail: "zcode-switch 账本" },
   "paste":             { tab: "file",   method: "file",   detail: "粘贴导入" }
 };
@@ -4329,9 +4442,9 @@ async function openCands(kind, opt){
   S.srcTab = candImportMeta(kind).tab;
   S.checked = {};
   var o = opt || {};
-  S.candProbe = !!o.probe; S.candBalance = !!o.balance;
+  S.candProbe = !!o.probe; S.candBalance = !!o.balance; S.candChat = !!o.chat;
   try {
-    var r = await api("/admin/sources/" + kind + "/candidates" + candQuery(o.probe, o.balance));
+    var r = await api("/admin/sources/" + kind + "/candidates" + candQuery(o.probe, o.balance, o.chat));
     S.cand = (r && r.candidates) || [];
     S.candKind = kind;
     S.candNote = (r && r.note) || "";
@@ -4339,36 +4452,43 @@ async function openCands(kind, opt){
     render();
   } catch (e) { toast("err", e.message, 9000); }
 }
-/* candQuery 拼候选列表的查询串：探活/读额度都是可选动作，默认一个都不带。 */
-function candQuery(probe, balance){
+/* candQuery 拼候选列表的查询串：探活/读额度/真实 chat 都是可选动作，默认一个都不带。
+   chat 必须单独传，绝不能由 probe 或 balance 隐式带出——那是计费动作。 */
+function candQuery(probe, balance, chat){
   var q = [];
   if (probe) q.push("probe=1");
   if (balance) q.push("balance=1");
+  if (chat) q.push("chat=1");
   return q.length ? "?" + q.join("&") : "";
 }
-/* reloadCands 就地重拉候选（探活/读额度用）：保留已勾选状态，只换数据。
-   探活是每号一次外网往返，所以按钮点下去会等一会儿；这里先提示再请求。 */
-async function reloadCands(probe, balance, silent){
+/* reloadCands 就地重拉候选（探活/读额度/静态 chat 用）：保留已勾选状态，只换数据。
+   探活是每号一次外网往返，所以按钮点下去会等一会儿；chat 还会真实计费。
+   探活/额度状态可继承；candChat 只在显式点击那一次为 true，普通刷新必须清掉。 */
+async function reloadCands(probe, balance, silent, chat){
   if (S.busy){ if (!silent) toast("info", "上一个操作还在进行", 2200); return; }
   S.busy = true;
   var keep = S.checked || {};
   // 探活 / 读额度是「累加」的：已经探过的号不该因为随后读额度又被清空。
   var wantProbe = !!probe || !!S.candProbe;
   var wantBalance = !!balance || !!S.candBalance;
+  // chat 不做继承：后台刷新绝不能因为上次点过就再次计费。
+  var wantChat = !!chat;
   if (!silent){
-    if (probe) toast("info", "正在逐号探活（每号一次外网往返，稍等）…", 2400);
+    if (chat) toast("info", "正在做一次最小静态 chat 探活（可能消耗极少量 token）…", 3000);
+    else if (probe) toast("info", "正在逐号探活（每号一次外网往返，稍等）…", 2400);
     else if (balance) toast("info", "正在读额度…", 2400);
   }
   try {
-    var r = await api("/admin/sources/" + S.candKind + "/candidates" + candQuery(wantProbe, wantBalance));
+    var r = await api("/admin/sources/" + S.candKind + "/candidates" + candQuery(wantProbe, wantBalance, wantChat));
     S.cand = (r && r.candidates) || [];
     S.candNote = (r && r.note) || "";
     S.candProbe = wantProbe;
     S.candBalance = wantBalance;
+    S.candChat = wantChat;
     S.checked = {};
     S.cand.forEach(function(x){ if (!x.imported) S.checked[x.id] = !!keep[x.id]; });
     render();
-    if (!silent) toast("ok", probe ? "探活完成" : "额度已读取", 2600);
+    if (!silent) toast("ok", chat ? "静态 chat 探活完成" : probe ? "探活完成" : "额度已读取", 2600);
   } catch (e) { toast("err", e.message, 12000); }
   finally { S.busy = false; }
 }
@@ -4998,7 +5118,10 @@ async function growthScan(){
   if (S.growthBusy) return;
   S.growthBusy = true; render();
   try {
+    var openBefore = {};
+    Object.keys(S.growthOpen || {}).forEach(function(k){ openBefore[k] = !!S.growthOpen[k]; });
     S.growth = await api("/admin/growth/tasks");
+    S.growthOpen = openBefore;
     toast("ok", "已扫描：" + fmtInt(S.growth.done || 0) + " 项已完成，" + fmtInt(S.growth.pending || 0) + " 项未完成", 3600);
   } catch (e) { toast("err", e.message || String(e), 9000); }
   finally { S.growthBusy = false; render(); }
@@ -5018,7 +5141,10 @@ async function growthPoll(){
       return JSON.stringify(copy);
     };
     if (sig(fresh) !== sig(S.growth)){
+      var openBefore = {};
+      Object.keys(S.growthOpen || {}).forEach(function(k){ openBefore[k] = !!S.growthOpen[k]; });
       S.growth = fresh;
+      S.growthOpen = openBefore;
       if (S.tab === "runtime") render();
     } else {
       S.growth.scanned_at = fresh.scanned_at;
@@ -5037,39 +5163,43 @@ async function growthRunAccount(uid, taskCode){
     var url = "/admin/growth/accounts/" + encodeURIComponent(uid) + "/run";
     if (taskCode) url += "?task=" + encodeURIComponent(taskCode);
     var r = await api(url, { method: "POST", body: {} });
-    var grew = false;
-    if (S.growth){
-      var accts = S.growth.accounts || [];
-      for (var i = 0; i < accts.length; i++){
-        var a = accts[i];
-        if (a.uid !== uid) continue;
-        var list = a.tasks || [];
-        if (taskCode){
-          var kept = [];
-          for (var j = 0; j < list.length; j++){ if (list[j].task_code !== taskCode) kept.push(list[j]); }
-          grew = kept.length < list.length;
-          a.tasks = kept;
+    // 不能因为“任务原先在列表里”就推断完成：后端 reported 只代表事件已提交，
+    // 上游完成状态是异步落库的。必须重新扫描，以新快照里的状态为准。
+    var fresh = await api("/admin/growth/tasks");
+    // 扫描返回的是账号/任务数据，不是用户开合意图。先保留当前展开集合，
+    // 再换数据；否则本次 render() 会在轮询/任务完成时把所有账号折叠。
+    var openBefore = {};
+    Object.keys(S.growthOpen || {}).forEach(function(k){ openBefore[k] = !!S.growthOpen[k]; });
+    S.growth = fresh;
+    S.growthOpen = openBefore;
+    var completedNow = false;
+    if (taskCode){
+      var freshAccts = fresh.accounts || [];
+      var foundAccount = false;
+      for (var i = 0; i < freshAccts.length; i++){
+        if (freshAccts[i].uid !== uid) continue;
+        foundAccount = true;
+        var freshTasks = freshAccts[i].tasks || [];
+        var stillThere = false;
+        for (var j = 0; j < freshTasks.length; j++){
+          if (freshTasks[j].task_code !== taskCode) continue;
+          stillThere = true;
+          var st = freshTasks[j].status || "";
+          completedNow = st === "completed" || st === "claimed";
         }
-        if (grew){
-          a.done = (Number(a.done) || 0) + 1;
-          a.pending = Math.max(0, (Number(a.pending) || 0) - 1);
-          a.can_help = Math.max(0, (Number(a.can_help) || 0) - 1);
-          S.growth.done = (Number(S.growth.done) || 0) + 1;
-          S.growth.pending = Math.max(0, (Number(S.growth.pending) || 0) - 1);
-          S.growth.can_help = Math.max(0, (Number(S.growth.can_help) || 0) - 1);
-        }
+        // 任务消失只有在账号扫描成功时才算完成；扫描失败不能制造假完成。
+        if (freshAccts[i].ok && !stillThere) completedNow = true;
         break;
       }
+      if (!foundAccount) completedNow = false;
     }
     render();
-    var fresh = await api("/admin/growth/tasks");
-    S.growth = fresh;
     var errs = (r && Array.isArray(r.errors)) ? r.errors : [];
     var reported = Number(r && r.reported) || 0;
-    var ok = grew || (r && (Number(r.claimed) > 0 || Number(r.already) > 0)) || (!taskCode && reported > 0);
+    var ok = completedNow || (r && (Number(r.claimed) > 0 || Number(r.already) > 0)) || (!taskCode && reported > 0);
     var msg;
     if (ok){
-      msg = grew ? "这一项已完成" : (taskCode ? "已提交这一项，等待上游确认" : "已处理该账号");
+      msg = completedNow ? "这一项已完成" : (taskCode ? "已提交这一项，等待上游确认" : "已处理该账号");
       if (errs.length) msg = (taskCode ? "这一项已提交，但有 " + fmtInt(errs.length) + " 条失败" : "处理完成，但有 " + fmtInt(errs.length) + " 条失败");
       if (r && r.claimed) msg += "，领取 " + fmtInt(r.claimed) + " 项";
       if (r && Number(r.credit) > 0) msg += "，到账 " + fmtInt(Number(r.credit)) + " 积分";
@@ -5162,6 +5292,10 @@ async function actOn(t){
     }
     if (act === "zcode-probe") return reloadCands(true, false);
     if (act === "zcode-balance") return reloadCands(false, true);
+    if (act === "zcode-chat"){
+      if (!confirm("这会真实调用一次最小 chat，可能消耗极少量 token。只探一次，不会自动轮询。继续？")) return;
+      return reloadCands(false, false, false, true);
+    }
     if (act === "cand-close"){ S.cand = null; return render(); }
     if (act === "acct") return acctOp(t.getAttribute("data-uid"), t.getAttribute("data-op"));
     if (act === "save-out") return saveOutput();
@@ -5232,6 +5366,8 @@ async function actOn(t){
       var cp = t.getAttribute("data-copy");
       if (cp){ copyText(cp); return; }
     }
+    if (act === "goto-zcode-app"){ S.tab = "sources"; S.srcTab = "app"; S.cand = null; return openCands("zcode-app"); }
+    if (act === "goto-sources"){ S.tab = "sources"; S.srcTab = "app"; S.cand = null; return render(); }
     if (act === "gwkey-gen")   return gwKeySet({ generate: true });
     if (act === "gwkey-clear") return gwKeySet({ api_key: "" });
     if (act === "gwkey-reveal"){ S.keyReveal = !S.keyReveal; return render(); }
@@ -5281,6 +5417,9 @@ document.addEventListener("toggle", function(ev){
     if (id){ S.chanOpen[id] = !!t.open; }
   }
   if (t && t.classList && t.classList.contains("growth-det")){
+    // render() 替换 DOM 时，旧节点会异步补发 open=false；这不是用户操作，
+    // 不能覆盖持久化状态。isConnected 挡住旧节点，growthRendering 挡住渲染窗口。
+    if (!t.isConnected || S.growthRendering) return;
     var uid = t.getAttribute("data-growth-uid") || "";
     if (uid){ S.growthOpen[uid] = !!t.open; saveGrowthOpen(); }
   }

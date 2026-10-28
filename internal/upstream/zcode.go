@@ -419,6 +419,64 @@ type ZCodeProbeResult struct {
 	Models []string         `json:"models,omitempty"`
 }
 
+// ZCodeStaticChatProbeResult 一次**真实**静态 chat 探活的结果。
+// 与 ProbeZCodeKey（只读 /models）不同：这里会消耗极少量 token，因此只允许
+// 用户显式触发，不能放进列表轮询。
+type ZCodeStaticChatProbeResult struct {
+	Status ZCodeProbeStatus `json:"status"`
+	HTTP   int              `json:"http,omitempty"`
+	Msg    string           `json:"msg,omitempty"`
+}
+
+// ProbeZCodeStaticChat 用最小 chat 请求验证「key 鉴权通过 + 静态额度可支付」。
+// 这是区分 /models 200 与真正可反代的唯一可靠方式：/models 200 只证明格式对，
+// 余额为 0 时 chat 仍会返回 429 / 1113。
+func ProbeZCodeStaticChat(ctx context.Context, client *http.Client, base, key, model string) ZCodeStaticChatProbeResult {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		base = defaultZCodeChatBase
+	}
+	if strings.TrimSpace(model) == "" {
+		model = "glm-5.3-flash"
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "OK"}},
+		"max_tokens": 1,
+		"stream":     false,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+zcodeChatPath, bytes.NewReader(body))
+	if err != nil {
+		return ZCodeStaticChatProbeResult{Status: ZCodeProbeError, Msg: err.Error()}
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return ZCodeStaticChatProbeResult{Status: ZCodeProbeUnreach, Msg: truncate(err.Error(), 160)}
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	text := string(raw)
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return ZCodeStaticChatProbeResult{Status: ZCodeProbeOK, HTTP: resp.StatusCode}
+	case classifyZCode(resp.StatusCode, text) == ErrHardCredit:
+		return ZCodeStaticChatProbeResult{Status: ZCodeProbeNoBalance, HTTP: resp.StatusCode, Msg: truncate(text, 160)}
+	case resp.StatusCode == http.StatusUnauthorized:
+		return ZCodeStaticChatProbeResult{Status: ZCodeProbeBadKey, HTTP: resp.StatusCode, Msg: truncate(text, 160)}
+	default:
+		return ZCodeStaticChatProbeResult{Status: ZCodeProbeError, HTTP: resp.StatusCode, Msg: truncate(text, 160)}
+	}
+}
+
 // ProbeZCodeKey 用 GET /models 探一把凭据（**不消耗 token**：模型清单是只读接口，
 // 比打一次 chat 补全便宜且没有计费副作用）。base 传空时用内置缺省。
 // client 传 nil 时用包内一次性 client；调用方可注入与网关同款的 transport。

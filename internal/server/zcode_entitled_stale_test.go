@@ -10,6 +10,7 @@ package server
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,5 +119,28 @@ func TestZCodeEntitledPersistsAcrossRestart(t *testing.T) {
 	}
 	if ok, present := zcodeAccountUsable("zcode-a"); !present || !ok {
 		t.Fatalf("重启后 route 证据也必须保留（present=%v ok=%v）", present, ok)
+	}
+}
+// TestZCodeRouteNegativeEvidenceOutlivesSuccessTTL 明确 1113/401 不能按成功证据的
+// 24h 窗口过期：那会让同一个确定失败的模型每天重新出现在发布清单里。成功证据仍
+// 保持 24h；失败证据使用更长的 blocked TTL，直到真实成功覆盖或人工复测。
+func TestZCodeRouteNegativeEvidenceOutlivesSuccessTTL(t *testing.T) {
+	newZCodeCatalogHandler(t)
+	stubZCodeEntitled(zcodeEntitledRow("glm-5.3-flash"))
+	stubZCodeRoute("zcode-a", false, "upstream 1113 insufficient balance")
+
+	// 把失败证据推到 25h 前：超过成功 TTL，但仍在 blocked TTL 内。
+	zcodeEntitledCache.Lock()
+	st := zcodeEntitledCache.routeByUID["zcode-a"]
+	st.CheckedAt = time.Now().Add(-25 * time.Hour).Unix()
+	zcodeEntitledCache.routeByUID["zcode-a"] = st
+	zcodeEntitledCache.Unlock()
+
+	blocked, reasons, known := zcodeBlockedModels()
+	if !known || !blocked["glm-5.3-flash"] {
+		t.Fatalf("25h 后的明确 1113 仍应 blocked，得到 known=%v blocked=%v", known, blocked)
+	}
+	if !strings.Contains(reasons["glm-5.3-flash"], "1113") {
+		t.Fatalf("blocked 原因应保留上游 1113，得到 %q", reasons["glm-5.3-flash"])
 	}
 }

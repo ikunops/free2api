@@ -40,6 +40,20 @@ func (e growthExpertChatExecutor) Code() string   { return e.code }
 func (e growthExpertChatExecutor) isMini() bool   { return false }
 func (e growthExpertChatExecutor) maxTarget() int { return e.target }
 
+// matchesTask 只匹配已登记的具体专家别名。上游偶尔会改 task_code，
+// 但任务展示名/描述仍保留专家名；这类任务应继续可帮做。
+func (e growthExpertChatExecutor) matchesTask(task upstream.GrowthTask) bool {
+	for _, alias := range e.aliases {
+		if growthTaskTextMatches(task.TaskCode, alias) ||
+			growthTaskTextMatches(task.TaskName, alias) ||
+			growthTaskTextMatches(task.Title, alias) ||
+			growthTaskTextMatches(task.TaskDesc, alias) {
+			return true
+		}
+	}
+	return false
+}
+
 func (e growthExpertChatExecutor) Run(ctx context.Context, c *upstream.Client, a *auth.Auth, task upstream.GrowthTask) error {
 	need := e.target
 	if task.Progress.Target > 0 {

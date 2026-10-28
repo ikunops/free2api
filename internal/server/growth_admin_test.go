@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -120,5 +122,20 @@ func TestGrowthAdminRunAccountInjected(t *testing.T) {
 	}
 	if body["uid"] != "u1" || body["task"] != "chat_5" {
 		t.Fatalf("body=%v", body)
+	}
+}
+
+func TestGrowthAdminUsesLongTaskBudget(t *testing.T) {
+	// 成长任务扫描实测可超过 90 秒，单项补进度可超过 180 秒。三个入口
+	// 必须共用同一长任务预算，否则请求会在执行器/扫描完成前被网关自己取消。
+	source, err := os.ReadFile("growth_admin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(source), "context.WithTimeout(r.Context(), 10*time.Minute)"); got != 3 {
+		t.Fatalf("growth handlers long timeout count=%d want 3:\n%s", got, source)
+	}
+	if strings.Contains(string(source), "context.WithTimeout(r.Context(), 180*time.Second)") || strings.Contains(string(source), "context.WithTimeout(r.Context(), 90*time.Second)") {
+		t.Fatal("growth handler still contains a short timeout that can truncate scans or mini chat tasks")
 	}
 }

@@ -58,4 +58,3 @@ func TestInjectThinkingDefaultEffortDowngrades(t *testing.T) {
 }
 
 // objFieldString 见 thinking_test.go（复用）。
-

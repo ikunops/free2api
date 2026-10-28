@@ -51,7 +51,7 @@ func TestMaxCompletionTokensNonPositiveNotTranslated(t *testing.T) {
 		{"zero", `"max_completion_tokens":0`},
 		{"null", `"max_completion_tokens":null`},
 		{"negative", `"max_completion_tokens":-5`},
-		{"float tail", `"max_completion_tokens":1.5`},     // 非整数：不翻译（不把小数尾巴搬进 max_tokens）
+		{"float tail", `"max_completion_tokens":1.5`},       // 非整数：不翻译（不把小数尾巴搬进 max_tokens）
 		{"non-numeric", `"max_completion_tokens":"128000"`}, // 字符串畸形：不翻译（上游 11101 自会报）
 	}
 	for _, c := range cases {

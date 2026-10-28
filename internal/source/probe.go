@@ -58,21 +58,28 @@ type probeSpec struct {
 // Probe 扫本机已知的应用登录态目录，逐个给出「在不在 / 什么形态 / 能不能用」。
 // 只读操作，不写任何东西。
 func Probe() []ProbeTarget {
+	return ProbeWithZCodeAppDir(ZCodeAppCredDir())
+}
+
+// ProbeWithZCodeAppDir 与 Probe 相同，但允许配置覆盖 ZCode 应用目录。
+func ProbeWithZCodeAppDir(zcodeAppDir string) []ProbeTarget {
 	home := HomeDir()
+	if strings.TrimSpace(zcodeAppDir) == "" {
+		zcodeAppDir = ZCodeAppCredDir()
+	}
 	specs := []probeSpec{
 		// WorkBuddy 桌面端：凭证**不在** Electron 数据目录（~/.workbuddy*）里，而在客户端
 		// 自己的登录态目录（CodeBuddyExtension/.../auth，CN 与国际版同目录、靠文件名区分）。
 		// 5.6.2 起字段级加密，本网关已实现解密，所以这条能直接读出账号。
 		{id: "workbuddy-desktop", name: "WorkBuddy 桌面端登录态（CN + 国际版）",
 			producer: ProducerWorkbuddy, path: WbDeskAuthDir(""),
-			hint: "客户端登录态目录（5.6.2 起字段级加密，本网关已能解）",
+			hint:    "客户端登录态目录（5.6.2 起字段级加密，本网关已能解）",
 			special: "workbuddy-desktop"},
 		{id: "zcode-app", name: "ZCode 应用当前登录", producer: ProducerZCode,
-			path: filepath.Join(home, ".zcode", "v2", "credentials.json"), hint: "私有 json"},
-		{id: "zcode-app-alt", name: "ZCode 应用（旧版 v2 目录）", producer: ProducerZCode,
-			path: filepath.Join(home, ".zcode", "v2"), hint: "私有目录"},
-		{id: "qoder-app", name: "Qoder 应用", producer: ProducerQoder,
-			path: filepath.Join(home, ".qoder"), hint: "私有目录"},
+			path: zcodeAppDir, hint: "应用登录态目录（credentials.json + config.json + telemetry-state.json）", special: "zcode-app"},
+		{id: "qoder-app", name: "Qoder 应用当前登录（CN）", producer: ProducerQoder,
+			path: QoderAppDir(), hint: "Electron 登录态（auth.v1.dat 为 v10 AES-GCM，密钥在 Local State 的 DPAPI 里）",
+			special: "qoder-app"},
 		{id: "opencode-auth", name: "OpenCode CLI/TUI（OpenCode Zen）", producer: ProducerOpenCode,
 			path: filepath.Join(home, ".local", "share", "opencode", "auth.json"),
 			hint: "明文 json（providerID 到 {type,key} 的映射）", special: "opencode"},
@@ -93,6 +100,12 @@ func probeOne(s probeSpec) ProbeTarget {
 	if s.special == "workbuddy-desktop" {
 		return probeWorkBuddyDesktop(t)
 	}
+	if s.special == "zcode-app" {
+		return probeZCodeApp(t)
+	}
+	if s.special == "qoder-app" {
+		return probeQoderApp(t)
+	}
 	info, err := os.Stat(s.path)
 	if err != nil {
 		t.Kind = KindNone
@@ -104,6 +117,56 @@ func probeOne(s probeSpec) ProbeTarget {
 		return probeFile(t, s)
 	}
 	return probeDir(t, s)
+}
+
+// probeZCodeApp ZCode 应用登录态：走专用解析，只把真正的静态 API key 计为
+// 可导入账号。JWT / OAuth access token 是客户端登录凭据，数量再多也不能冒充账号。
+func probeZCodeApp(t ProbeTarget) ProbeTarget {
+	acc, err := LoadZCodeAppAccount(t.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Kind = KindNone
+			t.Note = "本机没有 ZCode 应用登录态（先登录官方客户端）"
+			return t
+		}
+		t.Kind = KindUnknown
+		t.Note = "读取失败：" + err.Error()
+		return t
+	}
+	t.Exists = true
+	key, hasKey := acc.usableKey()
+	if !hasKey {
+		t.Kind = KindEncJSON
+		t.Note = "已读到 ZCode 登录身份 " + acc.Name + "，但没有可解出的静态 API key；OAuth/JWT 只能用于官方客户端，不能当 OpenAI 兼容 key"
+		return t
+	}
+	t.Kind = KindPlainJSON
+	t.Readable = true
+	t.Accounts = 1
+	t.Note = "当前登录 " + acc.Name + " · 静态 key " + keyHint(key.APIKey) + "（" + key.BaseURL + "）；是否可调用仍需真实 chat 探活"
+	return t
+}
+
+// probeQoderApp Qoder 应用登录态：真读一遍（含 DPAPI + AES-GCM 解密），
+// 能解出账号才算可读；密钥按 Windows 用户绑定，换用户/换机器解不开。
+func probeQoderApp(t ProbeTarget) ProbeTarget {
+	if _, err := os.Stat(t.Path); err != nil {
+		t.Kind = KindNone
+		t.Note = "本机没有 Qoder 应用数据目录（没装或没登录过）"
+		return t
+	}
+	t.Exists = true
+	acc, err := LoadQoderAccount(t.Path)
+	if err != nil {
+		t.Kind = KindEncJSON
+		t.Note = "读取失败：" + err.Error()
+		return t
+	}
+	t.Kind = KindPlainJSON
+	t.Readable = true
+	t.Accounts = 1
+	t.Note = "当前登录 " + acc.Name + " · machine " + keyHint(acc.MachineID) + "（COSY 签名走 gateway.qoder.com.cn）"
+	return t
 }
 
 // probeFile 单文件形态：只有 json 需要细看，其余按未知处理。

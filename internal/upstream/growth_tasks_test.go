@@ -108,6 +108,134 @@ func TestIsGrowthAlreadyClaimed(t *testing.T) {
 	}
 }
 
+func TestNewGrowthMiniChatEventExactShape(t *testing.T) {
+	cid := "growth-mp-conv-1"
+	ev := NewGrowthMiniChatEvent(cid)
+	if ev["eventCode"] != "chat_request_send" || ev["inputLength"] != 14 || ev["maxSteps"] != 500 {
+		t.Fatalf("event basics=%v", ev)
+	}
+	if ev["agentName"] != "mp" || ev["agentType"] != "main" {
+		t.Fatalf("agent fields=%v/%v", ev["agentName"], ev["agentType"])
+	}
+	if ev["conversationId"] != cid || ev["parentConversationId"] != cid || ev["codebuddy.session_id"] != cid {
+		t.Fatalf("conversation fields=%v", ev)
+	}
+	rid, _ := ev["codebuddy.conversation_request_id"].(string)
+	if rid == "" || ev["traceId"] != rid || ev["rootRequestId"] != rid {
+		t.Fatalf("request fields=%v", ev)
+	}
+	if msg, _ := ev["messageId"].(string); msg != "msg-"+rid[len(rid)-8:] {
+		t.Fatalf("messageId=%v rid=%s", ev["messageId"], rid)
+	}
+	for _, forbidden := range []string{"mode", "requestModelId", "requestModelName", "requestId", "fileUri", "presentAt", "userId"} {
+		if _, ok := ev[forbidden]; ok {
+			t.Errorf("mini event must not contain %q: %v", forbidden, ev[forbidden])
+		}
+	}
+}
+
+func TestReportGrowthMPEventsHeadersAndFingerprint(t *testing.T) {
+	var got http.Header
+	var raw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/report" {
+			http.NotFound(w, r)
+			return
+		}
+		got = r.Header.Clone()
+		b, _ := io.ReadAll(r.Body)
+		raw = string(b)
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	a := &auth.Auth{UID: "u1", AccessToken: "at", Nickname: "nick"}
+	if err := c.ReportGrowthMPEvents(a, []map[string]any{NewGrowthMiniChatEvent("growth-mp-conv-2")}); err != nil {
+		t.Fatalf("ReportGrowthMPEvents: %v", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(raw), "[") {
+		t.Fatalf("body must be bare array: %s", raw)
+	}
+	for _, want := range []string{`"platform":"mini_program"`, `"ideType":"WorkBuddy_MP"`, `"userId":"u1"`, `"eventCode":"chat_request_send"`} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("body missing %s: %s", want, raw)
+		}
+	}
+	wantHeaders := map[string]string{
+		"Authorization":     "Bearer at",
+		"X-User-Id":         "u1",
+		"X-Client-Product":  "workbuddy-mp",
+		"X-Client-Version":  "2.4.0",
+		"X-Client-Platform": "mp-weixin",
+		"X-Platform":        "wechatmp",
+	}
+	for k, v := range wantHeaders {
+		if got.Get(k) != v {
+			t.Errorf("%s=%q want %q", k, got.Get(k), v)
+		}
+	}
+	if ua := got.Get("User-Agent"); !strings.Contains(ua, "MicroMessenger") || !strings.Contains(ua, "miniProgram/") {
+		t.Errorf("mini UA=%q", ua)
+	}
+	for _, h := range []string{"X-CodeBuddy-Request", "X-Domain", "X-Device-Token"} {
+		if got.Get(h) != "" {
+			t.Errorf("must not send %s=%q", h, got.Get(h))
+		}
+	}
+}
+
+func TestMiniprogramTaskRequestsUseWebViewHeadersAndAcceptPath(t *testing.T) {
+	var listHeader, acceptHeader http.Header
+	var acceptPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks":
+			listHeader = r.Header.Clone()
+			_, _ = w.Write([]byte(`{"code":0,"data":{"tasks":[]}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/activity/growth/tasks/accept":
+			acceptPath = r.URL.Path
+			acceptHeader = r.Header.Clone()
+			_, _ = w.Write([]byte(`{"code":0,"data":{"results":[]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	a := &auth.Auth{UID: "u1", AccessToken: "at", EnterpriseID: "e1"}
+	if _, err := c.ListGrowthTasks(a, GrowthPlatformMiniprogram); err != nil {
+		t.Fatalf("ListGrowthTasks: %v", err)
+	}
+	if _, err := c.AcceptGrowthTasks(a, []string{"Sequential_Tasks_3"}, GrowthPlatformMiniprogram); err != nil {
+		t.Fatalf("AcceptGrowthTasks: %v", err)
+	}
+	if acceptPath != "/activity/growth/tasks/accept" {
+		t.Fatalf("accept path=%q", acceptPath)
+	}
+	for name, h := range map[string]http.Header{"list": listHeader, "accept": acceptHeader} {
+		if h.Get("X-Client-Platform") != "miniprogram" {
+			t.Errorf("%s X-Client-Platform=%q", name, h.Get("X-Client-Platform"))
+		}
+		if h.Get("Authorization") != "Bearer at" || h.Get("X-Enterprise-Id") != "e1" {
+			t.Errorf("%s identity headers=%v", name, h)
+		}
+		if ua := h.Get("User-Agent"); !strings.Contains(ua, "MicroMessenger") || !strings.Contains(ua, "miniProgram/") {
+			t.Errorf("%s mini UA=%q", name, ua)
+		}
+		for _, forbidden := range []string{"X-CodeBuddy-Request", "X-Domain", "X-Tenant-Id", "X-Device-Token"} {
+			if h.Get(forbidden) != "" {
+				t.Errorf("%s must not send %s=%q", name, forbidden, h.Get(forbidden))
+			}
+		}
+	}
+	if listHeader.Get("Origin") != "" {
+		t.Errorf("GET Origin=%q want empty", listHeader.Get("Origin"))
+	}
+	if acceptHeader.Get("Origin") != srv.URL || acceptHeader.Get("Referer") != srv.URL+"/profile/growth-center" {
+		t.Errorf("POST origin/referer=%q/%q", acceptHeader.Get("Origin"), acceptHeader.Get("Referer"))
+	}
+}
+
 func TestReportGrowthEventsRawArray(t *testing.T) {
 	var raw string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

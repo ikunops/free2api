@@ -8,7 +8,7 @@ import (
 func TestParseRateReset_English(t *testing.T) {
 	future := time.Now().Add(35 * time.Minute)
 	ts := future.In(softRateResetLoc).Format("2006-01-02 15:04:05")
-	
+
 	cases := []struct {
 		name string
 		body string
@@ -35,7 +35,7 @@ func TestParseRateReset_English(t *testing.T) {
 			ok:   false,
 		},
 	}
-	
+
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got, ok := ParseRateReset(c.body)

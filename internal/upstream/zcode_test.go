@@ -409,3 +409,45 @@ func TestZCodeEntitledModelsEmpty(t *testing.T) {
 		t.Fatalf("nil 接收者 EntitledModels = %v, want nil", got)
 	}
 }
+
+// TestProbeZCodeStaticChatDistinguishesNoBalance /models 200 不代表静态 chat 可用。
+// 这里用 httptest 锁住三档：200=ok、429/1113=no_balance、401=bad_key；
+// 并断言请求体是最小真实 chat，不是又打了一次 /models。
+func TestProbeZCodeStaticChatDistinguishesNoBalance(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   ZCodeProbeStatus
+	}{
+		{"ok", http.StatusOK, `{"choices":[{"message":{"content":"OK"}}]}`, ZCodeProbeOK},
+		{"no-balance", http.StatusTooManyRequests, `{"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}`, ZCodeProbeNoBalance},
+		{"bad-key", http.StatusUnauthorized, `{"error":{"code":"401","message":"令牌已过期或验证不正确"}}`, ZCodeProbeBadKey},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+					t.Errorf("探活请求 = %s %s, want POST /chat/completions", r.Method, r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+					t.Errorf("Authorization = %q", got)
+				}
+				var req map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("请求体不是 JSON: %v", err)
+				}
+				if req["model"] != "glm-5.3-flash" || req["max_tokens"] != float64(1) || req["stream"] != false {
+					t.Errorf("探活体不是最小真实 chat: %#v", req)
+				}
+				w.WriteHeader(c.status)
+				_, _ = io.WriteString(w, c.body)
+			}))
+			defer srv.Close()
+			got := ProbeZCodeStaticChat(context.Background(), srv.Client(), srv.URL, "test-key", "glm-5.3-flash")
+			if got.Status != c.want {
+				t.Fatalf("status = %v, want %v（http=%d msg=%s）", got.Status, c.want, got.HTTP, got.Msg)
+			}
+		})
+	}
+}

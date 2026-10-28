@@ -62,23 +62,28 @@ func TestProducerRoutingFilter(t *testing.T) {
 	}
 }
 
-// TestProducerFilterUnservable è¿æ²¡æ¥åä»£çå®¢æ·ç«¯ï¼qoderï¼çå·ä¸è¿åéï¼
-// å®å¯ /healthz æ¥ 503ãchat å 503ï¼ä¹ä¸è½æ¿å«å®¶å­æ®å»æ workbuddy ä¸æ¸¸ã
-// è¿æ¯ãåæ¥ä¸å®¶ä¸æ¸¸åªæ¹ servableProducer ä¸ä¸ªå½æ°ãå¥çº¦çéå®ç¹ã
-func TestProducerFilterUnservable(t *testing.T) {
+// TestProducerPickForQoder qoder 已接反代：池里只有 qoder 号时 chat 能选到号，
+// 且按 producer 严格分池。回归背景：接入 Qoder COSY 协议前此函数把 qoder 挡在
+// 候选之外，接入后忘记放开 servableProducer 会让整条链路 503（"再接入一家上游
+// 只改 servableProducer 一个函数"的契约点）。
+func TestProducerPickForQoder(t *testing.T) {
 	withNoPickGap(t)
 	p := New("")
-	p.Add(&auth.Auth{UID: "qd1", Domain: "www.codebuddy.cn", AccessToken: "at"})
-	p.SetProducerOf(func(string) string { return "qoder" })
+	qd := &auth.Auth{UID: "qd1", Domain: "https://gateway.qoder.com.cn", AccessToken: "dt"}
+	qd.SetProducer("qoder")
+	p.Add(qd)
 
-	if got := p.AvailableUIDs(); len(got) != 0 {
-		t.Errorf("AvailableUIDs() = %v, want ç©ºï¼qoder æªæ¥åä»£ï¼ä¸æ¿æ¥æµéï¼", got)
+	if got := p.AvailableUIDs(); len(got) != 1 || got[0] != "qd1" {
+		t.Fatalf("AvailableUIDs() = %v, want [qd1]（qoder 已 servable）", got)
 	}
-	if a := p.Pick(""); a != nil {
-		t.Errorf("Pick() = %v, want nilï¼æ  servable çäº§èåéï¼", a)
+	if a := p.PickForProducer("qoder", ""); a == nil || a.UID != "qd1" {
+		t.Fatalf("PickForProducer(qoder) = %v, want qd1（拉模型目录用）", a)
 	}
-	if p.ServableNow() {
-		t.Error("ServableNow() = true, want falseï¼åªæä¸å¯æå¡çå®¢æ·ç«¯ï¼")
+	if a := p.PickExcludingForProducerRealm(nil, "gfmodel", "qoder", "cn"); a == nil || a.UID != "qd1" {
+		t.Fatalf("PickExcludingForProducerRealm(qoder, cn) = %v, want qd1", a)
+	}
+	if !p.ServableNow() {
+		t.Error("ServableNow() = false, want true（qoder 已 servable）")
 	}
 }
 

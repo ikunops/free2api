@@ -817,6 +817,11 @@ type Client struct {
 	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
 	ChatBaseOpenCode string
 
+	// ChatBaseQoder Qoder（CN）生产者的上游 base 覆盖。
+	// 空 = 内置缺省 https://gateway.qoder.com.cn（见 qoder.go）。
+	// 凭证自带的 upstream_base 优先级更高（账号级 > 实例级 > 内置缺省）。
+	ChatBaseQoder string
+
 	// GlobalEnabled 是否启用 global realm 路由（config global.enabled，缺省 true）。
 	// false 即显式逃生门：即使用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
@@ -1056,6 +1061,11 @@ const refreshTokenExpiresInMax = 10 * 365 * 24 * time.Hour
 //   - 写回前重新校验快照一致性：若锁外期间另一 goroutine 已完成刷新（refreshToken
 //     已变），本次结果直接采用（新 token 已生效），不再重复写回。
 func (c *Client) RefreshToken(a *auth.Auth) error {
+	// Qoder 的 token 刷新端点与 workbuddy 完全不同（openapi + refresh_token body），
+	// 且 refresh token 是一次性的：成功必须 SaveAtomic 落盘（由调用方做）。
+	if a != nil && a.Producer() == ProducerQoder {
+		return c.qoderRefreshToken(a)
+	}
 	// 第 1 段（锁内）：读快照。
 	a.Lock()
 	rtSnapshot := a.RefreshToken
@@ -1177,6 +1187,12 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	// 提前分流避免下面的 workbuddy 专有加工（指纹中和、prompt_cache_key 注入、
 	// effort 降级）污染智谱请求——那些变换是 workbuddy 上游的特定需要。
 	if c.zcodeOn(a) {
+		if c.zcodeStartOn(a, body) {
+			// Start Plan 的 401/1113/3012 是账号维度证据；返回给 handler 让它按
+			// 现有策略冷却/禁用该号并轮转。空流已在 zcodeStartChatStreamContext
+			// 内预读并转成 502，这里不再做无效的「静态通道回落」。
+			return c.zcodeStartChatStreamContext(ctx, a, body, meta)
+		}
 		return c.zcodeChatStreamContext(ctx, a, body, meta)
 	}
 	// opencode（Zen / Go）生产者同走独立通道：base/路径/头组/分类全换，请求体几乎
@@ -1191,6 +1207,11 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	// 无需补工具、无需 session 头（见 kilo.go 文件头实测）。
 	if c.kiloOn(a) {
 		return c.kiloChatStreamContext(ctx, a, body, meta)
+	}
+	// qoder（Qoder CN）生产者同走独立通道：COSY 签名头 + 自定义 body 编码 +
+	// SSE envelope 解包，与上面几家完全不同（见 qoder.go 文件头实测）。
+	if c.qoderOn(a) {
+		return c.qoderChatStreamContext(ctx, a, body, meta)
 	}
 	prepared := c.prepareBody(body, a.Realm(), a.UID, meta.ConversationID)
 	if c.globalOn(a) {

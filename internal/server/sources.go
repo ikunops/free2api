@@ -31,14 +31,14 @@ const sourceJSONMaxBytes = 8 << 20
 
 // adminSources 列出本机所有可用的源 + 应用内登录态探查结论 + 来源台账概览。
 func (h *Handler) adminSources(w http.ResponseWriter, r *http.Request) {
-	kinds := source.Detect(h.cfg.WBLedgerPath, h.cfg.ZCodeDir, h.cfg.AuthDir)
+	kinds := source.DetectWithZCodeAppDir(h.cfg.WBLedgerPath, h.cfg.ZCodeDir, h.zcodeAppDir(), h.cfg.AuthDir)
 	reg := source.LoadRegistry(h.cfg.AuthDir)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"auth_dir": h.cfg.AuthDir,
 		"kinds":    kinds,
 		// probes 是「应用内登录态」这一路的探查明细：本机装了哪些工具、
 		// 登录态在哪、什么格式、能不能直接读。全部来自真实 os.Stat/ReadFile。
-		"probes": source.Probe(),
+		"probes": source.ProbeWithZCodeAppDir(h.zcodeAppDir()),
 		// 三种来源的展示顺序 + 中文名由后端定死，前端不再自己写一份枚举。
 		"method_order":  source.MethodOrder,
 		"method_labels": methodLabels(),
@@ -97,7 +97,7 @@ func (h *Handler) producerTotalsView() []map[string]any {
 //   - zcode：看该号自己的套餐权益（entitled_models 非空），并且必须有近 24h 的
 //     真实 chat 成功证据——套餐权益按账号发，静态反代配额还可能独立失效。
 //   - opencode / kilo：匿名免费层，健康即可用。
-//   - 未接反代的来源（qoder 等）：0（进不了选号候选）。
+//   - qoder：登录态不区分套餐权益，能解出 device token 就能出流量，健康即可用。
 func (h *Handler) usableCountsByProducer() map[string]int {
 	out := map[string]int{}
 	if h.cfg.Pool == nil {
@@ -135,6 +135,10 @@ func (h *Handler) usableCountsByProducer() map[string]int {
 			if ok, present := zcodeAccountUsable(st.UID); present && ok {
 				out[st.Producer]++
 			}
+		case source.ProducerQoder:
+			// Qoder 登录态不区分套餐权益：能解出 device token 就能出流量，
+			// 健康即算可用（真失败由 chat 侧的冷却/熔断收敛）。
+			out[st.Producer]++
 		case source.ProducerOpenCode, source.ProducerKilo:
 			out[st.Producer]++
 		}
@@ -183,6 +187,15 @@ func (h *Handler) adminSourceCandidates(w http.ResponseWriter, r *http.Request) 
 		cands, err = source.OpenCodeCandidates(h.openCodeAuthPath(), h.cfg.AuthDir)
 		if err == nil && len(cands) == 0 {
 			note = "auth.json 里没有 OpenCode 自家的凭据；第三方 provider（openrouter / deepseek 等）不算账号自带能力，不收"
+		}
+	case "zcode-app":
+		h.zcodeAppCandidatesView(w, r)
+		return
+	case "qoder-app":
+		// Qoder 应用登录态（method=app，最多一个号）。
+		cands, err = source.QoderCandidates(source.QoderAppDir(), h.cfg.AuthDir)
+		if err == nil && len(cands) == 0 {
+			note = "没读到 Qoder 登录态：先在 Qoder 客户端登录"
 		}
 	case "zcode-switch":
 		// zcode 现在是**可取用**的源（上游适配器见 internal/upstream/zcode.go）：
@@ -233,7 +246,27 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 			"检查 config.source.zcode_dir 或本机 ~/.zcode-switch/accounts 是否存在")
 		return
 	}
+	h.writeZCodeCandidates(w, r, "zcode-switch", dir, accounts)
+}
+
+// zcodeAppCandidatesView ZCode 应用当前登录态（method=app，最多一个号）。
+func (h *Handler) zcodeAppCandidatesView(w http.ResponseWriter, r *http.Request) {
+	dir := h.zcodeAppDir()
+	acc, err := source.LoadZCodeAppAccount(dir)
+	if err != nil {
+		writeOpenAIErrorHint(w, http.StatusBadRequest, "source_error", err.Error(),
+			"先登录 ZCode 应用；或检查 config.source.zcode_app_dir")
+		return
+	}
+	h.writeZCodeCandidates(w, r, "zcode-app", dir, []source.ZCodeAccount{acc})
+}
+
+// writeZCodeCandidates zcode 取源清单的共用增强视图。
+// ?probe=1 只打 /models（零计费）；?chat=1 才发真实最小 chat（会消耗极少量 token），
+// 必须由用户显式点击；?balance=1 只读套餐/余额。
+func (h *Handler) writeZCodeCandidates(w http.ResponseWriter, r *http.Request, kind, dir string, accounts []source.ZCodeAccount) {
 	doProbe := truthyQuery(r, "probe")
+	doChat := truthyQuery(r, "chat")
 	doBalance := truthyQuery(r, "balance")
 	// 「已在号池」判定：按 uid 比对 auths 目录里的凭证文件（与导入落盘规则同一派生）。
 	existing := map[string]bool{}
@@ -247,6 +280,10 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 	usable := 0
 	for _, acc := range accounts {
 		uid := source.ZCodeUID(acc.ID)
+		importedAs := ""
+		if existing[uid] {
+			importedAs = filepath.Base(source.AuthFileName(uid))
+		}
 		row := map[string]any{
 			"id":          acc.ID,
 			"label":       acc.Name,
@@ -257,7 +294,7 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 			"usable":      false,
 			"has_refresh": false,
 			"imported":    existing[uid],
-			"imported_as": filepath.Base(source.AuthFileName(uid)),
+			"imported_as": importedAs,
 		}
 		models := make([]map[string]any, 0, len(acc.Models))
 		ids := make([]string, 0, len(acc.Models))
@@ -276,24 +313,23 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.TrimSpace(acc.JWT) != "":
 			row["quota_ready"] = true
-			row["quota_cred"] = "zcode 账本"
+			row["quota_cred"] = "登录态"
 			if strings.TrimSpace(acc.DeviceMID) != "" {
 				row["device_mid"] = acc.DeviceMID
 			}
 		case acc.JWTEncrypted:
-			row["quota_error"] = "账本里的 zcodejwttoken 是 enc:v1 密文，本机解不开（换机器导出过）"
+			row["quota_error"] = "zcodejwttoken 是 enc:v1 密文，本机解不开（换机器导出过）"
 		default:
-			row["quota_error"] = "账本里没有 zcodejwttoken，读不到这个号的套餐到期与余额"
+			row["quota_error"] = "没有 zcodejwttoken，读不到这个号的套餐到期与余额"
 		}
 
 		key, hasKey := acc.UsableKey()
+		row["credential_complete"] = hasKey && key.IDSecret
 		switch {
 		case hasKey:
-			row["usable"] = true
-			usable++
 			detail := "provider=" + acc.Provider + " · key=" + key.Provider
 			if key.IDSecret {
-				detail += "（id.secret）"
+				detail += "（id.secret，仅表示凭据形态完整；能否调用还要看真实 chat 探活与静态余额）"
 			} else {
 				detail += "（裸 32 位，实测已过期/不完整）"
 			}
@@ -301,10 +337,11 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 			row["upstream"] = key.BaseURL
 			row["api_key_hint"] = source.KeyHint(key.APIKey)
 		case acc.Encrypted:
-			row["detail"] = "上游凭据被 enc:v1 字段级加密，本机解不开（密钥按机器 + 用户名派生，换机器必然解不开）；要取这个号的上游 key 得在装 zcode 的那台机器上操作"
+			row["detail"] = "上游凭据被 enc:v1 字段级加密，本机解不开（密钥按机器 + 用户名派生，换机器必然解不开）"
 		default:
-			row["detail"] = "没有指向智谱（open.bigmodel.cn / api.z.ai）的可用凭据：该号只有 z-code 计划 JWT（zcode.z.ai 链路被 captcha 拦）或用户自加的第三方网关 key，不能反代"
+			row["detail"] = "没有指向智谱（open.bigmodel.cn / api.z.ai）的静态 API key；JWT/登录 token 不能当 OpenAI 兼容 key 使用"
 		}
+		chatModel := firstZCodeModel(acc.Models)
 		if hasKey && doProbe {
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 			pr := upstream.ProbeZCodeKey(ctx, h.cfg.Upstream.HTTP, key.BaseURL, key.APIKey)
@@ -312,9 +349,21 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 			row["probe"] = map[string]any{
 				"status": string(pr.Status), "http": pr.HTTP, "msg": pr.Msg, "models": pr.Models,
 			}
-			// 探活拿到实时清单时以它为准（账号文件里的清单是登录当时的快照）。
 			if len(pr.Models) > 0 {
 				row["live_models"] = pr.Models
+			}
+		}
+		if hasKey && doChat {
+			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			cp := upstream.ProbeZCodeStaticChat(ctx, h.cfg.Upstream.HTTP, key.BaseURL, key.APIKey, chatModel)
+			cancel()
+			row["static_probe"] = map[string]any{
+				"status": string(cp.Status), "http": cp.HTTP, "msg": cp.Msg, "model": chatModel,
+			}
+			row["static_usable"] = cp.Status == upstream.ZCodeProbeOK
+			if cp.Status == upstream.ZCodeProbeOK {
+				row["usable"] = true
+				usable++
 			}
 		}
 		if doBalance && acc.JWT != "" {
@@ -325,9 +374,6 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 				row["quota_error"] = berr.Error()
 			} else {
 				row["quota"] = bal
-				// 这才是「这个账号当前真正能用哪些模型」：由套餐/额度的
-				// capabilities 决定，不是 /models 能列出什么（周末活动的号
-				// 能列 11 个，但只有 glm-5.3-flash 走额度覆盖）。
 				if ms := bal.EntitledModels(); len(ms) > 0 {
 					row["entitled_models"] = ms
 				}
@@ -339,17 +385,43 @@ func (h *Handler) zcodeCandidatesView(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kind":       "zcode-switch",
-		"candidates": out,
-		"dir":        dir,
-		"total":      len(out),
-		"usable":     usable,
-		"probed":     doProbe,
-		"balanced":   doBalance,
-		"note": "zcode 账号走智谱（BigModel / Z.ai）链路，凭据可直接反代：抽取账号自带的 " +
-			"id.secret 作为 Bearer 打 OpenAI 兼容端点。默认不探活；加 ?probe=1 现场验证凭据、" +
-			"?balance=1 顺带读额度。",
+		"kind":        kind,
+		"candidates":  out,
+		"dir":         dir,
+		"total":       len(out),
+		"usable":      usable,
+		"probed":      doProbe,
+		"chat_probed": doChat,
+		"balanced":    doBalance,
+		"note": "zcode 账号走智谱（BigModel / Z.ai）链路：完整 id.secret 只代表凭据形态可用。" +
+			"「探活全部」只打 /models（零计费）；「试静态 chat」才会真实消耗极少量 token；" +
+			"返回 429/1113 就是没有静态 API 资源包，需去 BigModel / Z.ai 控制台开通或充值。",
 	})
+}
+
+// firstZCodeModel 选一个最小静态 chat 探活模型：优先 flash（最便宜），否则第一个。
+func firstZCodeModel(models []source.ZCodeModel) string {
+	for _, m := range models {
+		if strings.Contains(strings.ToLower(m.ID), "flash") {
+			return m.ID
+		}
+	}
+	if len(models) > 0 {
+		return models[0].ID
+	}
+	return "glm-5.3-flash"
+}
+
+// ctxForProbe 复用请求上下文，但把真实 chat 探活的超时独立出来；/models 已经
+// 用掉一部分时间，不能让它把第二次请求挤到没有预算。
+func ctxForProbe(r *http.Request) context.Context {
+	parent := context.Background()
+	if r != nil {
+		parent = r.Context()
+	}
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	_ = cancel // 探活函数自带 client timeout；这里不提前取消，避免请求刚发出就被切断
+	return ctx
 }
 
 // truthyQuery 解析 "1"/"true"/"on"/"yes" 为真（管理页勾选框回传的就是 1）。
@@ -398,6 +470,16 @@ func (h *Handler) adminSourceImport(w http.ResponseWriter, r *http.Request) {
 			opt.Method = source.MethodApp
 		}
 		res, err = source.ImportWorkBuddyDesktopAs(h.wbDeskAuthDir(), h.cfg.AuthDir, body.IDs, opt)
+	case "zcode-app":
+		if opt.Method == "" {
+			opt.Method = source.MethodApp
+		}
+		res, err = source.ImportZCodeAppAs(h.zcodeAppDir(), h.cfg.AuthDir, body.IDs, opt)
+	case "qoder-app":
+		if opt.Method == "" {
+			opt.Method = source.MethodApp
+		}
+		res, err = source.ImportQoderAs(source.QoderAppDir(), h.cfg.AuthDir, body.IDs, opt)
 	case "zcode-switch", "zcode":
 		if opt.Method == "" {
 			opt.Method = source.MethodSwitch

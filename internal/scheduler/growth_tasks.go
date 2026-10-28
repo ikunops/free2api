@@ -152,8 +152,8 @@ func (s *Scheduler) scanGrowthTasksLocked(ctx context.Context) GrowthScanResult 
 				row.OK = true
 				row.Tasks = tasks
 				for _, t := range tasks {
-					ex, ok := growthTaskExecutors[t.TaskCode]
-					if !ok || ex == nil || t.AcceptStatus == "claimed" {
+					ex := growthExecutorForTask(t)
+					if ex == nil || t.AcceptStatus == "claimed" {
 						continue
 					}
 					if !growthExecutorMatchesPlatform(ex, platform) {
@@ -176,6 +176,16 @@ func platformLabel(p upstream.GrowthTaskPlatform) string {
 		return "miniprogram"
 	}
 	return "default"
+}
+
+// growthPlatformFromLabel 把扫描结果中的稳定标签还原成上游平台身份。
+// summary 必须用它与执行器能力比对，不能只看“执行器存在”就宣称可帮做：
+// 桌面专家执行器不能处理 miniprogram 任务，小程序执行器也不能处理普通任务。
+func growthPlatformFromLabel(label string) upstream.GrowthTaskPlatform {
+	if strings.TrimSpace(label) == "miniprogram" {
+		return upstream.GrowthPlatformMiniprogram
+	}
+	return upstream.GrowthPlatformDefault
 }
 
 // ClaimCompletedGrowthTasks 只领取 completed/claimed 状态的任务。dryRun=true 只返回计划。
@@ -461,10 +471,11 @@ func GrowthTaskSummary(res GrowthScanResult) map[string]any {
 				status = "not_accepted"
 			}
 			action := "manual"
+			ex := growthExecutorForTask(t)
 			switch {
 			case status == "completed":
 				action = "claim"
-			case growthTaskExecutors[t.TaskCode] != nil:
+			case ex != nil && growthExecutorMatchesPlatform(ex, growthPlatformFromLabel(acct.Platform)):
 				action = "run"
 			}
 			item := growthSummaryTask{

@@ -179,6 +179,20 @@ func zcodeBaseFromURL(raw string) (string, bool) {
 	return base, true
 }
 
+// zcodeBaseFromCredentialName 从 account-provider:* 的键名推断上游 base。
+// 键名里没有 host 时按名字里的 bigmodel / zai 语义分流；两者都没有则忽略。
+func zcodeBaseFromCredentialName(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "bigmodel"):
+		return zcodeUpstream["open.bigmodel.cn"]
+	case strings.Contains(lower, "zai"):
+		return zcodeUpstream["api.z.ai"]
+	default:
+		return ""
+	}
+}
+
 // zcodeKeyScore 凭据排序权重（越大越先用）。实测口径：
 //   - id.secret（49 位带点）能过鉴权；裸 32 位 hex 是被截断的前半段（401）。
 //   - 内置 coding-plan > 内置普通 > 用户自定义。
@@ -222,6 +236,39 @@ func ParseZCodeAccount(raw []byte, sourceFile string) (ZCodeAccount, error) {
 			acc.Encrypted = true
 		}
 	}
+	// 账号快照里的 account-provider:*:api-key 才是 ZCode 自己保存的静态 API Key。
+	// 它通常是 enc:v1 字段级加密；同机可用机器+用户名派生口令解开，换机解不开。
+	// 这里只收指向智谱白名单上游的键，第三方 provider（OpenRouter / 本机聚合网关）
+	// 不当作账号自带能力。
+	credentialKeys := make([]ZCodeKey, 0, len(f.Credentials))
+	for name, raw := range f.Credentials {
+		if !strings.HasPrefix(name, "account-provider:") || !strings.HasSuffix(name, ":api-key") {
+			continue
+		}
+		val := zcodeCredTrim(string(raw))
+		if strings.HasPrefix(val, zcodeCredPrefix) {
+			pt, _, derr := DecryptZCodeCredAuto(val)
+			if derr != nil {
+				continue
+			}
+			val = strings.TrimSpace(pt)
+		}
+		if val == "" || looksLikeJWT(val) {
+			continue
+		}
+		base := zcodeBaseFromCredentialName(name)
+		if base == "" {
+			continue
+		}
+		credentialKeys = append(credentialKeys, ZCodeKey{
+			Provider: name,
+			BaseURL:  base,
+			APIKey:   val,
+			Kind:     "api-key",
+			Builtin:  strings.Contains(name, ":coding-plan:"),
+			IDSecret: strings.Contains(val, ".") && len(val) >= 40,
+		})
+	}
 	if raw, ok := f.Credentials[zcodeCredJWTToken]; ok {
 		val := zcodeCredTrim(string(raw))
 		switch {
@@ -240,6 +287,13 @@ func ParseZCodeAccount(raw []byte, sourceFile string) (ZCodeAccount, error) {
 
 	seenKey := map[string]bool{}
 	seenModel := map[string]ZCodeModel{}
+	for _, key := range credentialKeys {
+		if seenKey[key.BaseURL+"|"+key.APIKey] {
+			continue
+		}
+		seenKey[key.BaseURL+"|"+key.APIKey] = true
+		acc.Keys = append(acc.Keys, key)
+	}
 	for name, spec := range f.Config.Provider {
 		key := strings.TrimSpace(spec.Options.APIKey)
 		base, baseOK := zcodeBaseFromURL(spec.Options.BaseURL)
@@ -353,6 +407,25 @@ func ImportZCodeAs(dir, authDir string, ids []string, opt ImportOptions) (Import
 	if opt.Detail == "" {
 		opt.Detail = dir
 	}
+	return importZCodeAccounts(accounts, authDir, ids, opt, "zcode-switch")
+}
+
+// ImportZCodeAppAs 导入 ZCode 应用当前登录态（method=app）。最多一个账号。
+// 静态 key 与读额度 JWT 分开落盘；登录 token 本身不会冒充静态 key。
+func ImportZCodeAppAs(appDir, authDir string, ids []string, opt ImportOptions) (ImportResult, error) {
+	acc, err := LoadZCodeAppAccount(appDir)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	opt = opt.normalized()
+	opt.Producer = ProducerZCode
+	if opt.Detail == "" {
+		opt.Detail = appDir
+	}
+	return importZCodeAccounts([]ZCodeAccount{acc}, authDir, ids, opt, "zcode-app")
+}
+
+func importZCodeAccounts(accounts []ZCodeAccount, authDir string, ids []string, opt ImportOptions, kind string) (ImportResult, error) {
 	want := map[string]bool{}
 	for _, id := range ids {
 		want[id] = true
@@ -360,7 +433,7 @@ func ImportZCodeAs(dir, authDir string, ids []string, opt ImportOptions) (Import
 	if err := os.MkdirAll(authDir, 0o755); err != nil {
 		return ImportResult{}, err
 	}
-	res := ImportResult{Kind: "zcode-switch", AuthDir: authDir}
+	res := ImportResult{Kind: kind, AuthDir: authDir}
 	labels := map[string]string{}
 	for _, acc := range accounts {
 		if len(want) > 0 && !want[acc.ID] && !want[acc.Name] {
@@ -452,7 +525,7 @@ func ZCodeCandidates(dir, authDir string) ([]Candidate, error) {
 		default:
 			c.Detail = "provider=" + acc.Provider + " · key=" + key.Provider
 			if key.IDSecret {
-				c.Detail += "（id.secret，实测可用）"
+				c.Detail += "（id.secret，凭据形态完整；是否可调用以探活和余额为准）"
 			} else {
 				c.Detail += "（裸 32 位，实测凭证已过期/不完整）"
 			}

@@ -73,6 +73,12 @@ type Auth struct {
 	// 命名同 realm/producer：未导出字段 + 导出访问器。
 	zcodeJWT       string
 	zcodeDeviceMID string
+
+	// qoderMachineID Qoder 客户端的机器标识（auth.machine-id 文件内容）。
+	// Qoder 的 COSY 签名头把 Cosy-MachineId / Cosy-MachineToken / Cosy-ClientIp
+	// 全绑在这一串上；随机 UUID 在模型目录端点实测 403 Signature invalid，所以必须
+	// 与登录客户端用同一个值，随凭证一起落盘。
+	qoderMachineID string
 }
 
 // producerZCode 静态密钥型生产者的标识（与 source.ProducerZCode / upstream.ProducerZCode
@@ -91,6 +97,10 @@ const producerOpenCode = "opencode"
 // ExpiresAt 恒 0，只要 key 不为空就认为长期有效——否则每个请求都走「刷新失败」、
 // 白把刚导入的号禁掉。
 const producerKilo = "kilo"
+
+// producerQoder Qoder（CN）的标识。Qoder 的 device token 有真实过期时间，
+// 与 zcode/opencode/kilo 的静态 key 不同，NeedsRefresh 仍按 ExpiresAt 判定。
+const producerQoder = "qoder"
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
 func (a *Auth) Lock() { a.mu.Lock() }
@@ -205,6 +215,26 @@ func (a *Auth) SetZCodeDeviceMID(v string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.zcodeDeviceMID = v
+}
+
+// QoderMachineID 返回 Qoder 的 machine id（空 = 不是 Qoder 号或未导入）。
+func (a *Auth) QoderMachineID() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.qoderMachineID
+}
+
+// SetQoderMachineID 写回 qoder_machine_id（导入/刷新路径用）。
+func (a *Auth) SetQoderMachineID(v string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.qoderMachineID = v
 }
 
 // DomainValue 加锁读取 Domain（同 AccessTokenValue：RefreshToken 在锁内改写它）。
@@ -392,6 +422,8 @@ func Parse(raw []byte) (*Auth, error) {
 			// 只有 zcode 号的凭证文件会带，空 = 没有（workbuddy 号零影响）。
 			ZCodeJWT       string `json:"zcode_jwt"`
 			ZCodeDeviceMID string `json:"zcode_device_mid"`
+			// QoderMachineID 顶层 qoder_machine_id（两形共用）。
+			QoderMachineID string `json:"qoder_machine_id"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -410,6 +442,7 @@ func Parse(raw []byte) (*Auth, error) {
 			upstreamBase:   n.UpstreamBase,
 			zcodeJWT:       n.ZCodeJWT,
 			zcodeDeviceMID: n.ZCodeDeviceMID,
+			qoderMachineID: n.QoderMachineID,
 		}
 	} else {
 		var f struct {
@@ -426,6 +459,7 @@ func Parse(raw []byte) (*Auth, error) {
 			UpstreamBase   string `json:"upstream_base"`
 			ZCodeJWT       string `json:"zcode_jwt"`
 			ZCodeDeviceMID string `json:"zcode_device_mid"`
+			QoderMachineID string `json:"qoder_machine_id"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -444,6 +478,7 @@ func Parse(raw []byte) (*Auth, error) {
 			upstreamBase:   f.UpstreamBase,
 			zcodeJWT:       f.ZCodeJWT,
 			zcodeDeviceMID: f.ZCodeDeviceMID,
+			qoderMachineID: f.QoderMachineID,
 		}
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {
@@ -496,6 +531,9 @@ func (a *Auth) SaveAtomic() error {
 	}
 	if a.zcodeDeviceMID != "" {
 		doc["zcode_device_mid"] = a.zcodeDeviceMID
+	}
+	if a.qoderMachineID != "" {
+		doc["qoder_machine_id"] = a.qoderMachineID
 	}
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

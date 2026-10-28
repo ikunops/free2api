@@ -21,8 +21,10 @@ import (
 const (
 	growthTasksPath       = "/v2/activity/growth/tasks"
 	growthAcceptPath      = "/v2/activity/growth/tasks/accept"
+	growthAcceptPathMP    = "/activity/growth/tasks/accept"
 	growthTaskClaimFormat = "/activity/growth/tasks/%s/claim"
 	growthWebBaseCN       = "https://www.workbuddy.cn"
+	miniProgramUA         = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.61(0x18003d2c) NetType/WIFI Language/zh_CN miniProgram/wx907c65e5e107ddcf"
 )
 
 // GrowthTask 是上游成长任务列表里我们关心的字段。未知字段保留在 Raw。
@@ -96,7 +98,11 @@ func (c *Client) AcceptGrowthTasks(a *auth.Auth, codes []string, platform Growth
 		return nil, nil
 	}
 	body := map[string]any{"task_codes": codes}
-	return c.growthJSONWithPlatform(a, http.MethodPost, growthAcceptPath, body, platform)
+	path := growthAcceptPath
+	if platform == GrowthPlatformMiniprogram {
+		path = growthAcceptPathMP
+	}
+	return c.growthJSONWithPlatform(a, http.MethodPost, path, body, platform)
 }
 
 // ClaimGrowthTask 领取单个任务。路径含 task_code、无 body；小程序口径带同一身份头。
@@ -140,7 +146,9 @@ func IsGrowthAlreadyClaimed(err error) bool {
 		strings.Contains(msg, "已领取") || strings.Contains(msg, "已领")
 }
 
-// growthJSONWithPlatform 在 growthJSON 基础上注入任务平台身份。
+// growthJSONWithPlatform 在 growthJSON 基础上注入任务平台身份。小程序口径走官网域和
+// 小程序 web-view 头族，不复用桌面端 BillingHeaders（后者会带入 X-CodeBuddy-Request、
+// X-Domain、X-Device-Token 等不属于小程序请求的头）。
 func (c *Client) growthJSONWithPlatform(a *auth.Auth, method, path string, body any, platform GrowthTaskPlatform) (json.RawMessage, error) {
 	if platform == GrowthPlatformDefault {
 		return c.growthJSON(a, method, path, body)
@@ -153,24 +161,111 @@ func (c *Client) growthJSONWithPlatform(a *auth.Auth, method, path string, body 
 		}
 		rdr = bytes.NewReader(raw)
 	}
+	base := c.chatBase(a)
+	if platform == GrowthPlatformMiniprogram {
+		base = growthWebBaseFor(c)
+	}
 	var req *http.Request
 	var err error
 	if rdr == nil {
-		req, err = http.NewRequest(method, c.chatBase(a)+path, nil)
+		req, err = http.NewRequest(method, strings.TrimRight(base, "/")+path, nil)
 	} else {
-		req, err = http.NewRequest(method, c.chatBase(a)+path, rdr)
+		req, err = http.NewRequest(method, strings.TrimRight(base, "/")+path, rdr)
 	}
 	if err != nil {
 		return nil, err
 	}
-	c.BillingHeaders(req, a)
-	req.Header.Set("X-Client-Platform", string(platform))
+	if platform == GrowthPlatformMiniprogram {
+		c.miniGrowthHeaders(req, a, base)
+	} else {
+		c.BillingHeaders(req, a)
+		req.Header.Set("X-Client-Platform", string(platform))
+	}
 	return c.doJSON(req)
+}
+
+func (c *Client) miniProgramUserAgent() string {
+	if c != nil && strings.TrimSpace(c.UserAgent) != "" {
+		return c.UserAgent
+	}
+	return miniProgramUA
+}
+
+// miniGrowthHeaders 对齐小程序 web-view 的 XHR：Bearer 认人、不带 Cookie，也不带
+// 桌面客户端风控头。GET 不带 Origin；POST 才带同源 Origin。
+func (c *Client) miniGrowthHeaders(req *http.Request, a *auth.Auth, base string) {
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	if req.Body != nil && req.Body != http.NoBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Client-Platform", string(GrowthPlatformMiniprogram))
+	if a != nil {
+		if at := a.AccessTokenValue(); at != "" {
+			req.Header.Set("Authorization", "Bearer "+at)
+		}
+		if a.EnterpriseID != "" {
+			req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		}
+	}
+	base = strings.TrimRight(base, "/")
+	if req.Method != http.MethodGet {
+		req.Header.Set("Origin", base)
+	}
+	req.Header.Set("Referer", base+"/profile/growth-center")
+	req.Header.Set("User-Agent", c.miniProgramUserAgent())
+	req.Header.Set("Accept-Language", "zh-CN")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
 }
 
 // ReportGrowthEvents 发送裸事件数组。growth 任务服务端只认裸数组，不接受信封。
 func (c *Client) ReportGrowthEvents(a *auth.Auth, events []map[string]any) error {
 	return c.reportGrowthEvents(a, c.billingBase(a), events)
+}
+
+// ReportGrowthMPEvents 发送小程序口径事件。事件体会合并小程序公共指纹，请求头使用
+// mp-weixin 身份；这与任务列表/accept/claim 的 miniprogram web-view 头是两套口径。
+func (c *Client) ReportGrowthMPEvents(a *auth.Auth, events []map[string]any) error {
+	if len(events) == 0 {
+		return nil
+	}
+	fp := growthMiniFingerprint(a)
+	out := make([]map[string]any, 0, len(events))
+	for _, src := range events {
+		ev := make(map[string]any, len(src)+len(fp))
+		for k, v := range fp {
+			ev[k] = v
+		}
+		for k, v := range src {
+			ev[k] = v
+		}
+		out = append(out, ev)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	base := strings.TrimRight(growthWebBaseFor(c), "/")
+	req, err := http.NewRequest(http.MethodPost, base+reportPath, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	if a != nil {
+		req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
+		if a.UID != "" {
+			req.Header.Set("X-User-Id", a.UID)
+		}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Client-Product", "workbuddy-mp")
+	req.Header.Set("X-Client-Version", "2.4.0")
+	req.Header.Set("X-Client-Platform", "mp-weixin")
+	req.Header.Set("X-Platform", "wechatmp")
+	req.Header.Set("User-Agent", c.miniProgramUserAgent())
+	_, err = c.doJSON(req)
+	return err
 }
 
 // ReportGrowthDesktopEvents 发送桌面指纹事件。桌面任务（Buddy/RichMeow）使用聊天域
@@ -257,6 +352,26 @@ func growthStableHex(a *auth.Auth, salt string) string {
 	return fmt.Sprintf("%x", sum)[:24]
 }
 
+func growthMiniFingerprint(a *auth.Auth) map[string]any {
+	uid, nickname := "", ""
+	if a != nil {
+		uid, nickname = a.UID, a.Nickname
+	}
+	return map[string]any{
+		"timestamp": time.Now().UnixMilli(), "ideType": "WorkBuddy_MP", "ideVersion": "2.4.0",
+		"extName": "workbuddy-mp", "extVersion": "2.4.0", "product": "SaaS",
+		"ideName": "wx_app_cloud", "platform": "mini_program", "os": "windows",
+		"osVersion": "11", "arch": "x64", "machineId": growthMiniMachineID(uid),
+		"timezone": "Asia/Shanghai", "userId": uid, "userNickname": nickname,
+	}
+}
+
+func growthMiniMachineID(uid string) string {
+	sum := md5.Sum([]byte("workbuddy-mp:" + uid))
+	h := fmt.Sprintf("%x", sum)
+	return h[0:8] + "-" + h[8:12] + "-4" + h[13:16] + "-a" + h[17:20] + "-" + h[20:32]
+}
+
 // NewGrowthConversationID 生成任务事件用的会话/请求 id。任务事件不进入用户对话统计，
 // 但字段必须像客户端，故使用统一 message id 生成器。
 func NewGrowthConversationID(prefix string) string {
@@ -264,4 +379,29 @@ func NewGrowthConversationID(prefix string) string {
 		prefix = "growth"
 	}
 	return prefix + "-" + session.NewMessageID()
+}
+
+// NewGrowthMiniChatEvent 构造小程序真实 chat_request_send 事件。它刻意不包含桌面端
+// 的 mode/requestModelId/requestModelName/requestId/fileUri/presentAt 等字段；公共
+// 指纹由 ReportGrowthMPEvents 注入。
+func NewGrowthMiniChatEvent(conversationID string) map[string]any {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		conversationID = NewGrowthConversationID("growth-mp")
+	}
+	rid := session.NewMessageID()
+	return map[string]any{
+		"eventCode": "chat_request_send", "inputLength": 14,
+		"isPlan": false, "isAutoExecuteTerminal": false, "isAutoModify": false,
+		"codebaseEnable": false, "maxToken": 0, "maxSteps": 500,
+		"temperature": 0, "maxRetries": 0,
+		"mentionContexts": []any{}, "knowledgeId": []any{}, "knowledgeName": []any{},
+		"codebaseId": "", "mentionContextCount": 0, "command": "",
+		"recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
+		"traceId": rid, "rootRequestId": rid,
+		"parentConversationId": conversationID, "conversationId": conversationID,
+		"messageId": "msg-" + rid[len(rid)-8:],
+		"agentName": "mp", "agentType": "main",
+		"codebuddy.session_id": conversationID, "codebuddy.conversation_request_id": rid,
+	}
 }
